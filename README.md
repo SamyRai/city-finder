@@ -30,6 +30,28 @@ To install the library, use `go get`:
 go get github.com/SamyRai/cityFinder
 ```
 
+## Building Indexes
+
+The library requires pre-built indexes for optimal performance. Two modes are available:
+
+### Test Mode (Small Dataset)
+For development and testing with a small dataset:
+```bash
+make build-test
+# or
+go run cmd/build-index/main.go test
+```
+
+### Production Mode (Full Dataset)
+For production use with the complete GeoNames dataset:
+```bash
+make build-prod
+# or
+go run cmd/build-index/main.go prod
+```
+
+**Note**: Production mode processes ~12.7 million cities and may take several minutes to complete.
+
 ## Usage
 
 ### Finding the Nearest City

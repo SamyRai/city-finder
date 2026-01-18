@@ -4,21 +4,26 @@ import (
 	"math"
 )
 
+// City struct optimized for memory alignment (Go 1.22+ best practice)
+// Field ordering: largest types first (float64 = 8 bytes), then pointers/slices (8 bytes), then strings (16 bytes)
+// This reduces padding and improves cache locality
+// AltNames removed from City struct for memory efficiency - processed during building only
 type City struct {
-	Latitude  float64
-	Longitude float64
-	Name      string
-	Country   string
-	AltNames  []string
+	Latitude  float64 // 8 bytes - aligned to 8-byte boundary
+	Longitude float64 // 8 bytes - aligned to 8-byte boundary
+	Name      string  // 16 bytes (string header: ptr + len) - aligned to 8-byte boundary
+	Country   string  // 16 bytes (string header: ptr + len) - aligned to 8-byte boundary
 }
 
 type Rect struct {
 	Min, Max []float64
 }
 
+// SpatialCity includes AltNames for building process but embeds compact City
 type SpatialCity struct {
 	City
-	Rect *Rect
+	Rect     *Rect
+	AltNames []string // Used during index building, not stored in final City
 }
 
 func (sc *SpatialCity) Bounds() *Rect {

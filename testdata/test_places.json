@@ -1,0 +1,170 @@
+[
+  {
+    "name": "Barcelona",
+    "country": "ES",
+    "latitude": 41.385,
+    "longitude": 2.173,
+    "postalCode": "08001",
+    "description": "Capital of Catalonia"
+  },
+  {
+    "name": "Madrid",
+    "country": "ES",
+    "latitude": 40.417,
+    "longitude": -3.703,
+    "postalCode": "28001",
+    "description": "Capital of Spain"
+  },
+  {
+    "name": "Paris",
+    "country": "FR",
+    "latitude": 48.857,
+    "longitude": 2.352,
+    "postalCode": "75001",
+    "description": "Capital of France"
+  },
+  {
+    "name": "London",
+    "country": "GB",
+    "latitude": 51.507,
+    "longitude": -0.128,
+    "postalCode": "SW1A 1AA",
+    "description": "Capital of England"
+  },
+  {
+    "name": "Berlin",
+    "country": "DE",
+    "latitude": 52.520,
+    "longitude": 13.405,
+    "postalCode": "10117",
+    "description": "Capital of Germany"
+  },
+  {
+    "name": "Rome",
+    "country": "IT",
+    "latitude": 41.902,
+    "longitude": 12.496,
+    "postalCode": "00100",
+    "description": "Capital of Italy"
+  },
+  {
+    "name": "Amsterdam",
+    "country": "NL",
+    "latitude": 52.367,
+    "longitude": 4.904,
+    "postalCode": "1012 JS",
+    "description": "Capital of Netherlands"
+  },
+  {
+    "name": "Vienna",
+    "country": "AT",
+    "latitude": 48.208,
+    "longitude": 16.373,
+    "postalCode": "1010",
+    "description": "Capital of Austria"
+  },
+  {
+    "name": "Prague",
+    "country": "CZ",
+    "latitude": 50.075,
+    "longitude": 14.438,
+    "postalCode": "110 00",
+    "description": "Capital of Czech Republic"
+  },
+  {
+    "name": "Budapest",
+    "country": "HU",
+    "latitude": 47.498,
+    "longitude": 19.040,
+    "postalCode": "1051",
+    "description": "Capital of Hungary"
+  },
+  {
+    "name": "Warsaw",
+    "country": "PL",
+    "latitude": 52.229,
+    "longitude": 21.012,
+    "postalCode": "00-001",
+    "description": "Capital of Poland"
+  },
+  {
+    "name": "Athens",
+    "country": "GR",
+    "latitude": 37.983,
+    "longitude": 23.728,
+    "postalCode": "105 57",
+    "description": "Capital of Greece"
+  },
+  {
+    "name": "Lisbon",
+    "country": "PT",
+    "latitude": 38.722,
+    "longitude": -9.139,
+    "postalCode": "1100-148",
+    "description": "Capital of Portugal"
+  },
+  {
+    "name": "Dublin",
+    "country": "IE",
+    "latitude": 53.350,
+    "longitude": -6.267,
+    "postalCode": "D01",
+    "description": "Capital of Ireland"
+  },
+  {
+    "name": "Copenhagen",
+    "country": "DK",
+    "latitude": 55.676,
+    "longitude": 12.568,
+    "postalCode": "1050",
+    "description": "Capital of Denmark"
+  },
+  {
+    "name": "Stockholm",
+    "country": "SE",
+    "latitude": 59.329,
+    "longitude": 18.068,
+    "postalCode": "111 29",
+    "description": "Capital of Sweden"
+  },
+  {
+    "name": "Oslo",
+    "country": "NO",
+    "latitude": 59.913,
+    "longitude": 10.752,
+    "postalCode": "0030",
+    "description": "Capital of Norway"
+  },
+  {
+    "name": "Helsinki",
+    "country": "FI",
+    "latitude": 60.169,
+    "longitude": 24.938,
+    "postalCode": "00100",
+    "description": "Capital of Finland"
+  },
+  {
+    "name": "Brussels",
+    "country": "BE",
+    "latitude": 50.850,
+    "longitude": 4.352,
+    "postalCode": "1000",
+    "description": "Capital of Belgium"
+  },
+  {
+    "name": "Zurich",
+    "country": "CH",
+    "latitude": 47.376,
+    "longitude": 8.541,
+    "postalCode": "8001",
+    "description": "Financial capital of Switzerland"
+  },
+  {
+    "name": "Geneva",
+    "country": "CH",
+    "latitude": 46.204,
+    "longitude": 6.143,
+    "postalCode": "1201",
+    "description": "Diplomatic capital of Switzerland"
+  }
+]

@@ -1,0 +1,19 @@
+# Benchmark Suite Directory
+
+This directory contains the comprehensive benchmark suite for cityFinder.
+
+## Structure
+- `cmd/` - CLI interface
+- `suite/` - Benchmark execution engine
+- `reporters/` - Output format handlers
+- `profilers/` - Performance profiling
+- `types/` - Data structures and types
+- `run_benchmarks.go` - Main entry point
+- `README.md` - Documentation
+
+## Quick Start
+```bash
+go run benchmarks/run_benchmarks.go quick
+go run benchmarks/run_benchmarks.go scaling
+go run benchmarks/run_benchmarks.go comprehensive
+```

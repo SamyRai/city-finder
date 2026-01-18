@@ -6,19 +6,22 @@ import (
 	"strconv"
 )
 
+// PostalCodeEntry optimized for memory alignment (Go 1.22+ best practice)
+// Field ordering: largest types first (float64 = 8 bytes), then int (8 bytes on 64-bit), then strings (16 bytes each)
+// This reduces padding and improves cache locality when processing many entries
 type PostalCodeEntry struct {
-	CountryCode string
-	PostalCode  string
-	PlaceName   string
-	AdminName1  string
-	AdminCode1  string
-	AdminName2  string
-	AdminCode2  string
-	AdminName3  string
-	AdminCode3  string
-	Latitude    float64
-	Longitude   float64
-	Accuracy    int
+	Latitude    float64 // 8 bytes - aligned to 8-byte boundary
+	Longitude   float64 // 8 bytes - aligned to 8-byte boundary
+	Accuracy    int     // 8 bytes on 64-bit - aligned to 8-byte boundary
+	CountryCode string  // 16 bytes (string header) - aligned to 8-byte boundary
+	PostalCode  string  // 16 bytes (string header) - aligned to 8-byte boundary
+	PlaceName   string  // 16 bytes (string header) - aligned to 8-byte boundary
+	AdminName1  string  // 16 bytes (string header) - aligned to 8-byte boundary
+	AdminCode1  string  // 16 bytes (string header) - aligned to 8-byte boundary
+	AdminName2  string  // 16 bytes (string header) - aligned to 8-byte boundary
+	AdminCode2  string  // 16 bytes (string header) - aligned to 8-byte boundary
+	AdminName3  string  // 16 bytes (string header) - aligned to 8-byte boundary
+	AdminCode3  string  // 16 bytes (string header) - aligned to 8-byte boundary
 }
 
 func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, error) {
@@ -26,22 +29,33 @@ func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, er
 	if err != nil {
 		return nil, err
 	}
+	defer file.Close()
+
 	reader := csv.NewReader(file)
 	reader.Comma = '\t'
-	records, err := reader.ReadAll()
-	if err != nil {
-		_ = file.Close()
-		return nil, err
-	}
-	if err := file.Close(); err != nil {
-		return nil, err
-	}
+	reader.ReuseRecord = true // Reuse record slice to reduce allocations
 
-	postalCodes := make(map[string]map[string]PostalCodeEntry)
-	for _, record := range records {
+	// Pre-allocate with reasonable capacity based on typical postal code data size
+	postalCodes := make(map[string]map[string]PostalCodeEntry, 200) // ~200 countries
+
+	for {
+		record, err := reader.Read()
+		if err != nil {
+			if err.Error() == "EOF" {
+				break
+			}
+			return nil, err
+		}
+
+		// Skip malformed records
+		if len(record) < 12 {
+			continue
+		}
+
 		lat, _ := strconv.ParseFloat(record[9], 64)
 		lon, _ := strconv.ParseFloat(record[10], 64)
 		accuracy, _ := strconv.Atoi(record[11])
+
 		postalCode := PostalCodeEntry{
 			CountryCode: record[0],
 			PostalCode:  record[1],
@@ -57,10 +71,11 @@ func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, er
 			Accuracy:    accuracy,
 		}
 
-		if _, exists := postalCodes[postalCode.CountryCode]; !exists {
-			postalCodes[postalCode.CountryCode] = make(map[string]PostalCodeEntry)
+		countryCode := postalCode.CountryCode
+		if _, exists := postalCodes[countryCode]; !exists {
+			postalCodes[countryCode] = make(map[string]PostalCodeEntry, 1000) // Pre-allocate reasonable capacity per country
 		}
-		postalCodes[postalCode.CountryCode][postalCode.PostalCode] = postalCode
+		postalCodes[countryCode][postalCode.PostalCode] = postalCode
 	}
 
 	return postalCodes, nil

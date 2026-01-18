@@ -4,7 +4,6 @@ import (
 	"encoding/gob"
 	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/SamyRai/cityFinder/lib/dataLoader"
-	"github.com/cheggaaa/pb/v3"
 	"os"
 	"sync"
 )
@@ -36,20 +35,13 @@ func (pcf *Finder) AddPostalCode(entry dataLoader.PostalCodeEntry) {
 // BuildIndex creates a postal code index from postal code data
 func BuildIndex(postalCodes map[string]map[string]dataLoader.PostalCodeEntry) *Finder {
 	finder := NewPostalCodeFinder()
-	total := 0
-	for _, countryCode := range postalCodes {
-		for range countryCode {
-			total++
-		}
-	}
-	bar := pb.Full.Start(total)
-	for _, countryCode := range postalCodes {
-		for _, entry := range countryCode {
-			finder.AddPostalCode(entry)
-			bar.Increment()
-		}
-	}
-	bar.Finish()
+
+	// Bulk loading - skip progress bar and individual mutex locks for better performance
+	finder.mutex.Lock()
+	defer finder.mutex.Unlock()
+
+	// Direct assignment for bulk loading - much faster than individual AddPostalCode calls
+	finder.PostalCode = postalCodes
 
 	return finder
 }

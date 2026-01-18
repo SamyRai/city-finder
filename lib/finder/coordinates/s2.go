@@ -4,6 +4,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/SamyRai/cityFinder/lib/config"
@@ -34,11 +35,20 @@ func BuildIndex(cities []city.SpatialCity, config *config.S2) (*S2Finder, error)
 	points := make(s2.PointVector, len(cities))
 	cityData := make([]city.City, len(cities))
 
+	// Use progress bar with infrequent updates to reduce overhead
 	bar := pb.Full.Start(len(cities))
+	bar.SetRefreshRate(time.Second) // Update every second instead of every item
+	
+	// Process cities in batches to minimize progress bar overhead
+	batchSize := 100000 // Update progress every 100k items
 	for i, spatialCity := range cities {
 		points[i] = s2.PointFromLatLng(s2.LatLngFromDegrees(spatialCity.Latitude, spatialCity.Longitude))
 		cityData[i] = spatialCity.City
-		bar.Increment()
+		
+		// Only update progress bar every batchSize items to reduce overhead
+		if (i+1)%batchSize == 0 || i == len(cities)-1 {
+			bar.SetCurrent(int64(i + 1))
+		}
 	}
 	bar.Finish()
 
@@ -114,6 +124,7 @@ func DeserializeIndex(filepath string) (*S2Finder, error) {
 		return nil, fmt.Errorf("error closing file: %w", closeErr)
 	}
 
+	// Rebuild index efficiently without progress bar overhead
 	points := make(s2.PointVector, len(serializable.Cities))
 	for i, c := range serializable.Cities {
 		points[i] = s2.PointFromLatLng(s2.LatLngFromDegrees(c.Latitude, c.Longitude))
