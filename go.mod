@@ -5,7 +5,7 @@ go 1.25
 require (
 	github.com/cheggaaa/pb/v3 v3.1.7
 	github.com/fatih/color v1.18.0
-	github.com/gofiber/fiber/v2 v2.52.10
+	github.com/gofiber/fiber/v3 v3.3.0
 	github.com/golang/geo v0.0.0-20250825151631-54d70cc7cb31
 	github.com/stretchr/testify v1.11.1
 )
