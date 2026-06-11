@@ -151,10 +151,14 @@ func LoadGeoNamesCSVConcurrent(filepath string) ([]city.SpatialCity, error) {
 	batchSize := 10000
 	var cities []city.SpatialCity
 	lineCount := 0
-
 	for scanner.Scan() {
 		line := scanner.Text()
 		lineCount++
+
+		// Log progress every 1 million lines to reduce overhead
+		if lineCount%1000000 == 0 {
+			log.Printf("Processing line %d...", lineCount)
+		}
 
 		// Process in batches to reduce function call overhead
 		if len(cities)%batchSize == 0 {
@@ -163,7 +167,6 @@ func LoadGeoNamesCSVConcurrent(filepath string) ([]city.SpatialCity, error) {
 			copy(newSlice, cities)
 			cities = newSlice
 		}
-
 		fields := strings.Split(line, "\t")
 		if len(fields) < 19 {
 			continue
