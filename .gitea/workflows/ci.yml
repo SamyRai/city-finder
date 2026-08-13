@@ -5,6 +5,10 @@ on:
   pull_request:
     branches: [ main, master ]
 
+concurrency:
+  group: ${{ gitea.workflow }}-${{ gitea.head_ref || gitea.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   go-ci:
     uses: mukimovd/.github/.gitea/workflows/go-ci.yml@main
