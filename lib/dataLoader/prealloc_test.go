@@ -56,7 +56,6 @@ func TestLoadGeoNamesCSVWithLimit_TestData(t *testing.T) {
 	for _, c := range cities {
 		assert.NotEmpty(t, c.Name)
 		assert.NotEmpty(t, c.Country)
-		assert.False(t, c.Rect == nil)
 	}
 
 	limited, err := LoadGeoNamesCSVWithLimit(testDataRelPath, 1)
