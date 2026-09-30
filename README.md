@@ -20,7 +20,14 @@ Nearest neighbor searches are performed using `s2.NewClosestEdgeQuery`, which le
 
 ## Performance
 
-The S2 implementation has been significantly refactored for improved performance and accuracy. New benchmarks are currently being generated to reflect these enhancements. The results will be updated here as soon as they are available.
+Nearest-neighbor queries are bounded by `s2.ClosestEdgeQuery` with `MaxResults(1)`, which prunes the search instead of collecting a result for every indexed point. Measured on an Apple-silicon laptop (8 cores), 100,000 distinct points:
+
+| Metric | Per query |
+|---|---|
+| Latency | ~5 µs |
+| Allocations | ~1.6 KB / 60 allocs |
+
+The ShapeIndex is built eagerly at startup, so the first query after boot does not pay the construction cost. Results are validated against a brute-force great-circle oracle in `s2_oracle_test.go`.
 
 ## Installation
 
@@ -127,27 +134,27 @@ To run the server, execute the built binary:
 ./nearestcityserver
 ```
 
-By default, the server will listen on port 3000.
+By default, the server will listen on port 3000; set the `PORT` environment variable to override. The server enforces read/write/idle timeouts (15s/15s/60s), a 1 MB body limit, and recovers from handler panics.
 
 ### API Endpoints
 
-- **Find Nearest City**: `/nearest?lat=<latitude>&lon=<longitude>`
-- **Find City by Name**: `/coordinates?name=<city_name>`
-- **Find City by Postal Code**: `/postalcode?postalcode=<postal_code>&country=<country_code>`
+- **Find Nearest City**: `/nearest?lat=<latitude>&lon=<longitude>` — lat/lon must be finite and in range (`[-90, 90]` / `[-180, 180]`); anything else returns 400.
+- **Find City by Name**: `/coordinates?name=<city_name>&country-code=<country_code>` — both parameters required. The name is matched exactly first, then fuzzily (edit distance ≤ 2), so typos like `Pars` still resolve. Surrounding whitespace is trimmed.
+- **Find City by Postal Code**: `/postalCode?code=<postal_code>&country-code=<country_code>` — both parameters required. Inner spaces in postal codes are significant (GeoNames stores GB codes as `SW1A 1AA`); only surrounding whitespace is trimmed.
 
 ## Testing
 
-Unit tests are included for the core S2 finder logic. To run the tests, use the following command:
-
 ```bash
-go test -v ./lib/finder/coordinates/
+go test ./...
 ```
+
+The S2 finder includes a brute-force oracle test, the initializer/download layer is covered by `httptest`-based tests, and the concurrency behavior is exercised by stress suites (run with `-race` for the race detector).
 
 ## Initialization and Datasets
 
 This project requires datasets from the [GeoNames](http://www.geonames.org/) database. Specifically, you need the `allCountries.txt` for city data and `allCountries.zip` for postal code data. These files should be placed in the `datasets` folder.
 
-During initialization, the application checks if these datasets and the S2 index are available. If they are not, it downloads and extracts the required datasets and builds the S2 index. This ensures that the necessary data is always available regardless of how the library is used.
+During initialization, the application checks if these datasets and the S2 index are available. If they are not, it downloads and extracts the required datasets and builds the S2 index. Downloads are verified (HTTP status checked, streamed to a temporary file and renamed atomically), and a pre-existing archive that fails to extract is re-downloaded once instead of blocking every later startup. When all three pre-built indexes are present, the raw datasets are not parsed at all, which makes warm starts fast.
 
 ### Using the Server
 
