@@ -43,6 +43,28 @@ func LoadGeoNamesCSV(filepath string) ([]city.SpatialCity, error) {
 	return LoadGeoNamesCSVWithLimit(filepath, 0)
 }
 
+// averageGeoNamesLineBytes is a deliberately conservative (low) average line
+// length for the GeoNames allCountries dump; real lines average ~120-140
+// bytes. Assuming fewer bytes per line overestimates the row count, so the
+// preallocated slice may be slightly too large but never needs to regrow
+// (regrowing at ~12M rows of 80 bytes would briefly double ~1GB of memory).
+const averageGeoNamesLineBytes = 120
+
+// estimatedCityCount returns the slice capacity to preallocate for filepath.
+// An explicit limit always wins; otherwise the capacity is derived from the
+// file size so that a small or partial file no longer allocates a fixed
+// 15,000,000-row (~1.2GB) backing array. A return of 0 means "no estimate";
+// the append loop then grows the slice naturally.
+func estimatedCityCount(filepath string, limit int) int {
+	if limit > 0 {
+		return limit
+	}
+	if fi, err := os.Stat(filepath); err == nil && fi.Size() > 0 {
+		return int(fi.Size()/averageGeoNamesLineBytes) + 1
+	}
+	return 0
+}
+
 // LoadGeoNamesCSVWithLimit loads cities from a GeoNames CSV file with an optional limit
 func LoadGeoNamesCSVWithLimit(filepath string, limit int) ([]city.SpatialCity, error) {
 	file, err := os.Open(filepath)
@@ -56,13 +78,9 @@ func LoadGeoNamesCSVWithLimit(filepath string, limit int) ([]city.SpatialCity, e
 	buf := make([]byte, 0, 64*1024) // 64KB buffer
 	scanner.Buffer(buf, 1024*1024)  // 1MB max line size
 
-	// Preallocate slice with estimated capacity to reduce reallocations
-	// If limit is specified, use that; otherwise allocate generously
-	capacity := 15000000
-	if limit > 0 && limit < capacity {
-		capacity = limit
-	}
-	cities := make([]city.SpatialCity, 0, capacity)
+	// Preallocate the slice from a file-size-based row estimate (an explicit
+	// limit takes precedence) instead of a hardcoded 15M rows.
+	cities := make([]city.SpatialCity, 0, estimatedCityCount(filepath, limit))
 	lineCount := 0
 	for scanner.Scan() {
 		line := scanner.Bytes() // Use Bytes() instead of Text() to avoid string allocation
