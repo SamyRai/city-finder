@@ -2,8 +2,6 @@ package finder
 
 import (
 	"github.com/SamyRai/cityFinder/lib/city"
-	"github.com/SamyRai/cityFinder/lib/config"
-	"github.com/SamyRai/cityFinder/lib/dataLoader"
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
 	"github.com/SamyRai/cityFinder/lib/finder/name"
 	"github.com/SamyRai/cityFinder/lib/finder/postalCode"
@@ -14,34 +12,6 @@ type Finder struct {
 	S2Finder         *coordinates.S2Finder
 	NameFinder       *name.Finder
 	PostalCodeFinder *postalCode.Finder
-}
-
-// NewFinder creates a new Finder instance
-func NewFinder(cities []city.SpatialCity, s2Config *config.S2, postalCodes map[string]map[string]dataLoader.PostalCodeEntry) (*Finder, error) {
-
-	s2Finder, err := coordinates.NewS2Finder(s2Config)
-	if err != nil {
-		return nil, err
-	}
-
-	nameFinder := name.NewNameFinder()
-	postalCodeFinder := postalCode.NewPostalCodeFinder()
-
-	for _, spatialCity := range cities {
-		nameFinder.AddCity(spatialCity)
-	}
-
-	for _, postalCodeEntries := range postalCodes {
-		for _, entry := range postalCodeEntries {
-			postalCodeFinder.AddPostalCode(entry)
-		}
-	}
-
-	return &Finder{
-		S2Finder:         s2Finder,
-		NameFinder:       nameFinder,
-		PostalCodeFinder: postalCodeFinder,
-	}, nil
 }
 
 // FindCityByPostalCode wraps the PostalCodeFinder method
