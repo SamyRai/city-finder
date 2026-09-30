@@ -15,50 +15,10 @@ type City struct {
 	Country   string  // 16 bytes (string header: ptr + len) - aligned to 8-byte boundary
 }
 
-type Rect struct {
-	Min, Max []float64
-}
-
 // SpatialCity includes AltNames for building process but embeds compact City
 type SpatialCity struct {
 	City
-	Rect     *Rect
 	AltNames []string // Used during index building, not stored in final City
-}
-
-func (sc *SpatialCity) Bounds() *Rect {
-	return sc.Rect
-}
-
-func (r *Rect) Intersects(other *Rect) bool {
-	for i := range r.Min {
-		if r.Min[i] > other.Max[i] || r.Max[i] < other.Min[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func (r *Rect) Area() float64 {
-	area := 1.0
-	for i := range r.Min {
-		area *= r.Max[i] - r.Min[i]
-	}
-	return area
-}
-
-func (r *Rect) Union(other *Rect) *Rect {
-	min := make([]float64, len(r.Min))
-	max := make([]float64, len(r.Max))
-	for i := range r.Min {
-		min[i] = math.Min(r.Min[i], other.Min[i])
-		max[i] = math.Max(r.Max[i], other.Max[i])
-	}
-	return &Rect{Min: min, Max: max}
-}
-
-func (r *Rect) Enlargement(other *Rect) float64 {
-	return r.Union(other).Area() - r.Area()
 }
 
 func EuclideanDistance(p1, p2 []float64) float64 {
@@ -90,7 +50,7 @@ func toRadians(deg float64) float64 {
 	return deg * (math.Pi / 180.0)
 }
 
-func sin(x float64) float64 { return math.Sin(x) }
-func cos(x float64) float64 { return math.Cos(x) }
-func sqrt(x float64) float64 { return math.Sqrt(x) }
+func sin(x float64) float64      { return math.Sin(x) }
+func cos(x float64) float64      { return math.Cos(x) }
+func sqrt(x float64) float64     { return math.Sqrt(x) }
 func atan2(y, x float64) float64 { return math.Atan2(y, x) }
