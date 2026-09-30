@@ -141,24 +141,14 @@ func TestConcurrentStress_CoordinateFinder(t *testing.T) {
 				lat := testCity.Latitude + float64(j%10-5)*0.001
 				lon := testCity.Longitude + float64(j%10-5)*0.001
 
-				// Use a timeout for individual operations to prevent hanging
-				done := make(chan bool, 1)
-				go func() {
-					_, _, err := finder.NearestPlace(lat, lon)
-					if err == nil {
-						atomic.AddInt64(&successCount, 1)
-					} else {
-						atomic.AddInt64(&errorCount, 1)
-					}
-					done <- true
-				}()
-
-				select {
-				case <-done:
-					// Operation completed
-				case <-time.After(100 * time.Millisecond):
-					// Timeout - count as error to avoid hanging
+				// NearestPlace is a microsecond-scale read after MaxResults(1),
+				// so no per-operation timeout is needed: a wall-clock budget
+				// here would count timed-out ops twice (timeout + eventual
+				// completion) and flake under parallel test load.
+				if _, _, err := finder.NearestPlace(lat, lon); err != nil {
 					atomic.AddInt64(&errorCount, 1)
+				} else {
+					atomic.AddInt64(&successCount, 1)
 				}
 			}
 		}(i)
@@ -168,8 +158,7 @@ func TestConcurrentStress_CoordinateFinder(t *testing.T) {
 
 	totalOperations := int64(numWorkers * operationsPerWorker)
 	actualTotal := atomic.LoadInt64(&successCount) + atomic.LoadInt64(&errorCount)
-	// Allow some tolerance due to timeout handling
-	assert.InDelta(t, totalOperations, actualTotal, 10, "Total operations should match expected count")
+	assert.Equal(t, totalOperations, actualTotal, "Total operations should match expected count")
 
 	t.Logf("Coordinate finder stress test: %d operations, %d successful, %d errors",
 		totalOperations, atomic.LoadInt64(&successCount), atomic.LoadInt64(&errorCount))
