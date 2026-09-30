@@ -71,14 +71,14 @@ func createBenchmarkConfig(name, sizesStr string, iterations, warmup int,
 	}
 
 	return types.BenchmarkConfig{
-		Name:           name,
-		DatasetSizes:   sizes,
-		EnableCPUProf:  enableCPU,
-		EnableMemProf:  enableMem,
-		EnableTrace:    enableTrace,
-		OutputFormats:  formats,
-		Iterations:     iterations,
-		WarmupRuns:     warmup,
+		Name:          name,
+		DatasetSizes:  sizes,
+		EnableCPUProf: enableCPU,
+		EnableMemProf: enableMem,
+		EnableTrace:   enableTrace,
+		OutputFormats: formats,
+		Iterations:    iterations,
+		WarmupRuns:    warmup,
 		SkipComponents: map[string]bool{
 			"s2":     skipS2,
 			"name":   skipName,
@@ -155,10 +155,10 @@ func runComparison(baselineFile string, runner *suite.BenchmarkRunner) error {
 
 	// Create comparison
 	comparison := types.ComparisonResult{
-		Baseline: baseline,
-		Current:  current,
+		Baseline:    baseline,
+		Current:     current,
 		Comparisons: generateComparisons(baseline, current),
-		Summary: generateSummary(baseline, current),
+		Summary:     generateSummary(baseline, current),
 	}
 
 	// Report comparison

@@ -31,38 +31,38 @@ const (
 
 // BenchmarkResult holds comprehensive benchmark results
 type BenchmarkResult struct {
-	Config         BenchmarkConfig     `json:"config"`
-	Timestamp      time.Time           `json:"timestamp"`
-	Duration       time.Duration       `json:"duration"`
-	MemoryUsage    MemoryStats         `json:"memory_usage"`
-	CPUUsage       CPUStats            `json:"cpu_usage"`
-	Operations     []OperationResult   `json:"operations"`
-	SystemInfo     SystemInfo          `json:"system_info"`
-	Metadata       map[string]interface{} `json:"metadata"`
+	Config      BenchmarkConfig        `json:"config"`
+	Timestamp   time.Time              `json:"timestamp"`
+	Duration    time.Duration          `json:"duration"`
+	MemoryUsage MemoryStats            `json:"memory_usage"`
+	CPUUsage    CPUStats               `json:"cpu_usage"`
+	Operations  []OperationResult      `json:"operations"`
+	SystemInfo  SystemInfo             `json:"system_info"`
+	Metadata    map[string]interface{} `json:"metadata"`
 }
 
 // OperationResult represents the result of a specific operation
 type OperationResult struct {
-	Name           string        `json:"name"`
-	Duration       time.Duration `json:"duration"`
-	MemoryDelta    uint64        `json:"memory_delta"`
-	Allocations    uint64        `json:"allocations"`     // Number of allocations during operation
-	GCCycles       uint32        `json:"gc_cycles"`        // GC cycles during operation
-	GCTime         time.Duration `json:"gc_time"`          // Total GC time during operation
-	ItemsProcessed int           `json:"items_processed"`
-	Throughput     float64       `json:"throughput"` // items per second
-	Status         string        `json:"status"`
-	Error          string        `json:"error,omitempty"`
+	Name           string                 `json:"name"`
+	Duration       time.Duration          `json:"duration"`
+	MemoryDelta    uint64                 `json:"memory_delta"`
+	Allocations    uint64                 `json:"allocations"` // Number of allocations during operation
+	GCCycles       uint32                 `json:"gc_cycles"`   // GC cycles during operation
+	GCTime         time.Duration          `json:"gc_time"`     // Total GC time during operation
+	ItemsProcessed int                    `json:"items_processed"`
+	Throughput     float64                `json:"throughput"` // items per second
+	Status         string                 `json:"status"`
+	Error          string                 `json:"error,omitempty"`
 	Metadata       map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // MemoryStats holds memory usage information
 type MemoryStats struct {
-	Initial     uint64  `json:"initial"`
-	Peak        uint64  `json:"peak"`
-	Final       uint64  `json:"final"`
-	Allocations uint64  `json:"allocations"`
-	GCCycles    uint32  `json:"gc_cycles"`
+	Initial     uint64          `json:"initial"`
+	Peak        uint64          `json:"peak"`
+	Final       uint64          `json:"final"`
+	Allocations uint64          `json:"allocations"`
+	GCCycles    uint32          `json:"gc_cycles"`
 	GCPauses    []time.Duration `json:"gc_pauses"`
 }
 
@@ -86,28 +86,28 @@ type SystemInfo struct {
 
 // BenchmarkSuite represents a collection of benchmarks to run
 type BenchmarkSuite struct {
-	Name        string            `json:"name"`
-	Description string            `json:"description"`
-	Benchmarks  []BenchmarkConfig `json:"benchmarks"`
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	Benchmarks  []BenchmarkConfig      `json:"benchmarks"`
 	Metadata    map[string]interface{} `json:"metadata"`
 }
 
 // ComparisonResult holds the result of comparing two benchmark runs
 type ComparisonResult struct {
-	Baseline     BenchmarkResult `json:"baseline"`
-	Current      BenchmarkResult `json:"current"`
-	Comparisons  []MetricComparison `json:"comparisons"`
-	Summary      ComparisonSummary `json:"summary"`
+	Baseline    BenchmarkResult    `json:"baseline"`
+	Current     BenchmarkResult    `json:"current"`
+	Comparisons []MetricComparison `json:"comparisons"`
+	Summary     ComparisonSummary  `json:"summary"`
 }
 
 // MetricComparison compares a specific metric between two runs
 type MetricComparison struct {
-	Metric      string  `json:"metric"`
-	Baseline    float64 `json:"baseline"`
-	Current     float64 `json:"current"`
-	Change      float64 `json:"change"`
+	Metric        string  `json:"metric"`
+	Baseline      float64 `json:"baseline"`
+	Current       float64 `json:"current"`
+	Change        float64 `json:"change"`
 	PercentChange float64 `json:"percent_change"`
-	Improvement bool    `json:"improvement"` // true if current is better than baseline
+	Improvement   bool    `json:"improvement"` // true if current is better than baseline
 }
 
 // ComparisonSummary provides a high-level summary of the comparison
