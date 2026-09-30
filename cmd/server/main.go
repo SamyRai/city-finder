@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/SamyRai/cityFinder/cmd/server/routes"
@@ -45,7 +48,47 @@ func main() {
 	if port == "" {
 		port = "3000"
 	}
-	log.Fatal(app.Listen(":" + port))
+
+	// Graceful shutdown: SIGINT/SIGTERM stop the listener and give in-flight
+	// requests up to shutdownTimeout to finish. The signal handler is armed
+	// only after initialization so a signal during index loading keeps its
+	// default process-killing behavior. fasthttp maps the closed listener to
+	// io.EOF, so Listen returns nil after a graceful shutdown; only genuine
+	// listen errors reach log.Fatal.
+	const shutdownTimeout = 10 * time.Second
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	listenErr := make(chan error, 1)
+	go func() {
+		listenErr <- app.Listen(":" + port)
+	}()
+
+	select {
+	case err := <-listenErr:
+		if err != nil {
+			log.Fatalf("Server error: %v", err)
+		}
+	case <-sigCtx.Done():
+		log.Println("shutting down")
+		for {
+			// A shutdown that races ahead of the serve loop (signal arriving
+			// in the moment between starting Listen and the listener being
+			// registered) is a no-op and must be retried, otherwise the
+			// process would keep serving forever with the signal swallowed.
+			if err := app.ShutdownWithTimeout(shutdownTimeout); err != nil {
+				log.Printf("Shutdown error: %v", err)
+			}
+			select {
+			case err := <-listenErr:
+				if err != nil {
+					log.Fatalf("Server error: %v", err)
+				}
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}
 }
 
 // Logger writes a single line per request: timestamp, method, path (query
