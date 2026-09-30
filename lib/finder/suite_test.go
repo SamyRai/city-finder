@@ -2,8 +2,8 @@
 package finder
 
 import (
-	"time"
 	"testing"
+	"time"
 
 	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"

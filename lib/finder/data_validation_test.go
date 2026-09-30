@@ -22,8 +22,8 @@ func TestDataIntegrity_NameFinder(t *testing.T) {
 		description string
 	}{
 		{
-			name: "Empty cities",
-			cities: []city.SpatialCity{},
+			name:        "Empty cities",
+			cities:      []city.SpatialCity{},
 			expectError: false,
 			description: "Should handle empty city list gracefully",
 		},
@@ -131,7 +131,7 @@ func TestDataIntegrity_CoordinateFinder(t *testing.T) {
 		{
 			name: "Cities with invalid coordinates",
 			cities: []city.SpatialCity{
-				{City: city.City{Name: "Invalid Lat", Country: "IL", Latitude: 91.0, Longitude: 0.0}}, // Invalid latitude
+				{City: city.City{Name: "Invalid Lat", Country: "IL", Latitude: 91.0, Longitude: 0.0}},  // Invalid latitude
 				{City: city.City{Name: "Invalid Lon", Country: "IL", Latitude: 0.0, Longitude: 181.0}}, // Invalid longitude
 			},
 			expectError: false, // S2 library should handle coordinate normalization
@@ -329,14 +329,14 @@ func TestBoundaryConditions_Integrated(t *testing.T) {
 	// Test coordinate lookups at boundaries
 	t.Run("Coordinate boundary lookups", func(t *testing.T) {
 		boundaryTests := []struct {
-			lat, lon float64
+			lat, lon   float64
 			shouldFind bool
 		}{
-			{90.0, 0.0, true},    // North Pole
-			{-90.0, 0.0, true},   // South Pole
-			{0.0, 180.0, true},   // Date line
-			{0.0, -180.0, true},  // Date line negative
-			{0.0, 0.0, true},     // Prime meridian/equator
+			{90.0, 0.0, true},   // North Pole
+			{-90.0, 0.0, true},  // South Pole
+			{0.0, 180.0, true},  // Date line
+			{0.0, -180.0, true}, // Date line negative
+			{0.0, 0.0, true},    // Prime meridian/equator
 		}
 
 		for _, bt := range boundaryTests {

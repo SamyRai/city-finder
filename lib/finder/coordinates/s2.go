@@ -76,11 +76,6 @@ func decodeIndexFile(decoder *gob.Decoder, header *indexHeader, payload *Seriali
 	return nil
 }
 
-// NewS2Finder creates a new S2Finder instance by deserializing from a file.
-func NewS2Finder(cfgS2 *config.S2) (*S2Finder, error) {
-	return DeserializeIndex(cfgS2.IndexFile)
-}
-
 // BuildIndex creates an S2 spatial index from raw city data.
 func BuildIndex(cities []city.SpatialCity, config *config.S2) (*S2Finder, error) {
 	points := make(s2.PointVector, len(cities))

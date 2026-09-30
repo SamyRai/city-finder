@@ -211,4 +211,5 @@ func TestDeserializeGarbageTailReturnsError(t *testing.T) {
 
 	_, err = DeserializeIndex(tmpfile.Name())
 	assert.Error(t, err, "a malformed trailer must surface as an error, not be swallowed")
+	assert.ErrorIs(t, err, ErrCorruptIndex, "a malformed trailer is corruption and must be rebuildable")
 }

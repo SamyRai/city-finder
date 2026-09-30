@@ -21,15 +21,6 @@ type SpatialCity struct {
 	AltNames []string // Used during index building, not stored in final City
 }
 
-func EuclideanDistance(p1, p2 []float64) float64 {
-	sum := 0.0
-	for i := 0; i < len(p1); i++ {
-		diff := p1[i] - p2[i]
-		sum += diff * diff
-	}
-	return math.Sqrt(sum)
-}
-
 // HaversineDistance calculates the distance between two geographical points in kilometers
 func HaversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
 	const R = 6371.0 // Earth's radius in kilometers

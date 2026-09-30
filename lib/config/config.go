@@ -40,9 +40,14 @@ func LoadConfig(configPath string) (*Config, error) {
 		configPath = os.Getenv("CONFIG_FILE")
 	}
 
-	// If a configPath is provided, load config from that path
+	// If a configPath is provided, load config from that path.
+	// Relative paths resolve against the project root; absolute paths are
+	// opened as-is (joining them onto the root would mangle them).
 	if configPath != "" {
-		file, err := os.Open(filepath.Join(rootDir, configPath))
+		if !filepath.IsAbs(configPath) {
+			configPath = filepath.Join(rootDir, configPath)
+		}
+		file, err := os.Open(configPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to open config file: %v", err)
 		}
@@ -57,11 +62,15 @@ func LoadConfig(configPath string) (*Config, error) {
 			return nil, fmt.Errorf("failed to close config file: %v", closeErr)
 		}
 
-		cfg.DatasetsFolder = filepath.Join(rootDir, cfg.DatasetsFolder)
+		// Same rule for the datasets folder: relative values are
+		// root-relative (matching how the index file paths are joined by
+		// the initializer), absolute values are kept verbatim.
+		if !filepath.IsAbs(cfg.DatasetsFolder) {
+			cfg.DatasetsFolder = filepath.Join(rootDir, cfg.DatasetsFolder)
+		}
 
 		return cfg, nil
 	}
 
 	return nil, fmt.Errorf("no config file provided")
 }
-

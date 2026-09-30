@@ -248,12 +248,12 @@ func TestCoordinateNormalization(t *testing.T) {
 
 	// Test coordinates that might cause issues if not normalized properly
 	testCoords := []struct {
-		lat, lon float64
+		lat, lon   float64
 		shouldFind bool
 	}{
-		{40.7128, -74.0060, true},   // Exact match
-		{40.7128, -74.0060 + 360, true}, // Longitude + 360 (should work if normalized)
-		{40.7128, -74.0060 - 360, true}, // Longitude - 360 (should work if normalized)
+		{40.7128, -74.0060, true},         // Exact match
+		{40.7128, -74.0060 + 360, true},   // Longitude + 360 (should work if normalized)
+		{40.7128, -74.0060 - 360, true},   // Longitude - 360 (should work if normalized)
 		{40.7128 + 0.001, -74.0060, true}, // Slightly off latitude
 		{40.7128, -74.0060 + 0.001, true}, // Slightly off longitude
 	}

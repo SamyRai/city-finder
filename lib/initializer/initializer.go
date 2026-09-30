@@ -347,11 +347,12 @@ func buildAndSerializeS2Index(s2IndexPath string, cfg *config.Config, data *data
 }
 
 // ensureNameIndex returns the name index, building and serializing it when
-// the file is missing. An existing file that fails to decode is logged and
-// rebuilt once from the source data (the name index does not yet expose a
-// corruption sentinel, so any decode failure — truncation, legacy format, a
-// future version mismatch after the coordinated name-format change — takes
-// the same rebuild-once path).
+// the file is missing. A file that exists but fails to decode with
+// name.ErrCorruptIndex (truncated by a crash mid-write, legacy format, or a
+// future version mismatch) is logged and rebuilt once from the source data,
+// re-serializing over the bad file. Any other error — for example a wrapped
+// fs error from an unreadable file — is fatal, exactly as it is for the S2
+// and postal code indexes.
 func ensureNameIndex(nameIndexPath string, data *datasetSource) (*name.Finder, error) {
 	log.Printf("Ensuring name index is built and serialized in %s", nameIndexPath)
 	if _, errStat := os.Stat(nameIndexPath); os.IsNotExist(errStat) {
@@ -363,7 +364,10 @@ func ensureNameIndex(nameIndexPath string, data *datasetSource) (*name.Finder, e
 
 	nameFinder, err := name.DeserializeIndex(nameIndexPath)
 	if err != nil {
-		log.Printf("Warning: failed to deserialize name index (%v); rebuilding it from the source datasets", err)
+		if !errors.Is(err, name.ErrCorruptIndex) {
+			return nil, fmt.Errorf("failed to deserialize name index: %v", err)
+		}
+		log.Printf("Warning: %v", err)
 		if err := data.load(); err != nil {
 			return nil, fmt.Errorf("failed to load datasets needed to rebuild the name index: %v", err)
 		}

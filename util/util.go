@@ -34,26 +34,6 @@ func LevenshteinDistance(a, b string) int {
 	return levenshtein.ComputeDistance(a, b)
 }
 
-// LevenshteinDistanceWithThreshold calculates Levenshtein distance with early termination
-// Returns distance and true if distance <= threshold, or threshold+1 and false if distance > threshold
-func LevenshteinDistanceWithThreshold(a, b string, threshold int) (int, bool) {
-	dist := levenshtein.ComputeDistance(a, b)
-	return dist, dist <= threshold
-}
-
-func min(a, b, c int) int {
-	if a < b {
-		if a < c {
-			return a
-		}
-		return c
-	}
-	if b < c {
-		return b
-	}
-	return c
-}
-
 // BKTree is a data structure for fast fuzzy string matching
 type BKTree struct {
 	Root *bkNode
@@ -141,14 +121,6 @@ func (tree *BKTree) SearchWithEarlyExit(query string, maxDistance int) []string 
 	}
 	search(tree.Root, 0)
 	return results
-}
-
-// Max returns the maximum of two integers
-func Max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // Abs returns the absolute value of an integer

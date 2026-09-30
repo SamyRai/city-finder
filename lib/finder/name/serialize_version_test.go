@@ -49,35 +49,40 @@ func TestDeserializeRejectsIncompatibleHeaders(t *testing.T) {
 	legacyFinder.AddCity(city.SpatialCity{City: city.City{Name: "Paris", Country: "FR", Latitude: 48.85, Longitude: 2.35}})
 
 	cases := []struct {
-		desc    string
-		path    string
-		wantSub []string // substrings the error must mention
+		desc        string
+		path        string
+		wantSub     []string // substrings the error must mention
+		wantCorrupt bool     // error must (not) wrap ErrCorruptIndex
 	}{
 		{
 			desc: "wrong magic",
 			path: write("wrong_magic.gob", func(enc *gob.Encoder) error {
 				return enc.Encode(&indexHeader{Magic: "CFS2INDEX", Version: nameIndexVersion, Count: 1})
 			}),
-			wantSub: []string{nameIndexMagic, "rebuilt"},
+			wantSub:     []string{nameIndexMagic, "rebuilt"},
+			wantCorrupt: true,
 		},
 		{
 			desc: "future version",
 			path: write("future_version.gob", func(enc *gob.Encoder) error {
 				return enc.Encode(&indexHeader{Magic: nameIndexMagic, Version: nameIndexVersion + 1, Count: 1})
 			}),
-			wantSub: []string{"version", "rebuilt"},
+			wantSub:     []string{"version", "rebuilt"},
+			wantCorrupt: true,
 		},
 		{
 			desc: "legacy headerless stream",
 			path: write("legacy.gob", func(enc *gob.Encoder) error {
 				return enc.Encode(legacyFinder.InvertedIndex) // pre-header format: payload first
 			}),
-			wantSub: []string{"legacy", "rebuilt"},
+			wantSub:     []string{"legacy", "rebuilt"},
+			wantCorrupt: true,
 		},
 		{
-			desc:    "empty file",
-			path:    write("empty.gob", func(enc *gob.Encoder) error { return nil }),
-			wantSub: []string{"rebuilt"},
+			desc:        "empty file",
+			path:        write("empty.gob", func(enc *gob.Encoder) error { return nil }),
+			wantSub:     []string{"rebuilt"},
+			wantCorrupt: true,
 		},
 	}
 
@@ -91,8 +96,26 @@ func TestDeserializeRejectsIncompatibleHeaders(t *testing.T) {
 			for _, sub := range tc.wantSub {
 				assert.Contains(t, err.Error(), sub)
 			}
+			assert.ErrorIs(t, err, ErrCorruptIndex,
+				"decode failures must wrap ErrCorruptIndex so the initializer can rebuild")
 		})
 	}
+}
+
+// TestDeserializeMissingFileIsNotCorrupt pins the sentinel boundary from the
+// other side: an fs error from opening a nonexistent file must NOT wrap
+// ErrCorruptIndex, or the initializer would paper over broken filesystems by
+// rebuilding instead of failing.
+func TestDeserializeMissingFileIsNotCorrupt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "does_not_exist.gob")
+	finder, err := DeserializeIndex(path)
+	assert.Nil(t, finder)
+	if !assert.Error(t, err, "opening a nonexistent index must fail") {
+		return
+	}
+	assert.NotErrorIs(t, err, ErrCorruptIndex,
+		"fs errors must stay distinguishable from corruption")
+	assert.True(t, os.IsNotExist(err), "the underlying cause must be the fs error")
 }
 
 // TestSerializeIndexAtomicParts verifies the temp+rename discipline: a
