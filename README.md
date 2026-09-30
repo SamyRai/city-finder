@@ -138,9 +138,12 @@ By default, the server will listen on port 3000; set the `PORT` environment vari
 
 ### API Endpoints
 
-- **Find Nearest City**: `/nearest?lat=<latitude>&lon=<longitude>` — lat/lon must be finite and in range (`[-90, 90]` / `[-180, 180]`); anything else returns 400.
+- **Health Check**: `/healthz` — returns `{"status":"ok"}`; cheap, never touches the indexes.
+- **Find Nearest City**: `/nearest?lat=<latitude>&lon=<longitude>` — lat/lon must be finite and in range (`[-90, 90]` / `[-180, 180]`); anything else returns 400. Returns the city plus `distance_km` (great-circle, 2 decimals).
 - **Find City by Name**: `/coordinates?name=<city_name>&country-code=<country_code>` — both parameters required. The name is matched exactly first, then fuzzily (edit distance ≤ 2), so typos like `Pars` still resolve. Surrounding whitespace is trimmed.
 - **Find City by Postal Code**: `/postalCode?code=<postal_code>&country-code=<country_code>` — both parameters required. Inner spaces in postal codes are significant (GeoNames stores GB codes as `SW1A 1AA`); only surrounding whitespace is trimmed.
+
+The server shuts down gracefully on SIGINT/SIGTERM (10s drain).
 
 ## Testing
 
