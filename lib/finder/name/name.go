@@ -3,6 +3,7 @@ package name
 import (
 	"bufio"
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"io"
 	"runtime"
@@ -33,6 +34,15 @@ type fuzzySearchResult struct {
 	candidates []string
 	timestamp  time.Time
 }
+
+const (
+	// fuzzyCacheTTL is how long a fuzzy result stays valid on read.
+	fuzzyCacheTTL = time.Hour
+	// maxFuzzyCacheEntries bounds the fuzzy result cache. It is keyed by raw
+	// user input, so without a cap remote queries could grow it without
+	// limit (the TTL only skips entries on read, it never evicts).
+	maxFuzzyCacheEntries = 10000
+)
 
 // cityPointerPool reuses City pointers to reduce GC pressure
 // Following Go 1.24+ best practices: pre-allocate capacity and reset on Get
@@ -98,7 +108,6 @@ type Finder struct {
 	isBKTreeBuilt bool                               // Flag to track if BK-tree has been built
 }
 
-
 // Memory pools removed - they were causing excessive memory usage
 
 // estimateCapacity analyzes the dataset to estimate optimal capacity for data structures
@@ -125,7 +134,7 @@ func estimateCapacity(cities []city.SpatialCity) (countries, names int) {
 	// Scale estimates based on sample
 	scale := float64(len(cities)) / float64(sampleSize)
 	estimatedCountries := int(float64(len(countrySet)) * scale * 1.2) // 20% overhead
-	estimatedNames := int(float64(len(nameSet)) * scale * 1.5)       // 50% overhead for names
+	estimatedNames := int(float64(len(nameSet)) * scale * 1.5)        // 50% overhead for names
 
 	// Ensure minimums
 	if estimatedCountries < 300 {
@@ -264,7 +273,7 @@ func (nf *Finder) processBatchConcurrent(cities []city.SpatialCity, numWorkers i
 		for i := 0; i < numWorkers; i++ {
 			partialIndices = append(partialIndices, <-mergeChan)
 		}
-		
+
 		// Merge all partial indices into main index (single lock acquisition)
 		nf.mutex.Lock()
 		for _, partialIndex := range partialIndices {
@@ -304,7 +313,7 @@ func (nf *Finder) processBatchConcurrent(cities []city.SpatialCity, numWorkers i
 	// Wait for all workers to complete
 	wg.Wait()
 	close(mergeChan)
-	
+
 	// Wait for merger to complete
 	mergeWg.Wait()
 }
@@ -455,7 +464,6 @@ func BuildIndex(cities []city.SpatialCity) *Finder {
 	return finder
 }
 
-
 // AddCity adds a city to the NameFinder (thread-safe)
 func (nf *Finder) AddCity(spatialCity city.SpatialCity) {
 	names := append(spatialCity.AltNames, spatialCity.Name)
@@ -539,26 +547,46 @@ func (nf *Finder) addNameToIndexWithMap(countryMap map[string][]*city.City, name
 	countryMap[name] = append(cityList, cityPtr)
 }
 
-
 // collectAllNames collects all unique names for lazy BK-tree building
 func (nf *Finder) collectAllNames() {
-	nameSet := make(map[string]bool)
+	nf.allNames = nf.namesFromIndex()
+}
 
+// namesFromIndex returns the union of every indexed name across all countries.
+// The inverted index is the source of truth — every insertion path (batch
+// build, streaming build, AddCity) writes it — so this is always the complete
+// name set, even when allNames is empty (BuildIndex skips collectAllNames) or
+// stale (indexes that went through serialization).
+func (nf *Finder) namesFromIndex() []string {
+	total := 0
+	for _, countryMap := range nf.InvertedIndex {
+		total += len(countryMap)
+	}
+
+	nameSet := make(map[string]struct{}, total)
 	for _, countryMap := range nf.InvertedIndex {
 		for name := range countryMap {
-			nameSet[name] = true
+			nameSet[name] = struct{}{}
 		}
 	}
 
-	// Store all unique names for lazy BK-tree building
-	nf.allNames = make([]string, 0, len(nameSet))
+	names := make([]string, 0, len(nameSet))
 	for name := range nameSet {
-		nf.allNames = append(nf.allNames, name)
+		names = append(names, name)
 	}
+	return names
 }
 
-// ensureBKTreeBuilt lazily builds the BK-tree only when needed using parallel construction
+// ensureBKTreeBuilt lazily builds the BK-tree only when needed. The fast path
+// only takes the read lock; the build itself runs under the write lock.
 func (nf *Finder) ensureBKTreeBuilt() {
+	nf.mutex.RLock()
+	built := nf.isBKTreeBuilt
+	nf.mutex.RUnlock()
+	if built {
+		return
+	}
+
 	nf.mutex.Lock()
 	defer nf.mutex.Unlock()
 
@@ -566,67 +594,37 @@ func (nf *Finder) ensureBKTreeBuilt() {
 		return
 	}
 
-	// Build BK-tree in parallel for better performance
-	nf.buildBKTreeParallel(runtime.NumCPU())
-	nf.isBKTreeBuilt = true
+	nf.buildBKTreeSequential()
+
+	// Mark built only when the tree actually holds names. An empty index
+	// legitimately stays unbuilt so later AddCity growth can trigger a build.
+	if nf.BKTree.Root != nil {
+		nf.isBKTreeBuilt = true
+	}
 }
 
-// buildBKTreeParallel builds the BK-tree using multiple goroutines
-func (nf *Finder) buildBKTreeParallel(numWorkers int) {
-	if len(nf.allNames) == 0 {
-		return
-	}
+// buildBKTreeSequential rebuilds the shared BK-tree from the complete name
+// set derived from the inverted index. It must be called with nf.mutex held
+// for writing (ensureBKTreeBuilt guarantees that).
+//
+// The previous "parallel" shape spawned workers that each built a throwaway
+// local tree and then mutated the shared tree from inside their goroutines —
+// unsynchronized concurrent map writes that crash at scale while doing twice
+// the Add work. BK-tree insertion is inherently serial (each insert walks the
+// shared tree), so a parallel shape that only touched the shared tree after
+// wg.Wait() would reduce to exactly this sequential loop.
+func (nf *Finder) buildBKTreeSequential() {
+	names := nf.namesFromIndex()
 
-	// Limit workers to reasonable bounds
-	if numWorkers > 8 {
-		numWorkers = 8
+	// Rebuild from scratch: names that AddCity already added to the tree
+	// incrementally are re-added from the index, which avoids distance-0
+	// duplicate nodes from double insertion.
+	tree := util.NewBKTree()
+	for _, name := range names {
+		tree.Add(name)
 	}
-	if numWorkers < 1 {
-		numWorkers = 1
-	}
-
-	// Divide names into chunks for parallel processing
-	chunkSize := (len(nf.allNames) + numWorkers - 1) / numWorkers
-	if chunkSize < 100 {
-		// For small datasets, don't bother with parallelism
-		for _, name := range nf.allNames {
-			nf.BKTree.Add(name)
-		}
-		return
-	}
-
-	// Create worker channels
-	nameChunks := make([][]string, numWorkers)
-	for i := 0; i < numWorkers; i++ {
-		start := i * chunkSize
-		end := start + chunkSize
-		if end > len(nf.allNames) {
-			end = len(nf.allNames)
-		}
-		nameChunks[i] = nf.allNames[start:end]
-	}
-
-	// Start workers
-	var wg sync.WaitGroup
-
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		go func(chunk []string) {
-			defer wg.Done()
-			// Each worker builds its own partial BK-tree
-			localTree := util.NewBKTree()
-			for _, name := range chunk {
-				localTree.Add(name)
-			}
-			// For now, just add to main tree sequentially to avoid race conditions
-			// In a more advanced implementation, we could merge BK-trees
-			for _, name := range chunk {
-				nf.BKTree.Add(name)
-			}
-		}(nameChunks[i])
-	}
-
-	wg.Wait()
+	nf.BKTree = tree
+	nf.allNames = names
 }
 
 // buildBKTree ensures the BK-tree is built (for compatibility)
@@ -692,7 +690,7 @@ func (nf *Finder) getCachedFuzzySearch(query string, maxDistance int) []string {
 	nf.cacheMutex.RLock()
 	if cached, exists := nf.fuzzyCache[cacheKey]; exists {
 		// Check if cache is still valid (not too old)
-		if time.Since(cached.timestamp) < time.Hour {
+		if time.Since(cached.timestamp) < fuzzyCacheTTL {
 			nf.cacheMutex.RUnlock()
 			return cached.candidates
 		}
@@ -702,11 +700,17 @@ func (nf *Finder) getCachedFuzzySearch(query string, maxDistance int) []string {
 	// Ensure BK-tree is built before searching
 	nf.ensureBKTreeBuilt()
 
-	// Perform fuzzy search
+	// Search under the read lock: AddCity mutates the tree under the write
+	// lock, so an unlocked search would race with concurrent additions.
+	nf.mutex.RLock()
 	candidates := nf.BKTree.SearchWithEarlyExit(query, maxDistance)
+	nf.mutex.RUnlock()
 
 	// Cache the result
 	nf.cacheMutex.Lock()
+	if len(nf.fuzzyCache) >= maxFuzzyCacheEntries {
+		nf.evictFuzzyCacheLocked()
+	}
 	nf.fuzzyCache[cacheKey] = &fuzzySearchResult{
 		candidates: candidates,
 		timestamp:  time.Now(),
@@ -716,11 +720,38 @@ func (nf *Finder) getCachedFuzzySearch(query string, maxDistance int) []string {
 	return candidates
 }
 
+// evictFuzzyCacheLocked makes room for one new cache entry. Expired entries
+// are dropped first; if the cache is still at capacity the oldest entry is
+// evicted (linear scan, bounded by maxFuzzyCacheEntries). The caller must
+// hold cacheMutex for writing.
+func (nf *Finder) evictFuzzyCacheLocked() {
+	now := time.Now()
+	for key, cached := range nf.fuzzyCache {
+		if now.Sub(cached.timestamp) >= fuzzyCacheTTL {
+			delete(nf.fuzzyCache, key)
+		}
+	}
+	if len(nf.fuzzyCache) < maxFuzzyCacheEntries {
+		return
+	}
+
+	oldestKey := ""
+	var oldest time.Time
+	found := false
+	for key, cached := range nf.fuzzyCache {
+		if !found || cached.timestamp.Before(oldest) {
+			oldestKey, oldest, found = key, cached.timestamp, true
+		}
+	}
+	if found {
+		delete(nf.fuzzyCache, oldestKey)
+	}
+}
+
 // CityByName finds the coordinates of a city by its name using hybrid search strategy
 func (nf *Finder) CityByName(name string, countryCode string) *city.City {
-	nf.mutex.RLock()
-
 	// Phase 1: Try exact match first (fastest)
+	nf.mutex.RLock()
 	if cities, exists := nf.InvertedIndex[countryCode][name]; exists && len(cities) > 0 {
 		nf.mutex.RUnlock()
 		return cities[0]
@@ -731,15 +762,19 @@ func (nf *Finder) CityByName(name string, countryCode string) *city.City {
 	nf.ensureBKTreeBuilt()
 	fastCandidates := nf.getCachedFuzzySearch(name, 1) // Use tighter threshold for speed
 
+	// Every read lock is scoped tightly around the map lookups only: holding
+	// one across getCachedFuzzySearch deadlocks, because a cold cache takes
+	// the write lock inside ensureBKTreeBuilt while this goroutine still
+	// holds the read lock (RWMutex self-deadlock).
 	if len(fastCandidates) > 0 {
 		nf.mutex.RLock()
-		defer nf.mutex.RUnlock()
-
 		for _, candidate := range fastCandidates {
 			if cities, exists := nf.InvertedIndex[countryCode][candidate]; exists && len(cities) > 0 {
+				nf.mutex.RUnlock()
 				return cities[0]
 			}
 		}
+		nf.mutex.RUnlock()
 	}
 
 	// Phase 3: Fall back to full fuzzy search with distance 2
@@ -747,13 +782,13 @@ func (nf *Finder) CityByName(name string, countryCode string) *city.City {
 
 	if len(fullCandidates) > 0 {
 		nf.mutex.RLock()
-		defer nf.mutex.RUnlock()
-
 		for _, candidate := range fullCandidates {
 			if cities, exists := nf.InvertedIndex[countryCode][candidate]; exists && len(cities) > 0 {
+				nf.mutex.RUnlock()
 				return cities[0]
 			}
 		}
+		nf.mutex.RUnlock()
 	}
 
 	return nil
@@ -807,15 +842,32 @@ func DeserializeIndex(filepath string) (*Finder, error) {
 		_ = file.Close()
 		return nil, err
 	}
-	// Deserialize lazy loading state (with backward compatibility)
+	// Deserialize lazy loading state. Older files that predate these fields
+	// simply end the stream here; that is a legacy file, not corruption. Any
+	// other decode error must surface instead of being silently swallowed.
 	if err := decoder.Decode(&finder.isBKTreeBuilt); err != nil {
-		// For backward compatibility with older serialized files, assume BK-tree is built
-		finder.isBKTreeBuilt = true
-		finder.allNames = []string{} // Will be populated lazily if needed
-	} else {
-		if err := decoder.Decode(&finder.allNames); err != nil {
-			finder.allNames = []string{} // Default to empty
+		if !isEndOfStream(err) {
+			_ = file.Close()
+			return nil, fmt.Errorf("decoding name index build state: %w", err)
 		}
+		finder.allNames = nil
+	} else if err := decoder.Decode(&finder.allNames); err != nil {
+		if !isEndOfStream(err) {
+			_ = file.Close()
+			return nil, fmt.Errorf("decoding name index name list: %w", err)
+		}
+		finder.allNames = nil
+	}
+
+	// Reconcile the built flag with the actual tree state:
+	// - a populated tree was built by someone; trust it instead of rebuilding.
+	// - a "built" flag over an empty tree (persisted by builds whose fuzzy
+	//   path never ran) must be cleared or fuzzy search stays dead forever;
+	//   the lazy build now derives the name set from the inverted index.
+	if finder.BKTree.Root != nil {
+		finder.isBKTreeBuilt = true
+	} else if finder.isBKTreeBuilt && len(finder.InvertedIndex) > 0 {
+		finder.isBKTreeBuilt = false
 	}
 
 	if err := file.Close(); err != nil {
@@ -823,4 +875,10 @@ func DeserializeIndex(filepath string) (*Finder, error) {
 	}
 
 	return finder, nil
+}
+
+// isEndOfStream reports whether err indicates the gob stream ended (a legacy
+// file without the trailing lazy-load fields) rather than being malformed.
+func isEndOfStream(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
