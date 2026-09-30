@@ -381,9 +381,9 @@ func (r *HTMLReporter) ReportComparison(comparison types.ComparisonResult) error
 	defer file.Close()
 
 	data := struct {
-		Title       string
-		Comparison  types.ComparisonResult
-		ChartData   string
+		Title      string
+		Comparison types.ComparisonResult
+		ChartData  string
 	}{
 		Title:      "Benchmark Comparison Report",
 		Comparison: comparison,
@@ -410,7 +410,7 @@ func (r *HTMLReporter) generateChartData(result types.BenchmarkResult) string {
 	for i, op := range result.Operations {
 		labels[i] = op.Name
 		durations[i] = float64(op.Duration.Nanoseconds()) / 1000000 // ms
-		memory[i] = float64(op.MemoryDelta) / 1024 / 1024 // MB
+		memory[i] = float64(op.MemoryDelta) / 1024 / 1024           // MB
 	}
 
 	// Properly format arrays as JSON strings for JavaScript

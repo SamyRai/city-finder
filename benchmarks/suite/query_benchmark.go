@@ -108,9 +108,9 @@ func (r *QueryBenchmarkRunner) runConcurrentFinderBenchmarks(finderName string, 
 			if err != nil {
 				// Create error result
 				result = types.OperationResult{
-					Name:    fmt.Sprintf("%s query for %s", finderName, location.Expected),
-					Status:  "failed",
-					Error:   err.Error(),
+					Name:   fmt.Sprintf("%s query for %s", finderName, location.Expected),
+					Status: "failed",
+					Error:  err.Error(),
 				}
 			}
 			resultsChan <- result
@@ -145,9 +145,9 @@ func (r *QueryBenchmarkRunner) runSequentialFinderBenchmarks(finderName string, 
 		result, err := r.measureSingleQuery(finderName, f, loc, false)
 		if err != nil {
 			result = types.OperationResult{
-				Name:    fmt.Sprintf("%s query for %s", finderName, loc.Expected),
-				Status:  "failed",
-				Error:   err.Error(),
+				Name:   fmt.Sprintf("%s query for %s", finderName, loc.Expected),
+				Status: "failed",
+				Error:  err.Error(),
 			}
 		}
 		results = append(results, result)
@@ -265,11 +265,11 @@ func (r *QueryBenchmarkRunner) createSummaryResult(finderName string, results []
 		Throughput:     float64(totalItems) / totalDuration.Seconds(),
 		Status:         "completed",
 		Metadata: map[string]interface{}{
-			"finder":            finderName,
-			"mode":              mode,
-			"total_queries":     len(results),
+			"finder":             finderName,
+			"mode":               mode,
+			"total_queries":      len(results),
 			"successful_queries": successfulResults,
-			"locations_tested":  len(r.config.TestLocations),
+			"locations_tested":   len(r.config.TestLocations),
 		},
 	}
 }
