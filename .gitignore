@@ -3,7 +3,3 @@ datasets/
 
 .DS_Store
 
-# Go related
-
-go.sum
-

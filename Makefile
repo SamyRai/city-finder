@@ -1,5 +1,5 @@
 test:
-	go test ./cmd/server
+	go test ./...
 
 # Build with Profile-Guided Optimization (PGO)
 # First collect a profile: go run -cpuprofile=cpu.prof ./cmd/server/main.go
@@ -41,7 +41,7 @@ build-prod:
 	@echo "Building indexes with production data (this may take several minutes)..."
 	go run cmd/build-index/main.go prod
 	@echo "Production indexes built successfully!"
-	@ls -lh testdata/*.gob
+	@ls -lh datasets/*.gob
 
 # Rebuild test indexes from real data (legacy alias)
 rebuild-test-indexes: build-test
