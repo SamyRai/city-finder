@@ -1,5 +1,7 @@
 ### A Beginner's Guide to Efficient Geographical Searches in Go
 
+> **Status note (2026-10):** this article records the original design narrative. Measured, current numbers for the S2 query path (`s2.ClosestEdgeQuery` with `MaxResults(1)`: ~3–5 µs per query on 100K points) live in the README's Performance section — the article's pre-benchmark claims predate that work.
+
 Geographical search algorithms are essential for numerous applications, from finding the nearest restaurant to locating the closest city. This guide will walk you through various algorithms and data structures used to optimize such searches, illustrating our journey in improving performance step-by-step.
 
 #### Introduction to Geographical Searches
@@ -126,7 +128,7 @@ func (f *S2Finder) NearestPlace(lat, lon float64) (*city.City, float64, error) {
 
 ### Performance Results
 
-The S2 implementation has been significantly refactored for improved performance and accuracy. New benchmarks are currently being generated to reflect these enhancements. The results will be updated here as soon as they are available.
+The S2 implementation has been significantly refactored for improved performance and accuracy; the nearest query is bounded with `MaxResults(1)` and validated by a brute-force oracle test. Current measured numbers are maintained in the README's Performance section.
 
 ### Conclusion
 
