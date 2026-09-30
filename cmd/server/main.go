@@ -1,16 +1,15 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
-	"github.com/SamyRai/cityFinder/cmd/server/routes"
-	"github.com/SamyRai/cityFinder/lib/config"
-	"github.com/SamyRai/cityFinder/lib/initializer"
-	"github.com/fatih/color"
-	"github.com/gofiber/fiber/v2"
 	"log"
 	"os"
 	"time"
+
+	"github.com/SamyRai/cityFinder/cmd/server/routes"
+	"github.com/SamyRai/cityFinder/lib/config"
+	"github.com/SamyRai/cityFinder/lib/initializer"
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/recover"
 )
 
 func main() {
@@ -29,63 +28,41 @@ func main() {
 	}
 
 	app := fiber.New(fiber.Config{
-		ETag:              true,
-		EnablePrintRoutes: true,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+		BodyLimit:    1 << 20, // 1MB; the API is GET-only
+		ETag:         true,
 	})
+	// fasthttp performs no panic recovery of its own: without this middleware
+	// any handler panic terminates the process. It must be registered before
+	// all other middleware so it wraps the full handler chain.
+	app.Use(recover.New())
 	app.Use(Logger())
 	routes.SetupRoutes(app, mainFinder)
 
-	log.Fatal(app.Listen(":3000"))
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "3000"
+	}
+	log.Fatal(app.Listen(":" + port))
 }
 
+// Logger writes a single line per request: timestamp, method, path (query
+// string excluded), status, latency, and response size in bytes. Request
+// bodies, query parameters, and multipart forms are never logged.
 func Logger() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		start := time.Now()
 		err := c.Next()
-		stop := time.Now()
-
-		// Color functions
-		timeColor := color.New(color.FgCyan).SprintFunc()
-		methodColor := color.New(color.FgGreen).SprintFunc()
-		pathColor := color.New(color.FgYellow).SprintFunc()
-		statusColor := color.New(color.FgRed).SprintFunc()
-		latencyColor := color.New(color.FgBlue).SprintFunc()
-		paramsColor := color.New(color.FgMagenta).SprintFunc()
-		queryColor := color.New(color.FgWhite).SprintFunc()
-		bodyColor := color.New(color.FgHiWhite).SprintFunc()
-
-		// Get multipart form data
-		form, _ := c.MultipartForm()
-
-		// Convert query parameters to a string
-		queryParams, queryErr := json.Marshal(c.Queries())
-		if queryErr != nil {
-			log.Printf("Error marshalling query params: %v", queryErr)
-		}
-
-		// Get the request body
-		body := fmt.Sprintf(`"%s"`, c.Body())
-
-		formData := c.Locals("formData")
-		formDataString, formErr := json.Marshal(formData)
-		if formErr != nil {
-			log.Printf("Error marshalling form data: %v", formErr)
-		}
-
-		// Log output
-		log.Printf(
-			"{\n\"time\": \"%s\",\n\"method\": \"%s\",\n\"path\": \"%s\",\n\"status\": %s,\n\"latency\": \"%s\",\n\"params\": %s,\n\"query\": %s,\n\"body\": %s,\n\"formData\": %s\n}",
-			timeColor(start.Format(time.RFC3339)),
-			methodColor(c.Method()),
-			pathColor(c.Path()),
-			statusColor(c.Response().StatusCode()),
-			latencyColor(stop.Sub(start).String()),
-			paramsColor(form),
-			queryColor(string(queryParams)),
-			bodyColor(body),
-			queryColor(string(formDataString)),
+		log.Printf("%s %s %s %d %s %d",
+			start.Format(time.RFC3339),
+			c.Method(),
+			c.Path(),
+			c.Response().StatusCode(),
+			time.Since(start),
+			len(c.Response().Body()),
 		)
-
 		return err
 	}
 }
