@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/SamyRai/cityFinder/lib/finder"
 	"github.com/gofiber/fiber/v2"
 )
@@ -27,7 +28,23 @@ func parseCoordinate(raw, name string) (float64, bool) {
 	return value, true
 }
 
+// nearestCityResponse is the /nearest payload: the matched city plus its
+// distance from the query point. city.City has no json tags, so its four
+// fields marshal capitalized; embedding it keeps that serialization exactly
+// as before and only appends distance_km (rounded to 2 decimal places).
+type nearestCityResponse struct {
+	city.City
+	DistanceKm float64 `json:"distance_km"`
+}
+
 func SetupRoutes(app *fiber.App, mainFinder *finder.Finder) {
+	// Liveness probe: registered before the data routes and never touches the
+	// finders, so it stays cheap and answers even when data loading is slow
+	// or the indexes are degraded.
+	app.Get("/healthz", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"status": "ok"})
+	})
+
 	app.Get("/nearest", func(c *fiber.Ctx) error {
 		lat, ok := parseCoordinate(c.Query("lat"), "lat")
 		if !ok {
@@ -46,15 +63,18 @@ func SetupRoutes(app *fiber.App, mainFinder *finder.Finder) {
 			return c.Status(fiber.StatusBadRequest).SendString("Longitude must be between -180 and 180")
 		}
 
-		city, _, err := mainFinder.FindNearestCity(lat, lon)
+		nearest, distanceKm, err := mainFinder.FindNearestCity(lat, lon)
 		if err != nil {
 			log.Printf("Error finding city for lat=%f lon=%f: %v", lat, lon, err)
 			return c.Status(fiber.StatusInternalServerError).SendString("internal server error")
 		}
-		if city == nil {
+		if nearest == nil {
 			return c.Status(fiber.StatusNotFound).SendString(fmt.Sprintf("City not found for lat: %f, lon: %f", lat, lon))
 		}
-		return c.JSON(city)
+		return c.JSON(nearestCityResponse{
+			City:       *nearest,
+			DistanceKm: math.Round(distanceKm*100) / 100,
+		})
 	})
 
 	app.Get("/coordinates", func(c *fiber.Ctx) error {

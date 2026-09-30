@@ -1,17 +1,25 @@
 package main
 
 import (
+	"bytes"
 	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"io"
+	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/SamyRai/cityFinder/cmd/server/routes"
 	"github.com/SamyRai/cityFinder/lib/city"
@@ -152,6 +160,30 @@ func query(params map[string]string) string {
 	return values.Encode()
 }
 
+// jsonKeys unmarshals a JSON object body and returns its sorted top-level
+// keys, locking response shapes against accidental field changes.
+func jsonKeys(t *testing.T, body string) []string {
+	var obj map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(body), &obj))
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// cityKeys are the exact top-level keys city.City marshals to (it has no json
+// tags, so the exported field names appear verbatim).
+var cityKeys = []string{"Country", "Latitude", "Longitude", "Name"}
+
+func (suite *ServerTestSuite) TestHealthz() {
+	resp, body := suite.doGet("/healthz")
+	assert.Equal(suite.T(), http.StatusOK, resp.StatusCode, body)
+	assert.Equal(suite.T(), "application/json", resp.Header.Get("Content-Type"), body)
+	assert.Equal(suite.T(), `{"status":"ok"}`, body)
+}
+
 func (suite *ServerTestSuite) TestNearestKnownGood() {
 	fixture := suite.fixtureCity("Xixerella", "AD")
 
@@ -161,11 +193,55 @@ func (suite *ServerTestSuite) TestNearestKnownGood() {
 	}))
 	assert.Equal(suite.T(), http.StatusOK, resp.StatusCode, body)
 
-	var got city.City
+	// The /nearest envelope keeps city.City's four capitalized keys and adds
+	// exactly one new key, distance_km (ASCII-sorted after the capitalized
+	// names).
+	assert.Equal(suite.T(),
+		append(append([]string{}, cityKeys...), "distance_km"), jsonKeys(suite.T(), body), body)
+
+	var got struct {
+		city.City
+		DistanceKm float64 `json:"distance_km"`
+	}
 	err := json.Unmarshal([]byte(body), &got)
 	assert.NoError(suite.T(), err, body)
 	assert.Equal(suite.T(), "AD", got.Country, body)
 	assert.NotEmpty(suite.T(), got.Name, body)
+	// Querying at the city's exact coordinates: the great-circle distance is
+	// zero to floating-point precision, which rounds to 0.00.
+	assert.Equal(suite.T(), 0.0, got.DistanceKm, body)
+}
+
+func (suite *ServerTestSuite) TestNearestDistance() {
+	fixture := suite.fixtureCity("Xixerella", "AD")
+
+	// ~1 km due north of the fixture city: one degree of latitude is
+	// pi/180 * 6371 km on the same sphere the finder's distances use. The
+	// next-nearest fixture city is over 3 km away, so the nearest result is
+	// the fixture city at ~1 km.
+	kmPerDegreeLat := math.Pi * 6371.0 / 180.0
+	lat := fixture.Latitude + 1.0/kmPerDegreeLat
+	resp, body := suite.doGet("/nearest?" + query(map[string]string{
+		"lat": strconv.FormatFloat(lat, 'f', -1, 64),
+		"lon": strconv.FormatFloat(fixture.Longitude, 'f', -1, 64),
+	}))
+	assert.Equal(suite.T(), http.StatusOK, resp.StatusCode, body)
+
+	var got struct {
+		city.City
+		DistanceKm float64 `json:"distance_km"`
+	}
+	err := json.Unmarshal([]byte(body), &got)
+	require.NoError(suite.T(), err, body)
+	assert.Equal(suite.T(), fixture.Name, got.Name, body)
+
+	assert.Greater(suite.T(), got.DistanceKm, 0.5, body)
+	assert.Less(suite.T(), got.DistanceKm, 2.0, body)
+
+	// distance_km must agree with an independent haversine computation
+	// against the returned city's own coordinates, rounded to 2 decimals.
+	expected := math.Round(city.HaversineDistance(lat, fixture.Longitude, got.Latitude, got.Longitude)*100) / 100
+	assert.Equal(suite.T(), expected, got.DistanceKm, body)
 }
 
 func (suite *ServerTestSuite) TestNearestBadInput() {
@@ -216,6 +292,8 @@ func (suite *ServerTestSuite) TestCoordinatesKnownGood() {
 	assert.NoError(suite.T(), err, body)
 	assert.Equal(suite.T(), fixture.Name, got.Name, body)
 	assert.Equal(suite.T(), fixture.Country, got.Country, body)
+	// Shape unchanged: exactly city.City's four keys, no distance_km.
+	assert.Equal(suite.T(), cityKeys, jsonKeys(suite.T(), body), body)
 }
 
 func (suite *ServerTestSuite) TestCoordinatesNormalization() {
@@ -269,6 +347,8 @@ func (suite *ServerTestSuite) TestPostalCodeKnownGood() {
 	assert.NoError(suite.T(), err, body)
 	assert.Equal(suite.T(), placeName, got.Name, body)
 	assert.Equal(suite.T(), "AD", got.Country, body)
+	// Shape unchanged: exactly city.City's four keys, no distance_km.
+	assert.Equal(suite.T(), cityKeys, jsonKeys(suite.T(), body), body)
 }
 
 func (suite *ServerTestSuite) TestPostalCodeNormalization() {
@@ -332,4 +412,105 @@ func (suite *ServerTestSuite) TestPostalCodeNotFound() {
 
 func TestServerTestSuite(t *testing.T) {
 	suite.Run(t, new(ServerTestSuite))
+}
+
+// TestServerGracefulShutdownSignal builds the real server binary, starts it
+// on a random port with the fixture datasets, waits for /healthz over real
+// HTTP, sends SIGTERM, and asserts a clean exit 0 within a few seconds.
+func TestServerGracefulShutdownSignal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process-level signal test skipped in short mode")
+	}
+
+	rootDir, err := util.FindProjectRoot()
+	require.NoError(t, err)
+
+	binDir := t.TempDir()
+	binPath := filepath.Join(binDir, "cityfinder-server")
+	build := exec.Command("go", "build", "-o", binPath, "./cmd/server")
+	build.Dir = rootDir
+	if out, err := build.CombinedOutput(); err != nil {
+		require.NoError(t, err, "go build failed: %s", out)
+	}
+
+	// The binary resolves both CONFIG_PATH and datasets_folder relative to
+	// the project root (config.LoadConfig joins them with FindProjectRoot()
+	// output), so the temp dirs must be referenced root-relative.
+	relToRoot := func(path string) string {
+		rel, err := filepath.Rel(rootDir, path)
+		require.NoError(t, err)
+		return rel
+	}
+
+	dataDir := t.TempDir()
+	for _, name := range []string{"allCountries.txt", "zipCodes.txt"} {
+		require.NoError(t, copyFile(filepath.Join(rootDir, "testdata", name), filepath.Join(dataDir, name)))
+	}
+	cfg := config.Config{
+		DatasetsFolder:      relToRoot(dataDir),
+		AllCitiesFile:       "allCountries.txt",
+		PostalCodesFile:     "zipCodes.txt",
+		NameIndexFile:       "name_index_proc_test.gob",
+		PostalCodeIndexFile: "postal_code_index_proc_test.gob",
+		S2:                  config.S2{MinLevel: 10, MaxLevel: 15, MaxCells: 8, IndexFile: "s2index_proc_test.gob"},
+	}
+	cfgBytes, err := json.Marshal(cfg)
+	require.NoError(t, err)
+	cfgPath := filepath.Join(binDir, "config_proc_test.json")
+	require.NoError(t, os.WriteFile(cfgPath, cfgBytes, 0o600))
+
+	// Grab a free port, then release it for the server to bind.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := ln.Addr().(*net.TCPAddr).Port
+	require.NoError(t, ln.Close())
+
+	var logs bytes.Buffer
+	cmd := exec.Command(binPath)
+	cmd.Dir = rootDir
+	cmd.Env = append(os.Environ(),
+		"CONFIG_PATH="+relToRoot(cfgPath),
+		"PORT="+strconv.Itoa(port),
+	)
+	cmd.Stdout = &logs
+	cmd.Stderr = &logs
+	require.NoError(t, cmd.Start())
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	defer func() { _ = cmd.Process.Kill() }() // never leak the process on a failing path
+
+	// Readiness: poll /healthz over real HTTP (this also exercises the
+	// endpoint outside httptest). Building the indexes can take a moment.
+	healthURL := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
+	client := &http.Client{Timeout: 2 * time.Second}
+	deadline := time.Now().Add(30 * time.Second)
+	ready := false
+	for !ready && time.Now().Before(deadline) {
+		resp, getErr := client.Get(healthURL)
+		if getErr == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			ready = resp.StatusCode == http.StatusOK
+		}
+		if ready {
+			break
+		}
+		select {
+		case waitErr := <-done:
+			t.Fatalf("server exited before becoming healthy: %v\nlogs:\n%s", waitErr, logs.String())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	require.True(t, ready, "server did not become healthy in time; logs:\n%s", logs.String())
+
+	require.NoError(t, cmd.Process.Signal(syscall.SIGTERM))
+
+	select {
+	case waitErr := <-done:
+		require.NoError(t, waitErr, "server must exit with code 0 after SIGTERM; logs:\n%s", logs.String())
+	case <-time.After(10 * time.Second):
+		t.Fatalf("server did not exit within 10s of SIGTERM; logs:\n%s", logs.String())
+	}
+	assert.Contains(t, logs.String(), "shutting down")
 }
