@@ -15,20 +15,20 @@ import (
 
 // Test data constants
 const (
-	validCityLine     = "2994701\tRoc Meler\tRoc Meler\tRoc Mele,Roc Meler,Roc Mélé\t42.58765\t1.7418\tT\tPK\tAD\tAD,FR\t02\t\t\t\t0\t2811\t2348\tEurope/Andorra\t2023-10-03"
-	invalidCityLine1  = "" // Empty line
-	invalidCityLine2  = "invalid data with wrong format"
-	invalidCityLine3  = "2994701\tCity\t\t\tinvalid_lat\tinvalid_lon\tT\tPK\tAD\tAD,FR\t02\t\t\t\t0\t2811\t2348\tEurope/Andorra\t2023-10-03" // Invalid coordinates
-	invalidCityLine4  = "2994701\tCity\t\t\t91.0\t0.0\tT\tPK\tAD\tAD,FR\t02\t\t\t\t0\t2811\t2348\tEurope/Andorra\t2023-10-03" // Invalid latitude
-	invalidCityLine5  = "2994701\tCity\t\t\t0.0\t181.0\tT\tPK\tAD\tAD,FR\t02\t\t\t\t0\t2811\t2348\tEurope/Andorra\t2023-10-03" // Invalid longitude
+	validCityLine    = "2994701\tRoc Meler\tRoc Meler\tRoc Mele,Roc Meler,Roc Mélé\t42.58765\t1.7418\tT\tPK\tAD\tAD,FR\t02\t\t\t\t0\t2811\t2348\tEurope/Andorra\t2023-10-03"
+	invalidCityLine1 = "" // Empty line
+	invalidCityLine2 = "invalid data with wrong format"
+	invalidCityLine3 = "2994701\tCity\t\t\tinvalid_lat\tinvalid_lon\tT\tPK\tAD\tAD,FR\t02\t\t\t\t0\t2811\t2348\tEurope/Andorra\t2023-10-03" // Invalid coordinates
+	invalidCityLine4 = "2994701\tCity\t\t\t91.0\t0.0\tT\tPK\tAD\tAD,FR\t02\t\t\t\t0\t2811\t2348\tEurope/Andorra\t2023-10-03"                // Invalid latitude
+	invalidCityLine5 = "2994701\tCity\t\t\t0.0\t181.0\tT\tPK\tAD\tAD,FR\t02\t\t\t\t0\t2811\t2348\tEurope/Andorra\t2023-10-03"               // Invalid longitude
 )
 
 const (
-	validPostalLine   = "AD\tAD100\tCanillo\tCanillo\t02\t\t\t\t\t\t\t42.5833\t1.6667\t6"
+	validPostalLine    = "AD\tAD100\tCanillo\tCanillo\t02\t\t\t\t\t\t\t42.5833\t1.6667\t6"
 	invalidPostalLine1 = "" // Empty line
 	invalidPostalLine2 = "invalid postal data"
 	invalidPostalLine3 = "AD\tAD100\tCanillo\tCanillo\t02\t\t\t\t\t\t\tinvalid_lat\tinvalid_lon\t6" // Invalid coordinates
-	invalidPostalLine4 = "AD\tAD100\tCanillo\tCanillo\t02\t\t\t\t\t\t\t91.0\t0.0\t6" // Invalid latitude
+	invalidPostalLine4 = "AD\tAD100\tCanillo\tCanillo\t02\t\t\t\t\t\t\t91.0\t0.0\t6"                // Invalid latitude
 )
 
 func TestLoadCities_ValidData(t *testing.T) {
@@ -91,11 +91,11 @@ func TestLoadCities_InvalidData(t *testing.T) {
 
 func TestLoadCities_BoundaryCoordinates(t *testing.T) {
 	boundaryLines := []string{
-		"1\tNorth Pole\t\t\t90.0\t0.0\tT\tPK\tNP\t\t\t\t\t\t\t0\t\t\t\t2023-01-01",    // North pole
-		"2\tSouth Pole\t\t\t-90.0\t0.0\tT\tPK\tSP\t\t\t\t\t\t\t0\t\t\t\t2023-01-01",   // South pole
-		"3\tDate Line East\t\t\t0.0\t180.0\tT\tPK\tDE\t\t\t\t\t\t\t0\t\t\t\t2023-01-01", // Date line
+		"1\tNorth Pole\t\t\t90.0\t0.0\tT\tPK\tNP\t\t\t\t\t\t\t0\t\t\t\t2023-01-01",       // North pole
+		"2\tSouth Pole\t\t\t-90.0\t0.0\tT\tPK\tSP\t\t\t\t\t\t\t0\t\t\t\t2023-01-01",      // South pole
+		"3\tDate Line East\t\t\t0.0\t180.0\tT\tPK\tDE\t\t\t\t\t\t\t0\t\t\t\t2023-01-01",  // Date line
 		"4\tDate Line West\t\t\t0.0\t-180.0\tT\tPK\tDW\t\t\t\t\t\t\t0\t\t\t\t2023-01-01", // Date line negative
-		"5\tEquator\t\t\t0.0\t0.0\tT\tPK\tEQ\t\t\t\t\t\t\t0\t\t\t\t2023-01-01",         // Equator
+		"5\tEquator\t\t\t0.0\t0.0\tT\tPK\tEQ\t\t\t\t\t\t\t0\t\t\t\t2023-01-01",           // Equator
 	}
 
 	tmpfile, err := os.CreateTemp("", "cities_boundary_test_*.txt")
@@ -185,9 +185,9 @@ func TestLoadPostalCodes_InvalidData(t *testing.T) {
 func TestLoadPostalCodes_SpecialFormats(t *testing.T) {
 	specialLines := []string{
 		"CA\tK1A 0A6\tOttawa\t\t\t\t\t\t\t\t45.4215\t-75.6972\t1", // Canadian format with space
-		"GB\tSW1A 1AA\tLondon\t\t\t\t\t\t\t\t51.5074\t-0.1278\t1",   // UK format
-		"DE\t12345\tBerlin\t\t\t\t\t\t\t\t52.5200\t13.4050\t1",       // German format
-		"JP\t123-4567\tTokyo\t\t\t\t\t\t\t\t35.6762\t139.6503\t1",    // Japanese format
+		"GB\tSW1A 1AA\tLondon\t\t\t\t\t\t\t\t51.5074\t-0.1278\t1", // UK format
+		"DE\t12345\tBerlin\t\t\t\t\t\t\t\t52.5200\t13.4050\t1",    // German format
+		"JP\t123-4567\tTokyo\t\t\t\t\t\t\t\t35.6762\t139.6503\t1", // Japanese format
 	}
 
 	tmpfile, err := os.CreateTemp("", "postal_special_test_*.txt")
@@ -261,7 +261,6 @@ func TestParseCityLine(t *testing.T) {
 		}
 	})
 }
-
 
 func TestDataLoader_FileNotFound(t *testing.T) {
 	_, err := loadCitiesFromFile("nonexistent_file.txt")
@@ -365,9 +364,9 @@ func TestDataLoader_UnicodeHandling(t *testing.T) {
 func TestDataLoader_CoordinateValidation(t *testing.T) {
 	// Test that invalid coordinates are properly filtered out
 	testLines := []string{
-		"1\tValid City\t\t\t45.0\t90.0\tT\tPK\tXX\t\t\t\t\t\t\t0\t\t\t\t2023-01-01",     // Valid
-		"2\tInvalid Lat High\t\t\t95.0\t90.0\tT\tPK\tXX\t\t\t\t\t\t\t0\t\t\t\t2023-01-01", // Invalid lat
-		"3\tInvalid Lat Low\t\t\t-95.0\t90.0\tT\tPK\tXX\t\t\t\t\t\t\t0\t\t\t\t2023-01-01", // Invalid lat
+		"1\tValid City\t\t\t45.0\t90.0\tT\tPK\tXX\t\t\t\t\t\t\t0\t\t\t\t2023-01-01",        // Valid
+		"2\tInvalid Lat High\t\t\t95.0\t90.0\tT\tPK\tXX\t\t\t\t\t\t\t0\t\t\t\t2023-01-01",  // Invalid lat
+		"3\tInvalid Lat Low\t\t\t-95.0\t90.0\tT\tPK\tXX\t\t\t\t\t\t\t0\t\t\t\t2023-01-01",  // Invalid lat
 		"4\tInvalid Lon High\t\t\t45.0\t190.0\tT\tPK\tXX\t\t\t\t\t\t\t0\t\t\t\t2023-01-01", // Invalid lon
 		"5\tInvalid Lon Low\t\t\t45.0\t-190.0\tT\tPK\tXX\t\t\t\t\t\t\t0\t\t\t\t2023-01-01", // Invalid lon
 		"6\tNaN Lat\t\t\tNaN\t90.0\tT\tPK\tXX\t\t\t\t\t\t\t0\t\t\t\t2023-01-01",            // NaN
@@ -453,7 +452,6 @@ func parseCityLine(line string) (testCity, error) {
 		Longitude: lon,
 	}, nil
 }
-
 
 // testCity struct for testing (simplified version for data loading tests)
 type testCity struct {

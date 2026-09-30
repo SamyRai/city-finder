@@ -68,16 +68,16 @@ func formatDuration(d time.Duration) string {
 }
 
 type OperationResult struct {
-	Name            string
-	Duration        time.Duration
-	MemoryBefore    MemoryStats
-	MemoryAfter     MemoryStats
-	MemoryDelta     uint64
-	ItemsProcessed  int
-	Throughput      float64
-	GCsBefore       uint32
-	GCsAfter        uint32
-	GCsDelta        uint32
+	Name           string
+	Duration       time.Duration
+	MemoryBefore   MemoryStats
+	MemoryAfter    MemoryStats
+	MemoryDelta    uint64
+	ItemsProcessed int
+	Throughput     float64
+	GCsBefore      uint32
+	GCsAfter       uint32
+	GCsDelta       uint32
 }
 
 func measureOperation(name string, items int, operation func()) OperationResult {

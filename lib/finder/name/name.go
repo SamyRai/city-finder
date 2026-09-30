@@ -1,17 +1,13 @@
 package name
 
 import (
-	"bufio"
 	"encoding/gob"
 	"errors"
 	"fmt"
 	"io"
 	"runtime"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
-	"unicode"
 	"unique"
 
 	"github.com/SamyRai/cityFinder/lib/city"
@@ -43,56 +39,6 @@ const (
 	// limit (the TTL only skips entries on read, it never evicts).
 	maxFuzzyCacheEntries = 10000
 )
-
-// cityPointerPool reuses City pointers to reduce GC pressure
-// Following Go 1.24+ best practices: pre-allocate capacity and reset on Get
-// AltNames removed from City struct for memory optimization
-var cityPointerPool = sync.Pool{
-	New: func() interface{} {
-		return &city.City{}
-	},
-}
-
-// getCityFromPool gets a city from pool and resets it (Go 1.24+ best practice)
-// AltNames removed from City struct for memory optimization
-func getCityFromPool() *city.City {
-	c := cityPointerPool.Get().(*city.City)
-	// Reset all fields
-	c.Latitude = 0
-	c.Longitude = 0
-	c.Name = ""
-	c.Country = ""
-	return c
-}
-
-// putCityToPool returns a city to pool after resetting (Go 1.24+ best practice)
-// AltNames removed from City struct for memory optimization
-func putCityToPool(c *city.City) {
-	// Reset state before returning to pool
-	c.Latitude = 0
-	c.Longitude = 0
-	c.Name = ""
-	c.Country = ""
-	cityPointerPool.Put(c)
-}
-
-// slicePool reuses slices to reduce allocations
-var slicePool = sync.Pool{
-	New: func() interface{} {
-		return make([]*city.City, 0, 8) // Pre-allocate capacity
-	},
-}
-
-// getSliceFromPool gets a slice from pool and resets it
-func getSliceFromPool() []*city.City {
-	s := slicePool.Get().([]*city.City)
-	return s[:0] // Reset length, keep capacity
-}
-
-// putSliceToPool returns a slice to pool
-func putSliceToPool(s []*city.City) {
-	slicePool.Put(s[:0]) // Reset length before returning
-}
 
 // Finder is a struct that contains the data for city name lookups
 // Struct field ordering optimized for memory alignment (Go 1.22+ best practice):
@@ -328,109 +274,11 @@ func (nf *Finder) processBatchConcurrent(cities []city.SpatialCity, numWorkers i
 	mergeWg.Wait()
 }
 
-// optimizeMemoryLayout performs final optimizations for better cache performance
-func (nf *Finder) optimizeMemoryLayout() {
-	// Pre-shrink maps to reduce memory overhead
-	for _, countryMap := range nf.InvertedIndex {
-		for name, cityList := range countryMap {
-			// Shrink slice to exact size
-			if len(cityList) != cap(cityList) {
-				newList := make([]*city.City, len(cityList))
-				copy(newList, cityList)
-				countryMap[name] = newList
-			}
-		}
-	}
-}
-
 // getMemoryUsageMB returns current memory usage in MB
 func getMemoryUsageMB() float64 {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	return float64(m.Alloc) / 1024 / 1024
-}
-
-// BuildIndexStreaming creates a name index from an io.Reader, processing cities one by one
-// This uses minimal memory and is suitable for very large datasets
-func BuildIndexStreaming(reader io.Reader) (*Finder, error) {
-	finder := NewFinderWithCapacity(300, 100000)
-
-	scanner := bufio.NewScanner(reader)
-	lineNumber := 0
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		lineNumber++
-
-		// Skip empty lines and comments
-		if len(strings.TrimSpace(line)) == 0 || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		// Parse the city data (simplified parsing for demonstration)
-		// In a real implementation, you'd use the full CSV parsing logic
-		fields := strings.Split(line, "\t")
-		if len(fields) < 19 { // GeoNames format has 19+ fields
-			continue
-		}
-
-		// Extract basic city information
-		spatialCity := &city.SpatialCity{
-			City: city.City{
-				Name:      fields[1],
-				Latitude:  parseFloat(fields[4]),
-				Longitude: parseFloat(fields[5]),
-				Country:   fields[8],
-			},
-		}
-
-		// Process alternate names if available
-		if len(fields) > 3 && fields[3] != "" {
-			spatialCity.AltNames = strings.Split(fields[3], ",")
-		}
-
-		// Add city to index immediately (streaming approach)
-		finder.addCityStreaming(spatialCity)
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("error reading stream: %v", err)
-	}
-
-	// Collect names for lazy BK-tree building (but don't build it yet)
-	finder.collectAllNames()
-
-	return finder, nil
-}
-
-// addCityStreaming adds a city to the index with minimal memory allocation (for streaming)
-// Uses improved sync.Pool pattern with proper reset (Go 1.24+ best practice)
-func (nf *Finder) addCityStreaming(spatialCity *city.SpatialCity) {
-	// Get a pooled city pointer with proper reset
-	cityPtr := getCityFromPool()
-	*cityPtr = spatialCity.City
-
-	country := spatialCity.Country
-	name := spatialCity.Name
-
-	// Process primary name
-	nf.addNameToIndexDirect(country, name, cityPtr)
-
-	// Process alternate names
-	for _, altName := range spatialCity.AltNames {
-		nf.addNameToIndexDirect(country, altName, cityPtr)
-	}
-
-	// Note: We don't return to pool here since cityPtr is stored in the index
-	// Pool is only for temporary use, not for long-lived references
-}
-
-// parseFloat is a helper for parsing coordinates in streaming mode
-func parseFloat(s string) float64 {
-	if val, err := strconv.ParseFloat(s, 64); err == nil {
-		return val
-	}
-	return 0.0
 }
 
 // BuildIndex creates a name index from city data using highly optimized concurrent batch processing
@@ -460,8 +308,9 @@ func BuildIndex(cities []city.SpatialCity) *Finder {
 		finder.processBatchConcurrent(cities, numWorkers)
 	}
 
-	// Skip expensive collectAllNames() during bulk loading - do it lazily if needed
-	// Skip optimizeMemoryLayout() as it adds significant overhead for minimal benefit
+	// The BK-tree and the name list it is built from are derived lazily from
+	// the inverted index on first fuzzy lookup; the bulk build path does not
+	// pre-compute them.
 
 	// Quick final cleanup
 	runtime.GC()
@@ -485,39 +334,6 @@ func (nf *Finder) AddCity(spatialCity city.SpatialCity) {
 		nf.InvertedIndex[spatialCity.Country][name] = append(nf.InvertedIndex[spatialCity.Country][name], &spatialCity.City)
 		nf.BKTree.Add(name)
 		nf.mutex.Unlock()
-	}
-}
-
-// addCityUnsafe adds a city to the NameFinder without mutex locking (for internal use during building)
-func (nf *Finder) addCityUnsafe(spatialCity city.SpatialCity) {
-	// Create a single city pointer to avoid multiple allocations
-	cityPtr := &spatialCity.City
-
-	// Process primary name
-	nf.addNameToIndexDirect(spatialCity.Country, spatialCity.Name, cityPtr)
-
-	// Process alternate names
-	for _, altName := range spatialCity.AltNames {
-		nf.addNameToIndexDirect(spatialCity.Country, altName, cityPtr)
-	}
-}
-
-// addCityOptimized adds a city to the NameFinder with optimized memory usage and string interning
-// Uses Go 1.23's unique package for efficient string interning
-func (nf *Finder) addCityOptimized(spatialCity city.SpatialCity) {
-	cityPtr := &spatialCity.City
-
-	// Intern strings using Go 1.23's unique package to reduce memory usage
-	internedCountry := internString(spatialCity.Country)
-	internedPrimaryName := internString(spatialCity.Name)
-
-	// Process primary name
-	nf.addNameToIndexDirect(internedCountry, internedPrimaryName, cityPtr)
-
-	// Process alternate names with interning
-	for _, altName := range spatialCity.AltNames {
-		internedAltName := internString(altName)
-		nf.addNameToIndexDirect(internedCountry, internedAltName, cityPtr)
 	}
 }
 
@@ -557,16 +373,11 @@ func (nf *Finder) addNameToIndexWithMap(countryMap map[string][]*city.City, name
 	countryMap[name] = append(cityList, cityPtr)
 }
 
-// collectAllNames collects all unique names for lazy BK-tree building
-func (nf *Finder) collectAllNames() {
-	nf.allNames = nf.namesFromIndex()
-}
-
 // namesFromIndex returns the union of every indexed name across all countries.
 // The inverted index is the source of truth — every insertion path (batch
-// build, streaming build, AddCity) writes it — so this is always the complete
-// name set, even when allNames is empty (BuildIndex skips collectAllNames) or
-// stale (indexes that went through serialization).
+// build, AddCity) writes it — so this is always the complete name set, even
+// when allNames is empty (the bulk build skips pre-collecting names) or stale
+// (indexes that went through serialization).
 func (nf *Finder) namesFromIndex() []string {
 	total := 0
 	for _, countryMap := range nf.InvertedIndex {
@@ -635,62 +446,6 @@ func (nf *Finder) buildBKTreeSequential() {
 	}
 	nf.BKTree = tree
 	nf.allNames = names
-}
-
-// buildBKTree ensures the BK-tree is built (for compatibility)
-func (nf *Finder) buildBKTree() {
-	nf.ensureBKTreeBuilt()
-}
-
-// fastApproximateDistance provides a fast approximation of string similarity
-// Uses character frequency analysis for O(n) complexity vs O(n*m) for Levenshtein
-func fastApproximateDistance(a, b string) int {
-	if len(a) == 0 {
-		return len(b)
-	}
-	if len(b) == 0 {
-		return len(a)
-	}
-
-	// Quick length difference check
-	lenDiff := util.Abs(len(a) - len(b))
-	if lenDiff > 2 {
-		return lenDiff // Too different to be similar
-	}
-
-	// Character frequency analysis for common characters
-	charCountA := make(map[rune]int)
-	charCountB := make(map[rune]int)
-
-	for _, char := range a {
-		if unicode.IsLetter(char) || unicode.IsDigit(char) {
-			charCountA[unicode.ToLower(char)]++
-		}
-	}
-	for _, char := range b {
-		if unicode.IsLetter(char) || unicode.IsDigit(char) {
-			charCountB[unicode.ToLower(char)]++
-		}
-	}
-
-	// Calculate character frequency difference
-	distance := 0
-	for char, countA := range charCountA {
-		countB := charCountB[char]
-		distance += util.Abs(countA - countB)
-	}
-	for char, countB := range charCountB {
-		if _, exists := charCountA[char]; !exists {
-			distance += countB
-		}
-	}
-
-	// Normalize by string length (shorter strings should have smaller distance)
-	maxLen := util.Max(len(a), len(b))
-	if maxLen == 0 {
-		return 0
-	}
-	return distance * 10 / maxLen // Scale to be comparable with Levenshtein
 }
 
 // getCachedFuzzySearch performs fuzzy search with caching
@@ -821,6 +576,12 @@ const (
 	nameIndexVersion = uint32(1)
 )
 
+// ErrCorruptIndex reports an index file that cannot be trusted: truncated,
+// undecodable, or written by an incompatible format version. The initializer
+// treats it (and only it) as rebuildable; any other error — a wrapped fs
+// error from an unreadable file, for example — is fatal.
+var ErrCorruptIndex = errors.New("name index file is corrupt or incompatible")
+
 // SerializeIndex saves the name index to a file.
 // The payload is written to a sibling ".part" file first and moved into place
 // with os.Rename only after the full stream has been written, so a crash
@@ -876,7 +637,10 @@ func (nf *Finder) SerializeIndex(filepath string) error {
 // DeserializeIndex loads the name index from a file.
 // The stream must start with a compatible indexHeader; a missing or mismatched
 // header (including legacy pre-header files) yields an error that suggests
-// deleting the file so the index gets rebuilt.
+// deleting the file so the index gets rebuilt. Every decode failure — bad
+// header, format mismatch, truncated or malformed payload — wraps
+// ErrCorruptIndex so callers can distinguish rebuildable corruption from
+// environmental errors (open/close failures are returned unwrapped).
 func DeserializeIndex(filepath string) (*Finder, error) {
 	file, err := os.Open(filepath)
 	if err != nil {
@@ -887,22 +651,23 @@ func DeserializeIndex(filepath string) (*Finder, error) {
 	var header indexHeader
 	if err := decoder.Decode(&header); err != nil {
 		_ = file.Close()
-		return nil, fmt.Errorf("name index %s is not a readable versioned index (legacy or corrupt file: %v); delete the file so the index is rebuilt", filepath, err)
+		return nil, fmt.Errorf("%w: name index %s is not a readable versioned index (legacy or corrupt file: %v); delete the file so the index is rebuilt",
+			ErrCorruptIndex, filepath, err)
 	}
 	if header.Magic != nameIndexMagic || header.Version != nameIndexVersion {
 		_ = file.Close()
-		return nil, fmt.Errorf("name index %s format mismatch: got magic %q version %d, want magic %q version %d; delete the file so the index is rebuilt",
-			filepath, header.Magic, header.Version, nameIndexMagic, nameIndexVersion)
+		return nil, fmt.Errorf("%w: name index %s format mismatch: got magic %q version %d, want magic %q version %d; delete the file so the index is rebuilt",
+			ErrCorruptIndex, filepath, header.Magic, header.Version, nameIndexMagic, nameIndexVersion)
 	}
 
 	finder := NewNameFinder()
 	if err := decoder.Decode(&finder.InvertedIndex); err != nil {
 		_ = file.Close()
-		return nil, err
+		return nil, fmt.Errorf("%w: decoding name index payload from %s: %v", ErrCorruptIndex, filepath, err)
 	}
 	if err := decoder.Decode(&finder.BKTree); err != nil {
 		_ = file.Close()
-		return nil, err
+		return nil, fmt.Errorf("%w: decoding name index BK-tree from %s: %v", ErrCorruptIndex, filepath, err)
 	}
 	// Deserialize lazy loading state. Older files that predate these fields
 	// simply end the stream here; that is a legacy file, not corruption. Any
@@ -910,13 +675,13 @@ func DeserializeIndex(filepath string) (*Finder, error) {
 	if err := decoder.Decode(&finder.isBKTreeBuilt); err != nil {
 		if !isEndOfStream(err) {
 			_ = file.Close()
-			return nil, fmt.Errorf("decoding name index build state: %w", err)
+			return nil, fmt.Errorf("%w: decoding name index build state: %v", ErrCorruptIndex, err)
 		}
 		finder.allNames = nil
 	} else if err := decoder.Decode(&finder.allNames); err != nil {
 		if !isEndOfStream(err) {
 			_ = file.Close()
-			return nil, fmt.Errorf("decoding name index name list: %w", err)
+			return nil, fmt.Errorf("%w: decoding name index name list: %v", ErrCorruptIndex, err)
 		}
 		finder.allNames = nil
 	}

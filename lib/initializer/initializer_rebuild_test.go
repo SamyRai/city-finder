@@ -3,10 +3,12 @@ package initializer
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
+	"github.com/SamyRai/cityFinder/lib/finder/name"
 	"github.com/SamyRai/cityFinder/lib/finder/postalCode"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -127,4 +129,37 @@ func TestEnsureFinders_CorruptIndexWithoutDatasetsIsFatal(t *testing.T) {
 	_, err = ensureFinders(cfg)
 	require.Error(t, err, "a corrupt index with no source data to rebuild from must fail")
 	assert.Contains(t, err.Error(), "rebuild", "the error must explain the rebuild attempt failed")
+}
+
+// TestEnsureFinders_NameIndexUnreadableFileIsFatal pins the tightened name
+// sentinel contract: a non-corrupt decode failure — here a wrapped fs error
+// from an index file with no read permission — must NOT be silently rebuilt
+// over. Rebuilding is reserved for name.ErrCorruptIndex; everything else is
+// fatal, exactly as for the S2 and postal code indexes.
+func TestEnsureFinders_NameIndexUnreadableFileIsFatal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix file permissions only")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file mode bits; the EACCES path cannot be exercised")
+	}
+
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	writeTinyDatasets(t, cfg)
+
+	f1, err := ensureFinders(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, f1)
+
+	namePath := filepath.Join(dir, cfg.NameIndexFile)
+	require.NoError(t, os.Chmod(namePath, 0o000))
+	defer func() { _ = os.Chmod(namePath, 0o600) }()
+
+	_, err = ensureFinders(cfg)
+	require.Error(t, err, "an unreadable name index must be fatal, not rebuilt over")
+	assert.Contains(t, err.Error(), "failed to deserialize name index",
+		"the error must identify deserialization as the failing stage")
+	assert.NotErrorIs(t, err, name.ErrCorruptIndex,
+		"fs errors must never be classified as corruption")
 }

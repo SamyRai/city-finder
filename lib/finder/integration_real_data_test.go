@@ -357,7 +357,7 @@ func TestRealDataIntegration_CrossFinderConsistency(t *testing.T) {
 						// Check coordinate consistency (within reasonable bounds)
 						coordDiff := math.Sqrt(
 							math.Pow(nameResult.Latitude-postalResult.Latitude, 2) +
-							math.Pow(nameResult.Longitude-postalResult.Longitude, 2))
+								math.Pow(nameResult.Longitude-postalResult.Longitude, 2))
 
 						if coordDiff < 1.0 { // Within 1 degree (reasonable for city-level data)
 							consistentResults++
@@ -400,9 +400,9 @@ func TestRealData_EdgeCasesAndDataQuality(t *testing.T) {
 	for _, city := range cities {
 		// Check coordinate validity
 		if city.Latitude >= -90 && city.Latitude <= 90 &&
-		   city.Longitude >= -180 && city.Longitude <= 180 &&
-		   !math.IsNaN(city.Latitude) && !math.IsNaN(city.Longitude) &&
-		   !math.IsInf(city.Latitude, 0) && !math.IsInf(city.Longitude, 0) {
+			city.Longitude >= -180 && city.Longitude <= 180 &&
+			!math.IsNaN(city.Latitude) && !math.IsNaN(city.Longitude) &&
+			!math.IsInf(city.Latitude, 0) && !math.IsInf(city.Longitude, 0) {
 			validCoords++
 		}
 

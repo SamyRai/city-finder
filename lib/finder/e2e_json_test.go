@@ -339,17 +339,17 @@ func testCrossFinderConsistency(t *testing.T, nameFinder *name.Finder,
 		// Check consistency between name and postal code finders
 		if nameResult != nil && postalResult != nil {
 			totalChecks++
-					postalDiff := math.Sqrt(
-						math.Pow(nameResult.Latitude-postalResult.Latitude, 2) +
-							math.Pow(nameResult.Longitude-postalResult.Longitude, 2))
+			postalDiff := math.Sqrt(
+				math.Pow(nameResult.Latitude-postalResult.Latitude, 2) +
+					math.Pow(nameResult.Longitude-postalResult.Longitude, 2))
 
-					// Allow up to 1.0 degree difference for postal code consistency
-					if postalDiff < 1.0 {
-						consistentResults++
-					} else {
-						t.Logf("Inconsistency for %s: name-postal diff = %.6f degrees",
-							place.Name, postalDiff)
-					}
+			// Allow up to 1.0 degree difference for postal code consistency
+			if postalDiff < 1.0 {
+				consistentResults++
+			} else {
+				t.Logf("Inconsistency for %s: name-postal diff = %.6f degrees",
+					place.Name, postalDiff)
+			}
 		}
 	}
 

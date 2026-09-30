@@ -20,13 +20,13 @@ import (
 func FuzzCoordinateFinder(f *testing.F) {
 	// Add seed corpus with interesting coordinate values
 	seedCoords := []struct{ lat, lon float64 }{
-		{0, 0},           // Origin
-		{90, 0},          // North pole
-		{-90, 0},         // South pole
-		{0, 180},         // International date line
-		{0, -180},        // International date line negative
-		{45, 90},         // Mid latitude
-		{1e-10, 1e-10},   // Very small coordinates
+		{0, 0},                  // Origin
+		{90, 0},                 // North pole
+		{-90, 0},                // South pole
+		{0, 180},                // International date line
+		{0, -180},               // International date line negative
+		{45, 90},                // Mid latitude
+		{1e-10, 1e-10},          // Very small coordinates
 		{89.999999, 179.999999}, // Very close to boundaries
 		{math.Pi, math.E},       // Irrational numbers
 	}
@@ -86,11 +86,11 @@ func FuzzNameFinder(f *testing.F) {
 		{"New York", "US"},
 		{"London", "GB"},
 		{"Tokyo", "JP"},
-		{"", ""},           // Empty strings
-		{"", "US"},         // Empty name
-		{"New York", ""},   // Empty country
-		{"São Paulo", "BR"}, // Unicode characters
-		{"München", "DE"},   // More unicode
+		{"", ""},                // Empty strings
+		{"", "US"},              // Empty name
+		{"New York", ""},        // Empty country
+		{"São Paulo", "BR"},     // Unicode characters
+		{"München", "DE"},       // More unicode
 		{string(rune(0)), "XX"}, // Null character
 		{"Very Long City Name That Exceeds Normal Length And Might Cause Issues With Internal Data Structures", "XX"},
 		{"City with spaces and special chars !@#$%^&*()", "XX"},
@@ -122,8 +122,8 @@ func FuzzNameFinder(f *testing.F) {
 					found = true
 					// Verify country matches
 					expectedCountry := map[string]string{
-						"New York": "US",
-						"London":   "GB",
+						"New York":  "US",
+						"London":    "GB",
 						"São Paulo": "BR",
 					}[cityName]
 					assert.Equal(t, expectedCountry, result.Country, "Country should match for %s", cityName)
@@ -142,12 +142,12 @@ func FuzzPostalCodeFinder(f *testing.F) {
 		{"10001", "US"},
 		{"SW1A", "GB"},
 		{"12345", "DE"},
-		{"", ""},         // Empty strings
-		{"", "US"},       // Empty postal code
-		{"10001", ""},    // Empty country
-		{"K1A 0A6", "CA"}, // Canadian format
-		{"123-4567", "JP"}, // Japanese format
-		{"ABC123", "XX"},   // Alphanumeric
+		{"", ""},                // Empty strings
+		{"", "US"},              // Empty postal code
+		{"10001", ""},           // Empty country
+		{"K1A 0A6", "CA"},       // Canadian format
+		{"123-4567", "JP"},      // Japanese format
+		{"ABC123", "XX"},        // Alphanumeric
 		{string(rune(0)), "XX"}, // Null character
 		{"Very Long Postal Code That Might Cause Issues", "XX"},
 	}
@@ -312,11 +312,11 @@ func TestProperty_CoordinateClipping(t *testing.T) {
 
 	// Test various out-of-bounds coordinates
 	outOfBoundsCoords := []struct{ lat, lon float64 }{
-		{91.0, 0.0},   // Invalid latitude (too high)
-		{-91.0, 0.0},  // Invalid latitude (too low)
-		{0.0, 181.0},  // Invalid longitude (too high)
-		{0.0, -181.0}, // Invalid longitude (too low)
-		{100.0, 200.0}, // Both invalid
+		{91.0, 0.0},      // Invalid latitude (too high)
+		{-91.0, 0.0},     // Invalid latitude (too low)
+		{0.0, 181.0},     // Invalid longitude (too high)
+		{0.0, -181.0},    // Invalid longitude (too low)
+		{100.0, 200.0},   // Both invalid
 		{-100.0, -200.0}, // Both invalid
 	}
 
@@ -346,9 +346,9 @@ func TestProperty_FloatPrecisionEdgeCases(t *testing.T) {
 
 	// Test coordinates that differ by very small amounts
 	testCoords := []struct{ lat, lon float64 }{
-		{40.71280000000001, -74.00600000000001}, // Exact match for City1
-		{40.7128, -74.0060},                     // Exact match for City2
-		{40.71280000000002, -74.00600000000002}, // Very close to City1
+		{40.71280000000001, -74.00600000000001},   // Exact match for City1
+		{40.7128, -74.0060},                       // Exact match for City2
+		{40.71280000000002, -74.00600000000002},   // Very close to City1
 		{40.712800000000005, -74.006000000000005}, // Even closer to City1
 	}
 
