@@ -54,6 +54,10 @@ func BuildIndex(cities []city.SpatialCity, config *config.S2) (*S2Finder, error)
 
 	index := s2.NewShapeIndex()
 	index.Add(&points)
+	// Build eagerly: without this the full index construction (which the s2
+	// library warns can transiently use up to ~20x the index memory) would
+	// happen inside the first query instead.
+	index.Build()
 
 	return &S2Finder{Index: index, Cities: cityData}, nil
 }
@@ -64,7 +68,9 @@ func (f *S2Finder) NearestPlace(lat, lon float64) (*city.City, float64, error) {
 		return nil, 0, fmt.Errorf("s2 index is not initialized")
 	}
 	targetPoint := s2.PointFromLatLng(s2.LatLngFromDegrees(lat, lon))
-	query := s2.NewClosestEdgeQuery(f.Index, s2.NewClosestEdgeQueryOptions())
+	// MaxResults(1) prunes the search: the default (MaxInt32) would collect
+	// and sort a result for every indexed point on each query.
+	query := s2.NewClosestEdgeQuery(f.Index, s2.NewClosestEdgeQueryOptions().MaxResults(1))
 	target := s2.NewMinDistanceToPointTarget(targetPoint)
 	results := query.FindEdges(target)
 
@@ -132,6 +138,8 @@ func DeserializeIndex(filepath string) (*S2Finder, error) {
 
 	index := s2.NewShapeIndex()
 	index.Add(&points)
+	// Build eagerly so the first query does not pay the construction cost.
+	index.Build()
 
 	return &S2Finder{
 		Index:  index,
