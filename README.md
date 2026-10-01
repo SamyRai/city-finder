@@ -36,7 +36,7 @@ Nearest-neighbor queries are bounded by `s2.ClosestEdgeQuery` with `MaxResults(1
 | `FindNearestCity` rank=population (land queries) | 0.3–40 ms, exact gravity winner | n/a |
 | Index files | **559 MB (name, zstd v2)** / 521 MB (S2) / 98 MB (postal) | 1.6 GB (name) / 519 MB / 98 MB |
 
-Cold build (parse + all three indexes, no download) takes ~2 min on the same machine; a first boot also downloads ~420 MB of GeoNames archives. Peak RSS is workload-dependent: a warm start alone peaks ≈9 GB; the fuzzy index adds ~1.2 GB resident once built (lazily, on the first fuzzy lookup — that first query also pays a one-time ~30 s build at this scale); population-ranked queries over ocean/sparse points run wider scans and can transiently allocate several GB. The Helm chart's defaults (10 Gi request / 14 Gi limit) cover this with headroom.
+Cold build (parse + all three indexes, no download) takes ~2 min on the same machine; a first boot also downloads ~420 MB of GeoNames archives. Peak RSS is workload-dependent: a warm start alone peaks ≈9 GB; the fuzzy index adds ~1.2 GB resident once built (lazily, on the first fuzzy lookup — that first request also pays a one-time ~30–90 s build at this scale depending on machine load, and typo lookups issued while it builds get exact-only results); population-ranked queries over ocean/sparse points run wider scans and can transiently allocate several GB. The Helm chart's defaults (10 Gi request / 14 Gi limit) cover this with headroom.
 
 Micro-benchmark context (100k distinct synthetic points): ~3–5 µs per nearest query — query cost grows with index size, so the production numbers above are the authoritative ones.
 

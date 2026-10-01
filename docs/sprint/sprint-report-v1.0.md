@@ -62,7 +62,11 @@ gofmt, `go test -race ./...` (all packages), staticcheck, govulncheck,
   ADM0/ADM1 feature-class filtering for "real place" semantics;
   config-loading decoupled from project-root discovery (container ships a
   go.mod marker today — documented in the Dockerfile); CORS/rate-limiting if
-  fronted publicly.
+  fronted publicly. From the pre-ship review (non-blocking): delete the
+  now-unused `util.BKTree`; guard or comment `nameLens`'s uint16 truncation
+  for names ≥ 65,536 runes and the int32 CSR offset overflow at extreme
+  scales (both unreachable with GeoNames data); document the
+  population-less-dataset full-scan behavior of rank=population.
 - The plan's "review report §14" is an external artifact from the review
   session; the in-repo numbers surface (README Performance) is updated
   instead.

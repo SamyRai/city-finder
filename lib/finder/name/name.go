@@ -375,9 +375,11 @@ func (nf *Finder) AddCity(spatialCity city.SpatialCity) {
 		nf.InvertedIndex[spatialCity.Country][name] = append(nf.InvertedIndex[spatialCity.Country][name], &spatialCity.City)
 		// The n-gram index is an immutable CSR that cannot take incremental
 		// inserts, so names arriving after the last fuzzy build land in a
-		// small overflow list that fuzzy searches scan linearly. The next
-		// rebuild (which snapshots the whole index) folds them in and clears
-		// the list. Before the first build the append is harmless: the
+		// small overflow list that fuzzy searches scan linearly for the
+		// Finder's lifetime — once fuzzyBuilt is terminal there is no later
+		// rebuild to fold them into (AddCity has no production callers
+		// today; results stay correct because the overflow is always
+		// scanned). Before the first build the append is harmless: the
 		// build's name snapshot supersedes it.
 		nf.fuzzyOverflow = append(nf.fuzzyOverflow, name)
 	}
