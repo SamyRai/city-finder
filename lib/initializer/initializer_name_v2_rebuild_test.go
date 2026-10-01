@@ -53,7 +53,7 @@ func TestEnsureFinders_RebuildsV1NameIndexAsV2(t *testing.T) {
 	cfg := testConfig(dir)
 	writeTinyDatasets(t, cfg)
 
-	f1, err := ensureFinders(cfg)
+	f1, err := ensureFinders(cfg, "")
 	require.NoError(t, err)
 	require.NotNil(t, f1)
 
@@ -65,7 +65,7 @@ func TestEnsureFinders_RebuildsV1NameIndexAsV2(t *testing.T) {
 	_, err = name.DeserializeIndex(namePath)
 	require.ErrorIs(t, err, name.ErrCorruptIndex, "a v1 header must fail the version check")
 
-	f2, err := ensureFinders(cfg)
+	f2, err := ensureFinders(cfg, "")
 	require.NoError(t, err, "a v1 name index must trigger a rebuild, not a fatal error")
 	require.NotNil(t, f2)
 
@@ -90,7 +90,7 @@ func TestEnsureFinders_RebuildsV1NameIndexAsV2(t *testing.T) {
 	// raw datasets.
 	require.NoError(t, os.Remove(filepath.Join(dir, cfg.AllCitiesFile)))
 	require.NoError(t, os.Remove(filepath.Join(dir, cfg.PostalCodesFile)))
-	f3, err := ensureFinders(cfg)
+	f3, err := ensureFinders(cfg, "")
 	require.NoError(t, err, "warm start must succeed after the v1 file was repaired to v2")
 	require.NotNil(t, f3)
 	wp := f3.NameFinder.CityByName("les Escaldes", "AD")

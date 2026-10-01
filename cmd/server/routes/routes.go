@@ -44,6 +44,19 @@ func parseRank(raw string) (coordinates.Rank, bool) {
 	}
 }
 
+// parseInclude validates the optional include query parameter of /nearest.
+// Absent or empty requests the plain v1.0 response; the only accepted value
+// is the exact lowercase "admin" (case-sensitive, like every other parameter
+// on this handler). Any other value is invalid, not ignored.
+func parseInclude(raw string) (includeAdmin bool, ok bool) {
+	switch raw {
+	case "", "admin":
+		return raw == "admin", true
+	default:
+		return false, false
+	}
+}
+
 // nearestCityResponse is the /nearest payload: the matched city plus its
 // distance from the query point. city.City has no json tags, so its four
 // fields marshal capitalized; embedding it keeps that serialization exactly
@@ -52,10 +65,21 @@ func parseRank(raw string) (coordinates.Rank, bool) {
 // omitted from the JSON, so distance-ranked bodies stay byte-identical to the
 // pre-ranking API (the embedded City.Population itself stays json:"-"). When
 // present it carries the winning city's actual Population int32.
+//
+// The admin1/admin2 fields are set only for include=admin requests and are
+// likewise omitted entirely (omitempty on the zero values) from every other
+// response, keeping default bodies byte-identical to v1.0. Boundary caveat
+// (documented in the API spec): attribution follows the NEAREST city, not
+// polygon containment — near a border it may report the region the closest
+// city sits in, across the line.
 type nearestCityResponse struct {
 	city.City
 	DistanceKm float64 `json:"distance_km"`
 	Population *int32  `json:"Population,omitempty"`
+
+	Admin1Code string `json:"admin1_code,omitempty"` // raw per-country code ("06"), when include=admin
+	Admin1Name string `json:"admin1_name,omitempty"` // from the optional names dataset; omitted in codes-only mode
+	Admin2Code string `json:"admin2_code,omitempty"` // raw per-country code ("075"), omitted when the city has none
 }
 
 func SetupRoutes(app *fiber.App, mainFinder *finder.Finder) {
@@ -89,7 +113,23 @@ func SetupRoutes(app *fiber.App, mainFinder *finder.Finder) {
 			return c.Status(fiber.StatusBadRequest).SendString("Invalid rank")
 		}
 
-		nearest, distanceKm, err := mainFinder.FindNearestCity(lat, lon, rank)
+		includeAdmin, ok := parseInclude(c.Query("include"))
+		if !ok {
+			return c.Status(fiber.StatusBadRequest).SendString("Invalid include")
+		}
+
+		// The two paths share the query core; only the attribution read
+		// differs. Default requests keep calling FindNearestCity so their
+		// bodies — and latency profile — stay byte-identical to v1.0.
+		var nearest *city.City
+		var distanceKm float64
+		var admin coordinates.AdminAttribution
+		var err error
+		if includeAdmin {
+			nearest, distanceKm, admin, err = mainFinder.S2Finder.NearestPlaceWithAdmin(lat, lon, rank)
+		} else {
+			nearest, distanceKm, err = mainFinder.FindNearestCity(lat, lon, rank)
+		}
 		if err != nil {
 			log.Printf("Error finding city for lat=%f lon=%f: %v", lat, lon, err)
 			return c.Status(fiber.StatusInternalServerError).SendString("internal server error")
@@ -104,6 +144,11 @@ func SetupRoutes(app *fiber.App, mainFinder *finder.Finder) {
 		if rank == coordinates.RankPopulation {
 			population := nearest.Population
 			response.Population = &population
+		}
+		if includeAdmin {
+			response.Admin1Code = admin.Admin1Code
+			response.Admin1Name = admin.Admin1Name // "" (omitted) in codes-only mode
+			response.Admin2Code = admin.Admin2Code // "" (omitted) when the city has none
 		}
 		return c.JSON(response)
 	})

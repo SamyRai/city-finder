@@ -24,7 +24,7 @@ func TestEnsureFinders_RebuildsTruncatedS2Index(t *testing.T) {
 	cfg := testConfig(dir)
 	writeTinyDatasets(t, cfg)
 
-	f1, err := ensureFinders(cfg)
+	f1, err := ensureFinders(cfg, "")
 	require.NoError(t, err)
 	require.NotNil(t, f1)
 
@@ -34,7 +34,7 @@ func TestEnsureFinders_RebuildsTruncatedS2Index(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(s2Path, full[:len(full)/2], 0o600))
 
-	f2, err := ensureFinders(cfg)
+	f2, err := ensureFinders(cfg, "")
 	require.NoError(t, err, "a truncated index must trigger a rebuild, not a fatal error")
 	require.NotNil(t, f2)
 
@@ -53,7 +53,7 @@ func TestEnsureFinders_RebuildsTruncatedS2Index(t *testing.T) {
 	// raw datasets.
 	require.NoError(t, os.Remove(filepath.Join(dir, cfg.AllCitiesFile)))
 	require.NoError(t, os.Remove(filepath.Join(dir, cfg.PostalCodesFile)))
-	f3, err := ensureFinders(cfg)
+	f3, err := ensureFinders(cfg, "")
 	require.NoError(t, err, "warm start must succeed after the index was repaired")
 	require.NotNil(t, f3)
 }
@@ -65,14 +65,14 @@ func TestEnsureFinders_RebuildsGarbagePostalCodeIndex(t *testing.T) {
 	cfg := testConfig(dir)
 	writeTinyDatasets(t, cfg)
 
-	f1, err := ensureFinders(cfg)
+	f1, err := ensureFinders(cfg, "")
 	require.NoError(t, err)
 	require.NotNil(t, f1)
 
 	postalPath := filepath.Join(dir, cfg.PostalCodeIndexFile)
 	require.NoError(t, os.WriteFile(postalPath, []byte("<html>saved as gob</html>"), 0o600))
 
-	f2, err := ensureFinders(cfg)
+	f2, err := ensureFinders(cfg, "")
 	require.NoError(t, err, "an undecodable postal index must trigger a rebuild, not a fatal error")
 
 	c := f2.PostalCodeFinder.CityByPostalCode("AD100", "AD")
@@ -93,14 +93,14 @@ func TestEnsureFinders_RebuildsCorruptNameIndex(t *testing.T) {
 	cfg := testConfig(dir)
 	writeTinyDatasets(t, cfg)
 
-	f1, err := ensureFinders(cfg)
+	f1, err := ensureFinders(cfg, "")
 	require.NoError(t, err)
 	require.NotNil(t, f1)
 
 	namePath := filepath.Join(dir, cfg.NameIndexFile)
 	require.NoError(t, os.WriteFile(namePath, []byte("\x00\x01not gob at all"), 0o600))
 
-	f2, err := ensureFinders(cfg)
+	f2, err := ensureFinders(cfg, "")
 	require.NoError(t, err, "an undecodable name index must trigger a rebuild, not a fatal error")
 
 	c := f2.NameFinder.CityByName("les Escaldes", "AD")
@@ -116,7 +116,7 @@ func TestEnsureFinders_CorruptIndexWithoutDatasetsIsFatal(t *testing.T) {
 	cfg := testConfig(dir)
 	writeTinyDatasets(t, cfg)
 
-	f1, err := ensureFinders(cfg)
+	f1, err := ensureFinders(cfg, "")
 	require.NoError(t, err)
 	require.NotNil(t, f1)
 
@@ -126,7 +126,7 @@ func TestEnsureFinders_CorruptIndexWithoutDatasetsIsFatal(t *testing.T) {
 	s2Path := filepath.Join(dir, cfg.S2.IndexFile)
 	require.NoError(t, os.WriteFile(s2Path, []byte("garbage"), 0o600))
 
-	_, err = ensureFinders(cfg)
+	_, err = ensureFinders(cfg, "")
 	require.Error(t, err, "a corrupt index with no source data to rebuild from must fail")
 	assert.Contains(t, err.Error(), "rebuild", "the error must explain the rebuild attempt failed")
 }
@@ -148,7 +148,7 @@ func TestEnsureFinders_NameIndexUnreadableFileIsFatal(t *testing.T) {
 	cfg := testConfig(dir)
 	writeTinyDatasets(t, cfg)
 
-	f1, err := ensureFinders(cfg)
+	f1, err := ensureFinders(cfg, "")
 	require.NoError(t, err)
 	require.NotNil(t, f1)
 
@@ -156,7 +156,7 @@ func TestEnsureFinders_NameIndexUnreadableFileIsFatal(t *testing.T) {
 	require.NoError(t, os.Chmod(namePath, 0o000))
 	defer func() { _ = os.Chmod(namePath, 0o600) }()
 
-	_, err = ensureFinders(cfg)
+	_, err = ensureFinders(cfg, "")
 	require.Error(t, err, "an unreadable name index must be fatal, not rebuilt over")
 	assert.Contains(t, err.Error(), "failed to deserialize name index",
 		"the error must identify deserialization as the failing stage")

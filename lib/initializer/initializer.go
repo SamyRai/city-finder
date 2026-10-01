@@ -25,7 +25,9 @@ func Initialize(cfg *config.Config) (*finder.Finder, error) {
 	if err := ensureDatasets(cfg); err != nil {
 		return nil, err
 	}
-	return ensureFinders(cfg)
+	// The optional admin1-names dataset is disabled until the config keys
+	// land (config-lane coordination); see the wiring commit.
+	return ensureFinders(cfg, "")
 }
 
 // ensureDatasets ensures that the datasets are downloaded and extracted
@@ -260,7 +262,13 @@ func (s *datasetSource) load() error {
 // deserializes its index from disk instead. An index that fails to decode
 // is rebuilt once from the source data (see the ensure*Index functions),
 // which re-materializes the datasets on demand.
-func ensureFinders(cfg *config.Config) (*finder.Finder, error) {
+//
+// admin1NamesPath points at the OPTIONAL admin1CodesASCII.txt dataset: empty
+// disables names entirely; a present file attaches the composite-key ->
+// name map to the S2 finder; a configured-but-missing file degrades to
+// codes-only mode with one log line (responses carry admin1 CODE, no name —
+// the dataset is enhancement data, never a startup requirement).
+func ensureFinders(cfg *config.Config, admin1NamesPath string) (*finder.Finder, error) {
 	s2IndexPath, nameIndexPath, postalCodeIndexPath := indexFilePaths(cfg)
 
 	data := &datasetSource{cfg: cfg}
@@ -274,6 +282,10 @@ func ensureFinders(cfg *config.Config) (*finder.Finder, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Names are attached on every boot (warm or cold): the map is ~120 KB
+	// and deliberately not serialized with the index, so updating the
+	// names file never invalidates it.
+	s2Finder.Admin1Names = ensureAdmin1Names(admin1NamesPath)
 
 	nameFinder, err := ensureNameIndex(nameIndexPath, data)
 	if err != nil {
@@ -290,6 +302,27 @@ func ensureFinders(cfg *config.Config) (*finder.Finder, error) {
 		NameFinder:       nameFinder,
 		PostalCodeFinder: postalCodeFinder,
 	}, nil
+}
+
+// ensureAdmin1Names loads the optional admin1 names dataset. An empty path
+// means "not configured" (nil, silent). A configured path that is missing or
+// unreadable degrades to codes-only mode: nil map plus exactly one log line,
+// per the design note — the API then serves admin1 codes without names
+// rather than failing.
+func ensureAdmin1Names(path string) map[string]string {
+	if path == "" {
+		return nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		log.Printf("admin1 names file %s not available (%v); serving admin1 codes only", path, err)
+		return nil
+	}
+	names, err := dataLoader.LoadAdmin1Names(path)
+	if err != nil {
+		log.Printf("admin1 names file %s failed to load (%v); serving admin1 codes only", path, err)
+		return nil
+	}
+	return names
 }
 
 func loadData(cfg *config.Config) ([]city.SpatialCity, map[string]map[string]dataLoader.PostalCodeEntry, error) {
