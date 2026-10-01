@@ -4,8 +4,8 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
-	"io"
 	"log"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -14,7 +14,6 @@ import (
 
 	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/SamyRai/cityFinder/util"
-	"os"
 )
 
 // internString uses Go 1.23's unique package for efficient string interning
@@ -667,7 +666,14 @@ const (
 	// nameIndexMagic identifies name index files.
 	nameIndexMagic = "CFNAMEIDX"
 	// nameIndexVersion is the current on-disk format version.
-	nameIndexVersion = uint32(1)
+	//
+	// v2 replaced the gob-encoded map[string]map[string][]*city.City (which
+	// duplicates every City value per reference — 1.6 GB and ~54 s of warm
+	// start at Oct-2026 GeoNames scale) with a distinct-city table plus int32
+	// references. It also dropped the BK-tree/isBKTreeBuilt/allNames trailer:
+	// those are lazy-build runtime state. A v1 file fails the version check
+	// below with ErrCorruptIndex; the initializer rebuilds it from source.
+	nameIndexVersion = uint32(2)
 )
 
 // ErrCorruptIndex reports an index file that cannot be trusted: truncated,
@@ -676,13 +682,35 @@ const (
 // error from an unreadable file, for example — is fatal.
 var ErrCorruptIndex = errors.New("name index file is corrupt or incompatible")
 
+// nameIndexPayloadV2 is the v2 on-disk payload: every distinct city exactly
+// once, plus the inverted index reduced to int32 city ids.
+//
+// Cities[i] is city id i. Refs maps country -> name -> ids into Cities, in the
+// same order the in-memory index held the pointers. Serializing ids instead of
+// pointers is what makes pointer sharing survive a round trip: gob has no
+// pointer identity, so v1's struct-per-reference encoding ballooned the file
+// and forced the initializer to decode 35M City values for 13.47M distinct
+// cities.
+type nameIndexPayloadV2 struct {
+	Cities []city.City
+	Refs   map[string]map[string][]int32
+}
+
 // SerializeIndex saves the name index to a file.
 // The payload is written to a sibling ".part" file first and moved into place
 // with os.Rename only after the full stream has been written, so a crash
 // mid-write can never leave a truncated file where the index used to be.
+//
+// The BK-tree, isBKTreeBuilt, and allNames are runtime state and are NOT
+// written: v2 always rebuilds the fuzzy structure lazily on first lookup. Map
+// iteration order makes the file bytes non-deterministic — acceptable, indexes
+// are regenerable artifacts gated by count validation and round-trip tests,
+// not byte comparison.
 func (nf *Finder) SerializeIndex(filepath string) error {
 	nf.mutex.Lock()
-	defer nf.mutex.Unlock()
+	payload := nf.buildPayloadV2Locked()
+	count := len(nf.InvertedIndex)
+	nf.mutex.Unlock()
 
 	partPath := filepath + ".part"
 	file, err := os.Create(partPath)
@@ -699,22 +727,12 @@ func (nf *Finder) SerializeIndex(filepath string) error {
 	header := indexHeader{
 		Magic:   nameIndexMagic,
 		Version: nameIndexVersion,
-		Count:   len(nf.InvertedIndex),
+		Count:   count,
 	}
 	if err := encoder.Encode(&header); err != nil {
 		return fail(err)
 	}
-	if err := encoder.Encode(nf.InvertedIndex); err != nil {
-		return fail(err)
-	}
-	if err := encoder.Encode(nf.BKTree); err != nil {
-		return fail(err)
-	}
-	// Serialize lazy loading state
-	if err := encoder.Encode(nf.isBKTreeBuilt); err != nil {
-		return fail(err)
-	}
-	if err := encoder.Encode(nf.allNames); err != nil {
+	if err := encoder.Encode(&payload); err != nil {
 		return fail(err)
 	}
 	if err := file.Close(); err != nil {
@@ -728,13 +746,51 @@ func (nf *Finder) SerializeIndex(filepath string) error {
 	return nil
 }
 
+// buildPayloadV2Locked reduces the inverted index to the v2 payload. The
+// caller must hold nf.mutex: the index maps are read while ids are assigned by
+// pointer identity, so a concurrent AddCity would race the walk.
+func (nf *Finder) buildPayloadV2Locked() nameIndexPayloadV2 {
+	ids := make(map[*city.City]int32)
+	payload := nameIndexPayloadV2{
+		Refs: make(map[string]map[string][]int32, len(nf.InvertedIndex)),
+	}
+	for country, countryMap := range nf.InvertedIndex {
+		refs := make(map[string][]int32, len(countryMap))
+		for name, cityList := range countryMap {
+			idList := make([]int32, len(cityList))
+			for i, c := range cityList {
+				id, exists := ids[c]
+				if !exists {
+					// First encounter of this pointer: append the value and
+					// remember its id. Two equal City values under different
+					// pointers are two entries — identity, not equality.
+					id = int32(len(payload.Cities))
+					ids[c] = id
+					payload.Cities = append(payload.Cities, *c)
+				}
+				idList[i] = id
+			}
+			refs[name] = idList
+		}
+		payload.Refs[country] = refs
+	}
+	return payload
+}
+
 // DeserializeIndex loads the name index from a file.
 // The stream must start with a compatible indexHeader; a missing or mismatched
-// header (including legacy pre-header files) yields an error that suggests
-// deleting the file so the index gets rebuilt. Every decode failure — bad
-// header, format mismatch, truncated or malformed payload — wraps
-// ErrCorruptIndex so callers can distinguish rebuildable corruption from
-// environmental errors (open/close failures are returned unwrapped).
+// header (including legacy pre-header files and v1 files, which must not be
+// decoded into the post-Population struct — gob would zero-fill the field and
+// silently load wrong data) yields an error that suggests deleting the file so
+// the index gets rebuilt. Every decode failure — bad header, format mismatch,
+// truncated or malformed payload — wraps ErrCorruptIndex so callers can
+// distinguish rebuildable corruption from environmental errors (open/close
+// failures are returned unwrapped).
+//
+// Rehydration decodes each City exactly once and points every reference at
+// &cities[id] through a pointer table — one pointer store per reference, no
+// per-ref struct allocation, and the pre-serialization sharing semantics are
+// restored: the city under two names is one pointer again.
 func DeserializeIndex(filepath string) (*Finder, error) {
 	file, err := os.Open(filepath)
 	if err != nil {
@@ -754,98 +810,67 @@ func DeserializeIndex(filepath string) (*Finder, error) {
 			ErrCorruptIndex, filepath, header.Magic, header.Version, nameIndexMagic, nameIndexVersion)
 	}
 
-	finder := NewNameFinder()
-	if err := decoder.Decode(&finder.InvertedIndex); err != nil {
+	var payload nameIndexPayloadV2
+	if err := decoder.Decode(&payload); err != nil {
 		_ = file.Close()
 		return nil, fmt.Errorf("%w: decoding name index payload from %s: %v", ErrCorruptIndex, filepath, err)
 	}
-	if err := decoder.Decode(&finder.BKTree); err != nil {
+	if header.Count != len(payload.Refs) {
 		_ = file.Close()
-		return nil, fmt.Errorf("%w: decoding name index BK-tree from %s: %v", ErrCorruptIndex, filepath, err)
-	}
-	// Deserialize lazy loading state. Older files that predate these fields
-	// simply end the stream here; that is a legacy file, not corruption. Any
-	// other decode error must surface instead of being silently swallowed.
-	if err := decoder.Decode(&finder.isBKTreeBuilt); err != nil {
-		if !isEndOfStream(err) {
-			_ = file.Close()
-			return nil, fmt.Errorf("%w: decoding name index build state: %v", ErrCorruptIndex, err)
-		}
-		finder.allNames = nil
-	} else if err := decoder.Decode(&finder.allNames); err != nil {
-		if !isEndOfStream(err) {
-			_ = file.Close()
-			return nil, fmt.Errorf("%w: decoding name index name list: %v", ErrCorruptIndex, err)
-		}
-		finder.allNames = nil
-	}
-
-	// Reconcile the built flag with the actual tree state:
-	// - a populated tree was built by someone; trust it instead of rebuilding.
-	// - a "built" flag over an empty tree (persisted by builds whose fuzzy
-	//   path never ran) must be cleared or fuzzy search stays dead forever;
-	//   the lazy build now derives the name set from the inverted index.
-	// The runtime fuzzyState follows the same decision: seeded to built over a
-	// populated tree, left not-built otherwise so the first fuzzy lookup
-	// re-evaluates it — including the FuzzyMaxNames gate, which disables
-	// matching on an over-threshold warm start without ever building.
-	if finder.BKTree.Root != nil {
-		finder.isBKTreeBuilt = true
-		finder.fuzzyState.Store(fuzzyBuilt)
-	} else if finder.isBKTreeBuilt && len(finder.InvertedIndex) > 0 {
-		finder.isBKTreeBuilt = false
+		return nil, fmt.Errorf("%w: name index %s payload holds %d countries but the header recorded %d; delete the file so the index is rebuilt",
+			ErrCorruptIndex, filepath, len(payload.Refs), header.Count)
 	}
 
 	if err := file.Close(); err != nil {
 		return nil, err
 	}
 
-	// gob allocates a fresh copy of every string occurrence it decodes, so the
-	// decoded index duplicates name/country strings per reference. Interning
-	// the City fields releases those duplicates (measured: ~16% of the decoded
-	// heap on a synthetic 200K-city index); the finder is not shared yet, so
-	// no locking is needed.
-	finder.internDecodedStrings()
+	// gob allocates a fresh backing for every decoded string, so each City
+	// carries its own copy of a country code shared by millions of cities.
+	// One intern pass over the distinct-city table (13.47M calls at prod
+	// scale, versus v1's 70M over every reference) collapses those to one
+	// backing per country. Names stay per-city: they are mostly distinct, and
+	// interning near-unique values only grows the unique-package table.
+	internDecodedCountries(payload.Cities)
 
+	// Pointer table + one-pass rehydration. The table is built before the
+	// maps so no reference can observe a partially filled entry.
+	ptrs := make([]*city.City, len(payload.Cities))
+	for i := range payload.Cities {
+		ptrs[i] = &payload.Cities[i]
+	}
+
+	finder := NewNameFinder()
+	for country, refs := range payload.Refs {
+		countryMap := make(map[string][]*city.City, len(refs))
+		for name, idList := range refs {
+			cityList := make([]*city.City, len(idList))
+			for i, id := range idList {
+				if id < 0 || int(id) >= len(ptrs) {
+					return nil, fmt.Errorf("%w: name index %s references city id %d outside the %d-city table; delete the file so the index is rebuilt",
+						ErrCorruptIndex, filepath, id, len(ptrs))
+				}
+				cityList[i] = ptrs[id]
+			}
+			countryMap[name] = cityList
+		}
+		finder.InvertedIndex[country] = countryMap
+	}
+
+	// Fuzzy state starts fresh: the BK-tree is deliberately not serialized,
+	// so the first fuzzy lookup rebuilds it lazily from the index (including
+	// the FuzzyMaxNames gate, which disables matching on an over-threshold
+	// warm start without ever building).
 	return finder, nil
 }
 
-// isEndOfStream reports whether err indicates the gob stream ended (a legacy
-// file without the trailing lazy-load fields) rather than being malformed.
-func isEndOfStream(err error) bool {
-	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
-}
-
-// internDecodedStrings interns the string data produced by gob decoding so the
-// warm-started index shares one backing array per distinct name/country, the
-// same way the build path does. It must run before the finder is shared
-// (DeserializeIndex is the only caller).
-//
-// Only the City struct fields (plus the allNames list, usually empty) are
-// interned, not the inverted-index map keys: internString registers every
-// distinct value in the global unique-package table, and on synthetic
-// 50K/200K-city indexes the table growth from interning key-only strings
-// (alternate names exist only as map keys) was measured to outweigh the freed
-// key duplicates, leaving the final heap slightly LARGER. City-field
-// interning is where the measured win lives.
-func (nf *Finder) internDecodedStrings() {
-	nf.internCityFields()
-	for i, name := range nf.allNames {
-		nf.allNames[i] = internString(name)
-	}
-}
-
-// internCityFields interns the Name/Country fields of every decoded City.
-// gob transmits each pointer occurrence as a full value, so a city referenced
-// under several names decodes to several City values each carrying its own
-// copies of the strings; this is where most of the decoded duplication lives.
-func (nf *Finder) internCityFields() {
-	for _, countryMap := range nf.InvertedIndex {
-		for _, cityList := range countryMap {
-			for _, c := range cityList {
-				c.Name = internString(c.Name)
-				c.Country = internString(c.Country)
-			}
-		}
+// internDecodedCountries interns the Country field of every decoded city.
+// gob transmits each string occurrence with its own backing array, so the
+// distinct-city table carries ~13.47M copies of ~250 country codes; the pass
+// collapses them to one shared backing per country. It must run before the
+// finder is shared (DeserializeIndex is the only caller, pre-rehydration).
+func internDecodedCountries(cities []city.City) {
+	for i := range cities {
+		cities[i].Country = internString(cities[i].Country)
 	}
 }

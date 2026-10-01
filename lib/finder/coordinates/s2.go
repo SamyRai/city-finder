@@ -26,21 +26,26 @@ type SerializableS2Finder struct {
 	Cities []city.City
 }
 
-// Serialized index file format (version 1):
+// Serialized index file format (version 2):
 //
-//	gob(indexHeader{Magic: "CFS2IDX", Version: 1, Count: len(Cities)})
+//	gob(indexHeader{Magic: "CFS2IDX", Version: 2, Count: len(Cities)})
 //	gob(SerializableS2Finder)
 //
 // The leading header lets a truncated or version-skewed file be rejected
 // with a descriptive error instead of silently poisoning the finder with
 // zero-filled data (gob zero-fills fields it does not find, so an index
-// written before a City-struct change would otherwise load as garbage).
-// Writes go to filepath+".part" and are renamed into place only after a
-// complete encode, so a crash mid-write never replaces a valid index with a
-// truncated one.
+// written before a City-struct change would otherwise load as garbage). The
+// payload struct is unchanged from v1, but v2 bumped the version in lockstep
+// with the name index because the embedded City gained Population: a v1 file
+// decoded into the new struct would load every population as 0 — silently
+// wrong data for the WEIGHTED ranking path. The bump forces one coordinated
+// regenerate so no v1 S2 file can be interpreted with zero-filled
+// populations. Writes go to filepath+".part" and are renamed into place only
+// after a complete encode, so a crash mid-write never replaces a valid index
+// with a truncated one.
 const (
 	indexMagic   = "CFS2IDX"
-	indexVersion = uint32(1)
+	indexVersion = uint32(2)
 )
 
 // indexHeader is the first gob value of every serialized S2 index.
