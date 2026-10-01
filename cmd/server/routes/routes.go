@@ -5,12 +5,18 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
+	"unicode/utf8"
 
+	"github.com/SamyRai/cityFinder/cmd/server/metrics"
 	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/SamyRai/cityFinder/lib/finder"
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
+	"github.com/SamyRai/cityFinder/lib/finder/name"
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -82,13 +88,80 @@ type nearestCityResponse struct {
 	Admin2Code string `json:"admin2_code,omitempty"` // raw per-country code ("075"), omitted when the city has none
 }
 
+// maxNameRunes caps the /coordinates name parameter. The longest real place
+// names are well under 100 runes; the cap also bounds the fuzzy path, whose
+// query-gram dedup is quadratic in name length.
+const maxNameRunes = 200
+
+// populationGate bounds how many rank=population queries may execute at
+// once. Each query escalates search discs under an anytime bound; a far-from
+// land (mid-ocean) point escalates to a full-index scan that allocates a
+// multi-hundred-MB result slice and can run for seconds — N simultaneous
+// such queries is a memory-spike/OOM vector, so saturation sheds load with
+// 503 + Retry-After instead of queueing unbounded work. Cheap (land)
+// population queries hold a slot only for microseconds-to-milliseconds and
+// do not saturate the gate in practice.
+var populationGate = make(chan struct{}, populationGateConcurrency())
+
+// populationGateConcurrency sizes the gate to the CPU: the scans are
+// CPU-bound, so more slots than cores only adds memory pressure; 8 keeps a
+// hard ceiling on worst-case transient allocation.
+func populationGateConcurrency() int {
+	n := runtime.GOMAXPROCS(0)
+	if n > 8 {
+		n = 8
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// SetupRoutes registers the data routes without a metrics registry (tests
+// and embedded use); the metrics middleware and endpoint are skipped.
 func SetupRoutes(app *fiber.App, mainFinder *finder.Finder) {
+	SetupRoutesWithMetrics(app, mainFinder, nil)
+}
+
+// SetupRoutesWithMetrics registers the data routes plus, when reg is
+// non-nil, a request-metrics middleware and the GET /metrics endpoint.
+func SetupRoutesWithMetrics(app *fiber.App, mainFinder *finder.Finder, reg *metrics.Registry) {
+	if reg != nil {
+		app.Use(func(c *fiber.Ctx) error {
+			start := time.Now()
+			err := c.Next()
+			pattern := c.Route().Path
+			if pattern == "" {
+				pattern = "(unrouted)"
+			}
+			if pattern != "/metrics" { // a scrape must not grow its own counts
+				reg.ObserveRequest(pattern, c.Response().StatusCode(), time.Since(start))
+			}
+			return err
+		})
+	}
+
 	// Liveness probe: registered before the data routes and never touches the
 	// finders, so it stays cheap and answers even when data loading is slow
 	// or the indexes are degraded.
 	app.Get("/healthz", func(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok"})
 	})
+
+	if reg != nil {
+		// fuzzy_budget_trips_total is scraped from the library counter as a
+		// delta since the previous scrape; Swap makes concurrent scrapes
+		// count each trip exactly once.
+		var lastTrips atomic.Uint64
+		lastTrips.Store(name.FuzzyBudgetTrips())
+		app.Get("/metrics", func(c *fiber.Ctx) error {
+			cur := name.FuzzyBudgetTrips()
+			if delta := cur - lastTrips.Swap(cur); delta > 0 {
+				reg.AddCounter("fuzzy_budget_trips_total", int64(delta))
+			}
+			return c.Type("text", "plain").SendString(reg.Render())
+		})
+	}
 
 	app.Get("/nearest", func(c *fiber.Ctx) error {
 		lat, ok := parseCoordinate(c.Query("lat"), "lat")
@@ -116,6 +189,17 @@ func SetupRoutes(app *fiber.App, mainFinder *finder.Finder) {
 		includeAdmin, ok := parseInclude(c.Query("include"))
 		if !ok {
 			return c.Status(fiber.StatusBadRequest).SendString("Invalid include")
+		}
+
+		if rank == coordinates.RankPopulation {
+			select {
+			case populationGate <- struct{}{}:
+				defer func() { <-populationGate }()
+			default:
+				c.Set(fiber.HeaderRetryAfter, "1")
+				return c.Status(fiber.StatusServiceUnavailable).
+					SendString("population ranking is saturated, retry shortly")
+			}
 		}
 
 		// The two paths share the query core; only the attribution read
@@ -157,6 +241,10 @@ func SetupRoutes(app *fiber.App, mainFinder *finder.Finder) {
 		name := strings.TrimSpace(c.Query("name"))
 		if name == "" {
 			return c.Status(fiber.StatusBadRequest).SendString("Name is required")
+		}
+		if utf8.RuneCountInString(name) > maxNameRunes {
+			return c.Status(fiber.StatusBadRequest).
+				SendString(fmt.Sprintf("Name too long (max %d characters)", maxNameRunes))
 		}
 		countryCode := strings.ToUpper(strings.TrimSpace(c.Query("country-code")))
 		if countryCode == "" {
