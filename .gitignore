@@ -3,3 +3,8 @@ datasets/
 
 .DS_Store
 
+# Local-only profiling and benchmark artifacts; never commit these.
+*.pprof
+/*.log
+benchmark_output*.log
+
