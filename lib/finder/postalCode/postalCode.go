@@ -11,21 +11,24 @@ import (
 	"github.com/SamyRai/cityFinder/lib/dataLoader"
 )
 
-// Serialized index file format (version 1):
+// Serialized index file format (version 2):
 //
-//	gob(indexHeader{Magic: "CFPOSTIDX", Version: 1, Count: total entries})
+//	gob(indexHeader{Magic: "CFPOSTIDX", Version: 2, Count: total entries})
 //	gob(Finder)  // only the exported PostalCode map is encoded
 //
 // The leading header lets a truncated or version-skewed file be rejected
 // with a descriptive error instead of silently poisoning the finder with
 // zero-filled data (gob zero-fills fields it does not find, so an index
 // written before a PostalCodeEntry-struct change would otherwise load as
-// garbage). Writes go to filepath+".part" and are renamed into place only
-// after a complete encode, so a crash mid-write never replaces a valid index
-// with a truncated one.
+// garbage). The payload struct is unchanged from v1 (PostalCodeEntry embeds
+// no City); the version bump is lockstep consistency with the name and S2
+// indexes — all three regenerate together from the same source on first v2
+// boot and there is a single version story in logs and docs. Writes go to
+// filepath+".part" and are renamed into place only after a complete encode,
+// so a crash mid-write never replaces a valid index with a truncated one.
 const (
 	indexMagic   = "CFPOSTIDX"
-	indexVersion = uint32(1)
+	indexVersion = uint32(2)
 )
 
 // indexHeader is the first gob value of every serialized postal code index.

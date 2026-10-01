@@ -33,6 +33,13 @@ func TestFinder_SerializeDeserialize(t *testing.T) {
 
 	// Compare the original and deserialized finders
 	assert.Equal(t, finder.InvertedIndex, deserializedFinder.InvertedIndex)
+
+	// v2 does not serialize the BK-tree: the deserialized finder starts with
+	// an empty tree and rebuilds it lazily on the first fuzzy lookup.
 	assert.NotNil(t, deserializedFinder.BKTree)
-	assert.Equal(t, finder.BKTree.Root.Term, deserializedFinder.BKTree.Root.Term)
+	assert.Nil(t, deserializedFinder.BKTree.Root, "the BK-tree must not survive serialization in v2")
+	got := deserializedFinder.CityByName("Test Citt", "TC") // distance-1 typo: forces the lazy rebuild
+	if assert.NotNil(t, got, "fuzzy lookup must work via lazy rebuild after deserialize") {
+		assert.Equal(t, "Test City", got.Name)
+	}
 }

@@ -14,8 +14,13 @@ import (
 
 // internFixtureCities builds a dataset shaped like GeoNames data: every base
 // name appears in several countries and every city carries two alternate
-// names, so each city is referenced from three index entries (duplicating the
-// decoded City values and their strings).
+// names, so each city is referenced from three index entries. Under the v2
+// format the file still stores each city exactly once; the shape exercises
+// the reference rehydration, not struct duplication.
+//
+// Country strings are deliberately long-ish ("RepublicOfNaniaNN", 18 chars):
+// the v2 intern pass only collapses Country backings, so the measured heap
+// delta must come from those duplicates.
 func internFixtureCities(scale int) []city.SpatialCity {
 	n := 50000 * scale
 	cities := make([]city.SpatialCity, n)
@@ -23,7 +28,7 @@ func internFixtureCities(scale int) []city.SpatialCity {
 		cities[i] = city.SpatialCity{
 			City: city.City{
 				Name:    fmt.Sprintf("IntnCity%05d", i%(5000*scale)),
-				Country: fmt.Sprintf("N%02d", i%5),
+				Country: fmt.Sprintf("RepublicOfNania%02d", i%5),
 			},
 			AltNames: []string{
 				fmt.Sprintf("IntnAlt%05d", (i*3)%(15000*scale)),
@@ -34,12 +39,15 @@ func internFixtureCities(scale int) []city.SpatialCity {
 	return cities
 }
 
-// decodeUninterned replicates DeserializeIndex's decode sequence without the
-// post-decode interning pass, so interning can be measured in isolation. Each
-// measurement variant must run in its own test process: the unique-package
-// intern table is global, so a pass measured second would not pay (or benefit
-// from) table state left by an earlier variant.
-func decodeUninterned(t *testing.T, path string) *Finder {
+// decodeUninterned replicates DeserializeIndex's v2 decode sequence without
+// the Country-only intern pass, so the pass can be measured in isolation. It
+// returns the rehydrated finder plus the decoded distinct-city slice its
+// references point into (interning that slice's Country fields after the fact
+// is exactly what the production pre-rehydration pass does, minus ordering).
+// Each measurement variant must run in its own test process: the
+// unique-package intern table is global, so a pass measured second would not
+// pay (or benefit from) table state left by an earlier variant.
+func decodeUninterned(t *testing.T, path string) (*Finder, []city.City) {
 	t.Helper()
 	file, err := os.Open(path)
 	assert.NoError(t, err)
@@ -48,12 +56,30 @@ func decodeUninterned(t *testing.T, path string) *Finder {
 	decoder := gob.NewDecoder(file)
 	var header indexHeader
 	assert.NoError(t, decoder.Decode(&header))
+	assert.Equal(t, nameIndexMagic, header.Magic)
+	assert.Equal(t, nameIndexVersion, header.Version)
+
+	var payload nameIndexPayloadV2
+	assert.NoError(t, decoder.Decode(&payload))
+
+	ptrs := make([]*city.City, len(payload.Cities))
+	for i := range payload.Cities {
+		ptrs[i] = &payload.Cities[i]
+	}
+
 	finder := NewNameFinder()
-	assert.NoError(t, decoder.Decode(&finder.InvertedIndex))
-	assert.NoError(t, decoder.Decode(&finder.BKTree))
-	assert.NoError(t, decoder.Decode(&finder.isBKTreeBuilt))
-	assert.NoError(t, decoder.Decode(&finder.allNames))
-	return finder
+	for country, refs := range payload.Refs {
+		countryMap := make(map[string][]*city.City, len(refs))
+		for name, idList := range refs {
+			cityList := make([]*city.City, len(idList))
+			for i, id := range idList {
+				cityList[i] = ptrs[id]
+			}
+			countryMap[name] = cityList
+		}
+		finder.InvertedIndex[country] = countryMap
+	}
+	return finder, payload.Cities
 }
 
 func internHeap(t *testing.T) uint64 {
@@ -67,16 +93,18 @@ func internHeap(t *testing.T) uint64 {
 }
 
 // TestDeserializeInterningSavesMemory measures how much heap the post-decode
-// interning reclaims and verifies the interned index still serves lookups.
+// Country intern reclaims and verifies the interned index still serves
+// lookups.
 //
 // With INTERN_MEASURE=none it only decodes (the no-interning baseline); each
 // variant must run in its own `go test` process for a clean intern table.
 //
-// Measurement history: interning the inverted-index map KEYS was also tried
-// and dropped - on 50K/200K-city synthetic indexes the unique-table growth
-// for key-only strings (alternate names exist only as map keys) outweighed
-// the freed key duplicates, leaving the final heap up to ~0.5 MB larger. See
-// the comment on internDecodedStrings.
+// v1 history: interning the inverted-index map KEYS was also tried and
+// dropped — on 50K/200K-city synthetic indexes the unique-table growth for
+// key-only strings (alternate names exist only as map keys) outweighed the
+// freed key duplicates, leaving the final heap up to ~0.5 MB larger. v2 keeps
+// that decision for names and interns only the Country field over the
+// distinct-city table.
 func TestDeserializeInterningSavesMemory(t *testing.T) {
 	scale := 1
 	if s := os.Getenv("INTERN_SCALE"); s != "" {
@@ -93,33 +121,36 @@ func TestDeserializeInterningSavesMemory(t *testing.T) {
 	path := t.TempDir() + "/intern_measure.gob"
 	assert.NoError(t, f.SerializeIndex(path))
 
-	finder := decodeUninterned(t, path)
+	finder, cities := decodeUninterned(t, path)
 	decoded := internHeap(t)
 
 	if os.Getenv("INTERN_MEASURE") == "none" {
 		t.Logf("MODE=none decoded heap: %d B", decoded)
 		runtime.KeepAlive(finder)
+		runtime.KeepAlive(cities)
 		return
 	}
 
-	finder.internDecodedStrings()
+	internDecodedCountries(cities)
 	interned := internHeap(t)
 
 	saved := int64(decoded) - int64(interned)
-	t.Logf("decoded heap: %d B; after interning: %d B; saved: %d B (%.1f MB, %.1f%%)",
+	t.Logf("decoded heap: %d B; after Country intern: %d B; saved: %d B (%.1f MB, %.1f%%)",
 		decoded, interned, saved, float64(saved)/1024/1024, 100*float64(saved)/float64(decoded))
 
-	// The fixture duplicates every city across 3 index entries, so the pass
-	// must reclaim measurable MB.
-	assert.Greater(t, saved, int64(scale)*1024*1024, "post-decode interning must save at least 1 MB per fixture scale unit")
+	// The fixture decodes 50K*scale country strings of 18 bytes each; the
+	// pass must reclaim a measurable fraction of that (~24 B size class each,
+	// so up to ~1.2 MB per scale unit).
+	assert.Greater(t, saved, int64(scale)*128*1024,
+		"the Country intern pass must save a measurable share of the duplicated country backings")
 
 	// The interned index must still resolve exact and fuzzy lookups.
 	name := fmt.Sprintf("IntnCity%05d", 1)
-	got := finder.CityByName(name, "N01")
+	got := finder.CityByName(name, "RepublicOfNania01")
 	if !assert.NotNil(t, got, "exact lookup after interning") {
 		return
 	}
 	assert.Equal(t, name, got.Name)
-	assert.NotNil(t, finder.CityByName(fmt.Sprintf("IntnCitt%05d", 1), "N01"), "distance-1 fuzzy lookup after interning")
+	assert.NotNil(t, finder.CityByName(fmt.Sprintf("IntnCitt%05d", 1), "RepublicOfNania01"), "distance-1 fuzzy lookup after interning")
 	runtime.KeepAlive(finder)
 }

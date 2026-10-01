@@ -12,7 +12,7 @@ import (
 
 // TestSerializedStreamStartsWithHeader pins the on-disk contract: the first
 // value in the gob stream is the versioning header (magic CFNAMEIDX, version
-// 1, count = number of country sub-maps).
+// 2, count = number of country sub-maps).
 func TestSerializedStreamStartsWithHeader(t *testing.T) {
 	finder := BuildIndex(fuzzyFixtureCities()) // 5 countries: FR, GB, DE, JP, ES
 
@@ -60,6 +60,21 @@ func TestDeserializeRejectsIncompatibleHeaders(t *testing.T) {
 				return enc.Encode(&indexHeader{Magic: "CFS2INDEX", Version: nameIndexVersion, Count: 1})
 			}),
 			wantSub:     []string{nameIndexMagic, "rebuilt"},
+			wantCorrupt: true,
+		},
+		{
+			desc: "v1 file is rejected, not decoded",
+			path: write("v1_file.gob", func(enc *gob.Encoder) error {
+				// A faithful v1 stream: header with version 1 followed by the
+				// raw InvertedIndex (struct-per-reference payload). The
+				// rejection must come from the version check, before any
+				// payload decoding could zero-fill Population.
+				if err := enc.Encode(&indexHeader{Magic: nameIndexMagic, Version: 1, Count: 1}); err != nil {
+					return err
+				}
+				return enc.Encode(legacyFinder.InvertedIndex)
+			}),
+			wantSub:     []string{"version", "rebuilt"},
 			wantCorrupt: true,
 		},
 		{

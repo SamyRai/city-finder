@@ -25,7 +25,7 @@ type fileHeader struct {
 
 const (
 	testIndexMagic   = "CFS2IDX"
-	testIndexVersion = uint32(1)
+	testIndexVersion = uint32(2)
 )
 
 // readFileHeader decodes only the leading header value from path.

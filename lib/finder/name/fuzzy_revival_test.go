@@ -141,7 +141,9 @@ func TestFuzzyCacheIsBounded(t *testing.T) {
 }
 
 // TestSerializeDeserializeFuzzyRoundTrip round-trips an index whose BK-tree
-// was built before serialization and requires fuzzy search to survive.
+// was built before serialization and requires fuzzy search to survive. v2
+// does not persist the tree, so "survive" means the lazy rebuild on the first
+// post-deserialize typo lookup produces a working fuzzy index.
 func TestSerializeDeserializeFuzzyRoundTrip(t *testing.T) {
 	finder := BuildIndex(fuzzyFixtureCities())
 
@@ -165,14 +167,15 @@ func TestSerializeDeserializeFuzzyRoundTrip(t *testing.T) {
 	}
 }
 
-// TestDeserializeRevivesEmptyBuiltTree simulates files written by builds whose
-// fuzzy path never ran: the persisted state claims isBKTreeBuilt=true while the
-// tree is empty and allNames is empty. Deserialization must not keep that
-// dead-tree state, or fuzzy search stays exact-only forever.
+// TestDeserializeRevivesEmptyBuiltTree is the v2 successor of the v1
+// "persisted lie" test: v2 never writes isBKTreeBuilt, so no deserialized
+// finder can carry a dead built-tree state. The test pins that contract —
+// whatever runtime state the serializing finder had, the deserialized one
+// starts fuzzy-fresh and the first typo lookup lazily builds a working tree.
 func TestDeserializeRevivesEmptyBuiltTree(t *testing.T) {
 	finder := BuildIndex(fuzzyFixtureCities())
 	finder.mutex.Lock()
-	finder.isBKTreeBuilt = true // the lie persisted by the unfixed build path
+	finder.isBKTreeBuilt = true // runtime-only flag; v2 must not persist it
 	finder.mutex.Unlock()
 
 	tmpfile, err := os.CreateTemp("", "name_revive_*.gob")
@@ -183,6 +186,12 @@ func TestDeserializeRevivesEmptyBuiltTree(t *testing.T) {
 
 	restored, err := DeserializeIndex(tmpfile.Name())
 	assert.NoError(t, err)
+	restored.mutex.RLock()
+	built := restored.isBKTreeBuilt
+	root := restored.BKTree.Root
+	restored.mutex.RUnlock()
+	assert.False(t, built, "v2 must not restore isBKTreeBuilt")
+	assert.Nil(t, root, "v2 must deserialize an empty BK-tree")
 
 	got := restored.CityByName("Pars", "FR")
 	if got == nil || got.Name != "Paris" {
@@ -191,18 +200,13 @@ func TestDeserializeRevivesEmptyBuiltTree(t *testing.T) {
 }
 
 // TestDeserializeGarbageTailReturnsError checks that a decode error in the
-// lazy-load trailer (here: a value of the wrong gob type where allNames is
+// v2 payload (here: a value of the wrong gob type where the payload struct is
 // expected) is reported instead of silently swallowed.
 func TestDeserializeGarbageTailReturnsError(t *testing.T) {
-	finder := NewNameFinder()
-	finder.AddCity(city.SpatialCity{City: city.City{Name: "Paris", Country: "FR", Latitude: 48.85, Longitude: 2.35}})
-
 	buf := new(bytes.Buffer)
 	enc := gob.NewEncoder(buf)
-	assert.NoError(t, enc.Encode(finder.InvertedIndex))
-	assert.NoError(t, enc.Encode(finder.BKTree))
-	assert.NoError(t, enc.Encode(finder.isBKTreeBuilt))
-	assert.NoError(t, enc.Encode(12345)) // wrong type where []string is expected
+	assert.NoError(t, enc.Encode(&indexHeader{Magic: nameIndexMagic, Version: nameIndexVersion, Count: 1}))
+	assert.NoError(t, enc.Encode(12345)) // wrong type where the payload struct is expected
 
 	tmpfile, err := os.CreateTemp("", "name_corrupt_*.gob")
 	assert.NoError(t, err)
@@ -210,6 +214,6 @@ func TestDeserializeGarbageTailReturnsError(t *testing.T) {
 	assert.NoError(t, os.WriteFile(tmpfile.Name(), buf.Bytes(), 0o600))
 
 	_, err = DeserializeIndex(tmpfile.Name())
-	assert.Error(t, err, "a malformed trailer must surface as an error, not be swallowed")
-	assert.ErrorIs(t, err, ErrCorruptIndex, "a malformed trailer is corruption and must be rebuildable")
+	assert.Error(t, err, "a malformed payload must surface as an error, not be swallowed")
+	assert.ErrorIs(t, err, ErrCorruptIndex, "a malformed payload is corruption and must be rebuildable")
 }

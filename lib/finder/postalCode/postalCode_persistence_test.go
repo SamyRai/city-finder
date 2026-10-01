@@ -23,7 +23,7 @@ type fileHeader struct {
 
 const (
 	testIndexMagic   = "CFPOSTIDX"
-	testIndexVersion = uint32(1)
+	testIndexVersion = uint32(2)
 )
 
 // readFileHeader decodes only the leading header value from path.
