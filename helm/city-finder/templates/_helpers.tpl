@@ -58,3 +58,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "city-finder.syncWave" -}}
 argocd.argoproj.io/sync-wave: {{ . | quote }}
 {{- end -}}
+
+{{/* Workload labels beyond the selectors: role within the app + parent app. */}}
+{{- define "city-finder.workloadLabels" -}}
+app.kubernetes.io/component: server
+app.kubernetes.io/part-of: {{ include "city-finder.name" . }}
+{{- end -}}
+
+{{/* Optional labels from values.commonLabels, merged into every resource and the pod template. */}}
+{{- define "city-finder.commonLabels" -}}
+{{- with .Values.commonLabels -}}
+{{- toYaml . -}}
+{{- end -}}
+{{- end -}}

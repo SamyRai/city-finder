@@ -1,12 +1,11 @@
-{{- if .Values.podDisruptionBudget.enabled -}}
+{{- if and .Values.podDisruptionBudget.enabled (ge (int .Values.replicaCount) 2) -}}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: {{ include "city-finder.fullname" . }}
   labels:
     {{- include "city-finder.labels" . | nindent 4 }}
-  annotations:
-    {{- include "city-finder.syncWave" 0 | nindent 4 }}
+    {{- include "city-finder.commonLabels" . | nindent 4 }}
 spec:
   maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
   selector:
