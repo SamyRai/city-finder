@@ -70,7 +70,7 @@ make build-prod
 go run cmd/build-index/main.go prod
 ```
 
-**Note**: Production mode processes ~13.5 million cities and may take several minutes to complete. The prod path currently expects the literal files `datasets/allCountries.txt` and `datasets/zipCodes.txt`, so symlink the initializer's `allCountries_dump.txt`/`allCountries_zip.txt` to those names first (a config-driven fix is landing separately).
+**Note**: Production mode processes ~13.5 million cities and may take several minutes to complete. Prod mode resolves the dataset filenames and S2 settings from `config.json` (the same config the initializer uses, honoring `CONFIG_FILE`); if no config is found it falls back to the legacy literals `datasets/allCountries.txt` and `datasets/zipCodes.txt` with a warning.
 
 ## Usage
 
@@ -171,7 +171,7 @@ The S2 finder includes a brute-force oracle test, the initializer/download layer
 
 This project requires datasets from the [GeoNames](http://www.geonames.org/) database. Specifically, you need `allCountries_dump.txt` for city data (extracted from the downloaded `allCountries.zip` archive) and `allCountries_zip.txt` for postal code data (extracted from `zipCodes.zip`). These files should be placed in the `datasets` folder.
 
-During initialization, the application checks if these datasets and the three pre-built indexes are available. If they are not, it downloads and extracts the required datasets and builds the S2 index. Downloads are verified (HTTP status checked, streamed to a temporary file and renamed atomically), and a pre-existing archive that fails to extract is re-downloaded once instead of blocking every later startup. When all three pre-built indexes are present, the raw datasets are not parsed at all, which makes warm starts fast.
+During initialization, the application checks if these datasets and the three pre-built indexes are available. If they are not, it downloads and extracts the required datasets and builds whichever of the three indexes is missing. Downloads are verified (HTTP status checked, streamed to a temporary file and renamed atomically), and a pre-existing archive that fails to extract is re-downloaded once instead of blocking every later startup. When all three pre-built indexes are present, the raw datasets are not parsed at all, which makes warm starts fast.
 
 ### Using the Server
 
