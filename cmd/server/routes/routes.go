@@ -453,6 +453,47 @@ func SetupRoutesWithMetrics(app *fiber.App, mainFinder *finder.Finder, reg *metr
 		return c.JSON(city)
 	})
 
+	// autocompleteMatch is one /autocomplete entry: the indexed name plus
+	// the first city it resolves to (homonyms collapse to their first city
+	// in load order, mirroring the exact-lookup phase).
+	type autocompleteMatch struct {
+		Name string     `json:"name"`
+		City *city.City `json:"city"`
+	}
+
+	app.Get("/autocomplete", func(c *fiber.Ctx) error {
+		namePrefix := strings.TrimSpace(c.Query("name"))
+		if namePrefix == "" {
+			return c.Status(fiber.StatusBadRequest).SendString("Name is required")
+		}
+		if utf8.RuneCountInString(namePrefix) > maxNameRunes {
+			return c.Status(fiber.StatusBadRequest).
+				SendString(fmt.Sprintf("Name too long (max %d characters)", maxNameRunes))
+		}
+		countryCode := strings.ToUpper(strings.TrimSpace(c.Query("country-code")))
+		if countryCode == "" {
+			return c.Status(fiber.StatusBadRequest).SendString("Country code is required")
+		}
+
+		limit := 10
+		if raw := c.Query("limit"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 1 || parsed > 50 {
+				return c.Status(fiber.StatusBadRequest).SendString("Invalid limit (must be 1-50)")
+			}
+			limit = parsed
+		}
+
+		matches := mainFinder.PrefixNames(countryCode, namePrefix, limit)
+		response := struct {
+			Matches []autocompleteMatch `json:"matches"`
+		}{Matches: make([]autocompleteMatch, 0, len(matches))}
+		for _, m := range matches {
+			response.Matches = append(response.Matches, autocompleteMatch{Name: m.Name, City: m.City})
+		}
+		return c.JSON(response)
+	})
+
 	app.Get("/postalCode", func(c *fiber.Ctx) error {
 		// Inner spaces are significant (e.g. GB "SW1A 1AA"); only surrounding
 		// whitespace is trimmed so exact GeoNames lookups keep working.
