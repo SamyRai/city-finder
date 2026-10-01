@@ -35,7 +35,7 @@ func main() {
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
-		BodyLimit:    1 << 20, // 1MB; the API is GET-only
+		BodyLimit:    1 << 20, // 1MB; POST /nearest/batch peaks at ~6KB for 100 points
 		ETag:         true,
 		// fasthttp's default admission control (256k) is effectively
 		// unbounded: each accepted connection costs a goroutine plus

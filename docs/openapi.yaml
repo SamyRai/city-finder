@@ -214,6 +214,117 @@ paths:
               schema:
                 type: integer
                 example: 1
+  /nearest/batch:
+    post:
+      summary: Find the nearest city for up to 100 coordinate pairs
+      operationId: nearestBatch
+      description: |
+        One round trip for many lookups. The body is a JSON object with a
+        `points` array (1..100 entries); each point carries the same fields
+        the GET endpoint takes as query parameters: `lat` and `lon`
+        (required, same finite-number and range validation), and the
+        optional `rank` (`distance`|`population`) and `include` (`admin`)
+        with the same strict whitelist semantics — per point, not
+        batch-wide. Validation runs in order and the first failure
+        rejects the whole request with `400` and a `points[i]: ...`
+        message. `Content-Type` must be exactly `application/json`, the
+        decoder rejects unknown JSON fields, and the population-ranking
+        concurrency gate applies per `rank=population` point — a saturated
+        gate mid-batch fails the whole request with 503 + Retry-After: 1.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [points]
+              properties:
+                points:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    type: object
+                    required: [lat, lon]
+                    properties:
+                      lat:
+                        type: number
+                        format: float
+                        minimum: -90
+                        maximum: 90
+                      lon:
+                        type: number
+                        format: float
+                        minimum: -180
+                        maximum: 180
+                      rank:
+                        type: string
+                        enum: [distance, population]
+                      include:
+                        type: string
+                        enum: [admin]
+            example:
+              points:
+                - { lat: 40.7128, lon: -74.0060 }
+                - { lat: 37.7749, lon: -122.4194, rank: population, include: admin }
+      responses:
+        "200":
+          description: >
+            A parallel `results` array, one entry per point in request
+            order: the same object GET /nearest returns for that point,
+            or null when no city is indexed for it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      nullable: true
+              example:
+                results:
+                  - { Name: "New York City", Country: US, Latitude: 40.7128, Longitude: -74.0060, distance_km: 0.0 }
+                  - { Name: "San Francisco", Country: US, Latitude: 37.7749, Longitude: -122.4194, distance_km: 0.0, Population: 808437, admin1_code: "06", admin1_name: California }
+        "400":
+          description: >
+            Bad request. Plain text: wrong or missing Content-Type,
+            unparseable JSON (`invalid JSON body`), an unknown JSON field,
+            an empty or oversized points array, or the first invalid
+            point as `points[i]: <reason>` (GET /nearest error texts).
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                contentType:
+                  value: "Content-Type must be application/json"
+                empty:
+                  value: "points must contain at least one entry"
+                tooMany:
+                  value: "points must contain at most 100 entries"
+                badPoint:
+                  value: "points[2]: Invalid latitude"
+        "503":
+          description: Population ranking saturated mid-batch. Plain text; carries `Retry-After: 1`.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "population ranking is saturated, retry shortly"
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
+                example: 1
+        "500":
+          description: Finder error. Plain text.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "internal server error"
   /coordinates:
     get:
       summary: Find a city by exact or fuzzy name match
