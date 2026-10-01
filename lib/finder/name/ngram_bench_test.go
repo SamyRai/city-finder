@@ -7,8 +7,9 @@ import (
 	"github.com/SamyRai/cityFinder/lib/city"
 )
 
-// benchFuzzyFinder returns a finder whose InvertedIndex holds count unique
-// names but whose fuzzy n-gram index has not been built yet.
+// benchFuzzyFinder returns a finder whose index holds count unique names
+// (through the post-construction overflow) but whose fuzzy n-gram index has
+// not been built yet.
 func benchFuzzyFinder(b *testing.B, count int) *Finder {
 	b.Helper()
 	finder := NewNameFinder()

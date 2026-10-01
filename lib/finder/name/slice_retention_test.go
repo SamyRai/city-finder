@@ -28,6 +28,26 @@ func generateUniqueCities(count int) []city.SpatialCity {
 	return cities
 }
 
+// buildStaged replicates BuildIndex's load sequence without its logging and
+// GC: stage the batch into the nested map the loaders merge into, then
+// flatten it into the finder's sorted tables.
+func buildStaged(cities []city.SpatialCity) *Finder {
+	index := make(map[string]map[string][]*city.City, estimateCapacity(cities))
+	processBatchStreamlined(index, cities)
+	f := NewNameFinder()
+	f.buildFromIndexMap(index)
+	return f
+}
+
+// buildStagedConcurrent is buildStaged's worker-pool twin.
+func buildStagedConcurrent(cities []city.SpatialCity) *Finder {
+	index := make(map[string]map[string][]*city.City, estimateCapacity(cities))
+	processBatchConcurrent(index, cities, runtime.NumCPU())
+	f := NewNameFinder()
+	f.buildFromIndexMap(index)
+	return f
+}
+
 // BenchmarkProcessBatchStreamlined measures the sequential bulk-load path over
 // a 100K-city slice with unique names. B/op and allocs/op capture the cost of
 // the per-city heap copy that stops the index from pinning the loader slice.
@@ -36,8 +56,7 @@ func BenchmarkProcessBatchStreamlined(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		f := NewFinderWithCapacity(estimateCapacity(cities))
-		f.processBatchStreamlined(cities)
+		_ = buildStaged(cities)
 	}
 }
 
@@ -48,8 +67,7 @@ func BenchmarkProcessBatchConcurrent(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		f := NewFinderWithCapacity(estimateCapacity(cities))
-		f.processBatchConcurrent(cities, runtime.NumCPU())
+		_ = buildStagedConcurrent(cities)
 	}
 }
 

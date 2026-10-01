@@ -4,6 +4,7 @@ import (
 	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/stretchr/testify/assert"
 	"os"
+	"reflect"
 	"testing"
 )
 
@@ -27,12 +28,15 @@ func TestFinder_SerializeDeserialize(t *testing.T) {
 	err = finder.SerializeIndex(tmpfile.Name())
 	assert.NoError(t, err)
 
-	// Deserialize the finder from the file
+	// Deserialize the finder from the temporary file
 	deserializedFinder, err := DeserializeIndex(tmpfile.Name())
 	assert.NoError(t, err)
 
-	// Compare the original and deserialized finders
-	assert.Equal(t, finder.InvertedIndex, deserializedFinder.InvertedIndex)
+	// Compare the original and deserialized finders: the per-country
+	// name -> city-pointers view must survive the round trip unchanged
+	// (the flat tables replaced the old InvertedIndex as the storage).
+	assert.True(t, reflect.DeepEqual(refsSnapshot(finder), refsSnapshot(deserializedFinder)),
+		"round trip must restore every (country, name, city) reference")
 
 	// v2 does not serialize the fuzzy structure: the deserialized finder
 	// starts without one and lazily rebuilds it on the first fuzzy lookup.

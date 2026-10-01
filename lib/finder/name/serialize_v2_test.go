@@ -57,6 +57,50 @@ func readV2File(t *testing.T, path string) (indexHeader, []byte) {
 	return header, payloadBytes
 }
 
+// refsSnapshot reconstructs the per-country name -> city-pointers view of a
+// Finder's flat tables plus its overflow (sorted-table ids first, overflow
+// ids appended after — the same order the payload build merges them). It is
+// the test-side replacement for the old InvertedIndex field: same shape,
+// derived from the flat storage, so DeepEqual/Same assertions keep their
+// original strength.
+func refsSnapshot(f *Finder) map[string]map[string][]*city.City {
+	f.mutex.RLock()
+	defer f.mutex.RUnlock()
+
+	out := make(map[string]map[string][]*city.City, len(f.countries)+len(f.overflow))
+	for country, t := range f.countries {
+		refs := make(map[string][]*city.City, len(t.names))
+		for i, name := range t.names {
+			// Always assign, even for zero-width CSR ranges: a name indexed
+			// with no references is a present-but-empty key.
+			cityList := make([]*city.City, 0, t.starts[i+1]-t.starts[i])
+			for _, id := range t.ids[t.starts[i]:t.starts[i+1]] {
+				cityList = append(cityList, f.cities[id])
+			}
+			refs[name] = cityList
+		}
+		for name, ids := range f.overflow[country] {
+			for _, id := range ids {
+				refs[name] = append(refs[name], f.cities[id])
+			}
+		}
+		out[country] = refs
+	}
+	for country, countryOverflow := range f.overflow {
+		if _, ok := f.countries[country]; ok {
+			continue // merged into its sorted table above
+		}
+		refs := make(map[string][]*city.City, len(countryOverflow))
+		for name, ids := range countryOverflow {
+			for _, id := range ids {
+				refs[name] = append(refs[name], f.cities[id])
+			}
+		}
+		out[country] = refs
+	}
+	return out
+}
+
 // sharedCityFixture builds a dataset whose cities are each referenced under
 // several names (primary + alternates), and one city that is manually indexed
 // under two different countries — the shape the v2 id table must dedupe by
@@ -66,22 +110,24 @@ func sharedCityFixture() (*Finder, []*city.City) {
 	london := &city.City{Name: "London", Country: "GB", Latitude: 51.50, Longitude: -0.12, Population: 8_982_000}
 
 	f := NewNameFinder()
-	// Cross-name sharing within one country.
-	f.InvertedIndex["FR"] = map[string][]*city.City{
-		"Paris":  {paris},
-		"Lutèce": {paris},
-		"Paname": {paris},
-		"Orly":   {}, // empty ref list: preserved as a key with no ids
-	}
-	// Cross-country sharing: the SAME pointer under two countries. Real
-	// builders never produce this, but the format must not corrupt it —
-	// identity, not equality, defines a distinct city.
-	f.InvertedIndex["FR"]["Paris"] = append(f.InvertedIndex["FR"]["Paris"], london)
-	f.InvertedIndex["GB"] = map[string][]*city.City{
-		"London":    {london},
-		"Londres":   {london},
-		"Big Smoke": {london, paris},
-	}
+	// The staging shape the fixture always described, flattened through the
+	// same path BuildIndex uses — buildFromIndexMap dedupes by pointer
+	// identity and preserves the empty-ref key as a zero-width CSR range.
+	f.buildFromIndexMap(map[string]map[string][]*city.City{
+		"FR": {
+			"Paris": {paris, london}, // cross-country sharing: the SAME pointer under two countries. Real
+			// builders never produce this, but the format must not corrupt it —
+			// identity, not equality, defines a distinct city.
+			"Lutèce": {paris}, // cross-name sharing within one country
+			"Paname": {paris},
+			"Orly":   {}, // empty ref list: preserved as a key with no ids
+		},
+		"GB": {
+			"London":    {london},
+			"Londres":   {london},
+			"Big Smoke": {london, paris},
+		},
+	})
 	return f, []*city.City{paris, london}
 }
 
@@ -93,10 +139,11 @@ type indexStats struct {
 }
 
 func statsOf(f *Finder) indexStats {
+	snapshot := refsSnapshot(f)
 	seen := make(map[*city.City]struct{})
 	perCountry := make(map[string]int)
 	total := 0
-	for country, countryMap := range f.InvertedIndex {
+	for country, countryMap := range snapshot {
 		perCountry[country] = len(countryMap)
 		for _, cityList := range countryMap {
 			total += len(cityList)
@@ -125,7 +172,7 @@ func TestSerializeV2RoundTripDeepEqual(t *testing.T) {
 	restored, err := DeserializeIndex(path)
 	require.NoError(t, err)
 
-	assert.True(t, reflect.DeepEqual(original.InvertedIndex, restored.InvertedIndex),
+	assert.True(t, reflect.DeepEqual(refsSnapshot(original), refsSnapshot(restored)),
 		"v2 round trip must restore the inverted index exactly")
 	assert.NotNil(t, restored.CityByName("Paris", "FR"))
 	assert.NotNil(t, restored.CityByName("Londres", "GB"))
@@ -140,27 +187,28 @@ func TestSerializeV2PointerSharing(t *testing.T) {
 
 	restored, err := DeserializeIndex(path)
 	require.NoError(t, err)
+	snapshot := refsSnapshot(restored)
 
 	// Cross-name sharing within a country.
-	paris := restored.InvertedIndex["FR"]["Paris"][0]
-	lutèce := restored.InvertedIndex["FR"]["Lutèce"][0]
+	paris := snapshot["FR"]["Paris"][0]
+	lutèce := snapshot["FR"]["Lutèce"][0]
 	assert.Same(t, paris, lutèce, "one city under two names must deserialize to one pointer")
 
 	// Cross-country sharing: the London entry inside FR must be the same
 	// pointer as London inside GB.
-	londonFR := restored.InvertedIndex["FR"]["Paris"][1]
-	londonGB := restored.InvertedIndex["GB"]["London"][0]
+	londonFR := snapshot["FR"]["Paris"][1]
+	londonGB := snapshot["GB"]["London"][0]
 	assert.Same(t, londonFR, londonGB, "one city under two countries must deserialize to one pointer")
 
 	// Mutation through one reference is observable from every other.
 	paris.Population = 42
 	assert.Equal(t, int32(42), lutèce.Population, "mutating via one name must be visible via the other")
-	assert.Equal(t, int32(42), restored.InvertedIndex["GB"]["Big Smoke"][1].Population,
+	assert.Equal(t, int32(42), refsSnapshot(restored)["GB"]["Big Smoke"][1].Population,
 		"mutating via one country must be visible via another")
 
 	// The empty ref list must deserialize as a present-but-empty key, not as
 	// a nil lookup.
-	refs, exists := restored.InvertedIndex["FR"]["Orly"]
+	refs, exists := refsSnapshot(restored)["FR"]["Orly"]
 	assert.True(t, exists, "a name with zero refs must survive as a key")
 	assert.Empty(t, refs)
 }
@@ -316,7 +364,7 @@ func TestAddCityAfterDeserializeV2(t *testing.T) {
 
 	// The added refs are new pointers: distinct from every table-rehydrated
 	// pointer, and the two names see the same new pointer.
-	de := restored.InvertedIndex["DE"]
+	de := refsSnapshot(restored)["DE"]
 	assert.Same(t, de["Berlin"][0], de["Berlín"][0], "AddCity's primary and alt names must share one pointer")
 
 	// Re-serialize: the id table is rebuilt from scratch each time, so the
@@ -334,8 +382,8 @@ func TestAddCityAfterDeserializeV2(t *testing.T) {
 	assert.Equal(t, want.totalRefs, got.totalRefs, "total refs across re-serialization")
 	assert.Equal(t, want.perCountryKeys, got.perCountryKeys, "per-country keys across re-serialization")
 
-	assert.Same(t, again.InvertedIndex["FR"]["Paris"][0], again.InvertedIndex["FR"]["Paname"][0],
+	assert.Same(t, refsSnapshot(again)["FR"]["Paris"][0], refsSnapshot(again)["FR"]["Paname"][0],
 		"pointer sharing must survive the second round trip")
-	assert.Same(t, again.InvertedIndex["DE"]["Berlin"][0], again.InvertedIndex["DE"]["Berlín"][0],
+	assert.Same(t, refsSnapshot(again)["DE"]["Berlin"][0], refsSnapshot(again)["DE"]["Berlín"][0],
 		"the added city's sharing must survive the second round trip")
 }
