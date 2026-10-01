@@ -563,7 +563,7 @@ func TestServerGracefulShutdownSignal(t *testing.T) {
 		PostalCodesFile:     "zipCodes.txt",
 		NameIndexFile:       "name_index_proc_test.gob",
 		PostalCodeIndexFile: "postal_code_index_proc_test.gob",
-		S2:                  config.S2{MinLevel: 10, MaxLevel: 15, MaxCells: 8, IndexFile: "s2index_proc_test.gob"},
+		S2:                  config.S2{IndexFile: "s2index_proc_test.gob"},
 	}
 	cfgBytes, err := json.Marshal(cfg)
 	require.NoError(t, err)
