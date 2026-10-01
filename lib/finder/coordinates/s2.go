@@ -11,6 +11,7 @@ import (
 	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/cheggaaa/pb/v3"
+	"github.com/golang/geo/s1"
 	"github.com/golang/geo/s2"
 )
 
@@ -29,21 +30,47 @@ const (
 	RankPopulation
 )
 
-// rankCandidatePool is how many nearest candidates the population ranking
-// fetches and scores. The gravity model decays with squared distance, so the
-// weighted winner always comes from the query point's immediate neighborhood
-// — 16 keeps the pool comfortably larger than any realistic winner
-// neighborhood. It is a structural constant for decay-based ranking, not a
-// tuning knob. (In this golang/geo version a multi-result query cannot prune
-// the search — see NearestPlace — so the pool size does not change the cost
-// of a population-ranked query at prod scale; it only defines which
-// candidates can win.)
-const rankCandidatePool = 16
+// populationRankInitialRadiusKm is the radius of the first population-ranked
+// query disc. Calibrated so a query in or near any populated place usually
+// terminates on the first or second iteration (measured: metro queries
+// resolve within 10 km; see the PR summary for the per-class table). It is a
+// starting point for the escalation loop, not a cap on the answer.
+const populationRankInitialRadiusKm = 10.0
+
+// populationRankRadiusGrowth multiplies the search radius each escalation
+// step of the population ranking. Five grows 10 km to global coverage
+// (half circumference) in six steps, so even a mid-ocean query pays at most
+// six radius-pruned scans before the final unbounded iteration.
+const populationRankRadiusGrowth = 5.0
+
+// maxSearchRadiusKm is the great-circle half-circumference: the largest
+// distance any two points on the sphere can be apart.
+const maxSearchRadiusKm = math.Pi * earthRadiusKm
 
 // S2Finder uses a ShapeIndex for efficient nearest neighbor searches.
 type S2Finder struct {
 	Index  *s2.ShapeIndex
 	Cities []city.City
+
+	// maxPopulation is the largest Population across Cities (0 when no city
+	// carries population data). It bounds the gravity score of every city
+	// outside a search radius, which is what lets population-ranked queries
+	// stop escalating. Derived from Cities — never serialized; both
+	// constructors recompute it in one pass, so the on-disk format is
+	// unchanged.
+	maxPopulation int32
+}
+
+// maxPopulationOf returns the largest Population in cities (0 when empty or
+// all population-less).
+func maxPopulationOf(cities []city.City) int32 {
+	var max int32
+	for i := range cities {
+		if cities[i].Population > max {
+			max = cities[i].Population
+		}
+	}
+	return max
 }
 
 // SerializableS2Finder is a helper struct for gob encoding/decoding.
@@ -135,7 +162,7 @@ func BuildIndex(cities []city.SpatialCity, config *config.S2) (*S2Finder, error)
 	// happen inside the first query instead.
 	index.Build()
 
-	return &S2Finder{Index: index, Cities: cityData}, nil
+	return &S2Finder{Index: index, Cities: cityData, maxPopulation: maxPopulationOf(cityData)}, nil
 }
 
 // NearestPlace finds the city nearest to the given latitude and longitude,
@@ -144,55 +171,49 @@ func BuildIndex(cities []city.SpatialCity, config *config.S2) (*S2Finder, error)
 // rank == RankDistance (the default, and the behavior of every pre-ranking
 // release): issues the historical MaxResults(1) query verbatim and returns
 // its single closest result, so both the returned city and the latency
-// profile are exactly the pre-change path's. (A shared rankCandidatePool
+// profile are exactly the pre-change path's. (A shared multi-result pool
 // fetch whose results[0] is provably the same city was tried first — the
 // equivalence is real and test-pinned — but this golang/geo version never
 // tightens the search limit for maxResults > 1, turning every multi-result
-// query into a full 13.47M-edge scan (~10 s per query at prod scale,
-// measured); see the PR summary.)
+// query without a distance limit into a full 13.47M-edge scan (~10 s per
+// query at prod scale, measured); see the PR summary.)
 //
-// rank == RankPopulation: fetches the rankCandidatePool closest candidates
-// and ranks them with a gravity model,
+// rank == RankPopulation: ranks cities by a gravity model,
 //
 //	score = population / (d*d + 1)
 //
 // where d is the great-circle distance in kilometers on the same sphere the
 // reported distance uses. The +1 keeps the denominator positive and makes a
 // query issued at a city's exact coordinates score that city at exactly its
-// population. Ties on score are broken by the smaller distance, then stably
-// by candidate index: candidates arrive sorted by distance, so scanning in
-// order and keeping a strictly greater score yields both tie-breaks for free.
-// Note the same library caveat: the pool fetch is a full index scan at prod
-// scale in this golang/geo version, so weighted queries are ~seconds each;
-// correctness is unaffected (results are sorted, then truncated to the pool).
+// population. The winner is EXACT — the highest-scoring city over the whole
+// dataset, with no candidate-pool truncation — found with an escalating
+// radius under an anytime bound; see nearestByPopulation. Ties on score are
+// broken by the smaller distance, then stably by candidate index: each
+// radius query returns its results sorted by distance, so scanning in order
+// and keeping a strictly greater score yields both tie-breaks for free.
 func (f *S2Finder) NearestPlace(lat, lon float64, rank Rank) (*city.City, float64, error) {
 	if f.Index == nil {
 		return nil, 0, fmt.Errorf("s2 index is not initialized")
 	}
 	targetPoint := s2.PointFromLatLng(s2.LatLngFromDegrees(lat, lon))
-	// Pruning the query (vs the MaxInt32 default) avoids collecting and
-	// sorting a result for every indexed point on each query — but the
-	// pruning only bites at maxResults == 1 in this golang/geo version, so
-	// the distance path asks for exactly one result and only the population
-	// path pays for the candidate pool.
-	poolSize := 1
-	if rank == RankPopulation {
-		poolSize = rankCandidatePool
-	}
-	query := s2.NewClosestEdgeQuery(f.Index, s2.NewClosestEdgeQueryOptions().MaxResults(poolSize))
-	target := s2.NewMinDistanceToPointTarget(targetPoint)
-	results := query.FindEdges(target)
-
-	if len(results) == 0 {
-		return nil, 0, fmt.Errorf("no city found")
-	}
 
 	var winner s2.EdgeQueryResult
 	switch rank {
 	case RankDistance:
+		// MaxResults(1) prunes the search: the default (MaxInt32) would
+		// collect and sort a result for every indexed point on each query.
+		query := s2.NewClosestEdgeQuery(f.Index, s2.NewClosestEdgeQueryOptions().MaxResults(1))
+		results := query.FindEdges(s2.NewMinDistanceToPointTarget(targetPoint))
+		if len(results) == 0 {
+			return nil, 0, fmt.Errorf("no city found")
+		}
 		winner = results[0]
 	case RankPopulation:
-		winner = f.bestPopulationRank(results)
+		result, err := f.nearestByPopulation(targetPoint)
+		if err != nil {
+			return nil, 0, err
+		}
+		winner = result
 	default:
 		return nil, 0, fmt.Errorf("invalid rank %d", int(rank))
 	}
@@ -205,6 +226,85 @@ func (f *S2Finder) NearestPlace(lat, lon float64, rank Rank) (*city.City, float6
 	distanceKm := winner.Distance().Angle().Radians() * earthRadiusKm
 
 	return &nearestCity, distanceKm, nil
+}
+
+// kmToChordAngle converts a great-circle kilometer radius on the finder's
+// sphere into the ChordAngle distance the s2 query API uses.
+func kmToChordAngle(km float64) s1.ChordAngle {
+	return s1.ChordAngleFromAngle(s1.Angle(km / earthRadiusKm))
+}
+
+// nearestByPopulation returns the highest gravity-scored query result over
+// ALL cities — exact, no truncation — using a radius that escalates until an
+// anytime bound proves no city outside it can win:
+//
+//  1. Query every city within radius R of the target. DistanceLimit makes
+//     the traversal visit only nearby index cells (the priority queue pops
+//     cells in increasing distance and stops past the limit), so the cost
+//     scales with the populated area inside the disc, not the index size.
+//     The limit is passed as chord.Successor() because the option's
+//     semantics are exclusive ("edges whose distance is equal are not
+//     returned"); the successor makes each disc inclusive of its rim.
+//  2. Track the best gravity score s* among the returned candidates.
+//  3. Any city beyond R scores at most maxPopulation/(R*R + 1) — population
+//     is a non-negative int32, so that fraction bounds every excluded city.
+//     If s* already exceeds the bound, the in-radius winner is the global
+//     winner and the search stops.
+//  4. Otherwise R grows by populationRankRadiusGrowth. The final iteration
+//     drops the distance limit entirely (an exclusive limit at exactly the
+//     half-circumference could drop an antipodal city, and Successor() at
+//     the straight angle degenerates), covering the whole sphere — so the
+//     loop always terminates with the exact answer. That unbounded
+//     iteration is the full-scan worst case (~seconds at prod scale,
+//     measured); in practice it is reached only from mid-ocean points far
+//     from any populated place.
+//
+// With no population data anywhere (maxPopulation == 0), every score is 0
+// and the gravity winner is simply the nearest city.
+func (f *S2Finder) nearestByPopulation(targetPoint s2.Point) (s2.EdgeQueryResult, error) {
+	queryAll := func(radiusKm float64, limited bool) []s2.EdgeQueryResult {
+		options := s2.NewClosestEdgeQueryOptions()
+		if limited {
+			options = options.DistanceLimit(kmToChordAngle(radiusKm).Successor())
+		}
+		query := s2.NewClosestEdgeQuery(f.Index, options)
+		return query.FindEdges(s2.NewMinDistanceToPointTarget(targetPoint))
+	}
+
+	var none s2.EdgeQueryResult
+	if f.maxPopulation == 0 {
+		results := queryAll(0, false)
+		if len(results) == 0 {
+			return none, fmt.Errorf("no city found")
+		}
+		return results[0], nil
+	}
+
+	radiusKm := populationRankInitialRadiusKm
+	for {
+		results := queryAll(radiusKm, true)
+		if len(results) > 0 {
+			best := f.bestPopulationRank(results)
+			// Anytime bound: every city at distance >= radiusKm scores at
+			// most maxPopulation / (radiusKm^2 + 1); a strictly better
+			// in-radius winner cannot be beaten (or tied) from outside.
+			bound := float64(f.maxPopulation) / (radiusKm*radiusKm + 1.0)
+			if f.populationRankScore(best) > bound {
+				return best, nil
+			}
+		}
+		next := radiusKm * populationRankRadiusGrowth
+		if next < maxSearchRadiusKm {
+			radiusKm = next
+			continue
+		}
+		// Final iteration: no distance limit — the whole sphere, exact.
+		results = queryAll(0, false)
+		if len(results) == 0 {
+			return none, fmt.Errorf("no city found")
+		}
+		return f.bestPopulationRank(results), nil
+	}
 }
 
 // bestPopulationRank returns the result with the highest gravity-model score
@@ -302,7 +402,8 @@ func DeserializeIndex(filepath string) (*S2Finder, error) {
 	index.Build()
 
 	return &S2Finder{
-		Index:  index,
-		Cities: serializable.Cities,
+		Index:         index,
+		Cities:        serializable.Cities,
+		maxPopulation: maxPopulationOf(serializable.Cities),
 	}, nil
 }
