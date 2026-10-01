@@ -29,7 +29,7 @@ const validConfigJSON = `{
   "postal_codes_zip": "zipCodes.zip",
   "name_index_file": "name_index.gob",
   "postal_code_index_file": "postal_code_index.gob",
-  "s2": {"min_level": 10, "max_level": 15, "max_cells": 8, "index_file": "s2index.gob"}
+  "s2": {"index_file": "s2index.gob"}
 }`
 
 // chdirWithoutGoModAbove chdir's into dir and verifies the precondition the
@@ -74,9 +74,6 @@ func TestLoadConfigHappyPath(t *testing.T) {
 	assert.Equal(t, "zipCodes.zip", cfg.PostalCodesZip)
 	assert.Equal(t, "name_index.gob", cfg.NameIndexFile)
 	assert.Equal(t, "postal_code_index.gob", cfg.PostalCodeIndexFile)
-	assert.Equal(t, 10, cfg.S2.MinLevel)
-	assert.Equal(t, 15, cfg.S2.MaxLevel)
-	assert.Equal(t, 8, cfg.S2.MaxCells)
 	assert.Equal(t, "s2index.gob", cfg.S2.IndexFile)
 }
 
@@ -135,8 +132,8 @@ func TestLoadConfigRelativePathResolvedAgainstCWD(t *testing.T) {
 
 // TestLoadConfigEnvVarHonored covers the CONFIG_FILE fallback: with an empty
 // configPath, LoadConfig reads the env var and resolves it under the same
-// rules. (The CONFIG_PATH env var belongs to cmd/server's main(), which feeds
-// it into LoadConfig as configPath.)
+// rules. (The CONFIG_PATH env var is resolved by the binaries — directly or
+// via LoadFromEnv — which feed it into LoadConfig as configPath.)
 func TestLoadConfigEnvVarHonored(t *testing.T) {
 	dir := t.TempDir()
 	path := writeConfig(t, dir, "config.json", validConfigJSON)
@@ -191,8 +188,7 @@ func TestLoadConfigNoDefaultsDocuments(t *testing.T) {
 	assert.Empty(t, cfg.AllCitiesURL)
 	assert.Empty(t, cfg.AllCitiesFile)
 	assert.Empty(t, cfg.NameIndexFile)
-	assert.Zero(t, cfg.S2.MinLevel)
-	assert.Zero(t, cfg.S2.MaxCells)
+	assert.Empty(t, cfg.S2.IndexFile)
 	assert.Equal(t, dir, cfg.DatasetsFolder,
 		`datasets_folder "" joins to the config file's directory`)
 }
@@ -232,4 +228,98 @@ func TestLoadConfigRepoRootLayoutPreserved(t *testing.T) {
 	cfg, err := LoadConfig("config.json")
 	require.NoError(t, err, "the config must load relative to the CWD where it lives")
 	assert.Equal(t, filepath.Join(cfgDir, "datasets"), cfg.DatasetsFolder)
+}
+
+// TestIndexFilePaths pins the index path resolution shared by index producers
+// (cmd/build-index) and consumers (lib/initializer's indexFilePaths): each
+// index file key joined with DatasetsFolder, using the folder value the
+// Config carries verbatim. LoadConfig always absolutizes a relative
+// datasets_folder against the config file's directory, so configs that
+// arrived via LoadConfig join onto an absolute folder; hand-constructed
+// configs (as in cmd/server and initializer tests) join onto whatever they
+// carry — here a relative folder, passed through by plain filepath.Join.
+func TestIndexFilePaths(t *testing.T) {
+	// Config loaded from a file: absolute datasets_folder preserved verbatim.
+	absData := t.TempDir()
+	path := writeConfig(t, t.TempDir(), "config.json", `{
+  "datasets_folder": `+strconv.Quote(absData)+`,
+  "name_index_file": "name_custom.gob",
+  "postal_code_index_file": "postal_custom.gob",
+  "s2": {"index_file": "s2_custom.gob"}
+}`)
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+
+	s2Path, namePath, postalPath := cfg.IndexFilePaths()
+	assert.Equal(t, filepath.Join(absData, "s2_custom.gob"), s2Path)
+	assert.Equal(t, filepath.Join(absData, "name_custom.gob"), namePath)
+	assert.Equal(t, filepath.Join(absData, "postal_custom.gob"), postalPath)
+
+	// Hand-constructed config with a relative folder: plain Join, no
+	// absolutization of its own.
+	cfg = &Config{
+		DatasetsFolder:      "rel_datasets",
+		NameIndexFile:       "name_index.gob",
+		PostalCodeIndexFile: "postal_code_index.gob",
+		S2:                  S2{IndexFile: "s2index.gob"},
+	}
+	s2Path, namePath, postalPath = cfg.IndexFilePaths()
+	assert.Equal(t, filepath.Join("rel_datasets", "s2index.gob"), s2Path)
+	assert.Equal(t, filepath.Join("rel_datasets", "name_index.gob"), namePath)
+	assert.Equal(t, filepath.Join("rel_datasets", "postal_code_index.gob"), postalPath)
+}
+
+// TestLoadConfigIgnoresRemovedS2Keys documents the loader's behavior for a
+// config file in the wild that still carries the s2 tuning knobs removed in
+// v1.2 (min_level / max_level / max_cells): encoding/json silently ignores
+// unknown keys — LoadConfig does not call DisallowUnknownFields — so such a
+// file loads cleanly and the surviving s2.index_file key still decodes.
+func TestLoadConfigIgnoresRemovedS2Keys(t *testing.T) {
+	path := writeConfig(t, t.TempDir(), "config.json", `{
+  "datasets_folder": "datasets",
+  "s2": {"min_level": 10, "max_level": 15, "max_cells": 8, "index_file": "s2index.gob"}
+}`)
+
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err,
+		"removed s2 keys remaining in a config file must be silently ignored, not an error")
+	require.NotNil(t, cfg)
+	assert.Equal(t, "s2index.gob", cfg.S2.IndexFile,
+		"the surviving s2.index_file key must still decode")
+}
+
+// TestLoadFromEnvHonorsConfigPath pins the binary config resolution: with
+// CONFIG_PATH set, LoadFromEnv loads exactly that file — the same resolution
+// cmd/server/main.go performs inline.
+func TestLoadFromEnvHonorsConfigPath(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, dir, "custom.json", validConfigJSON)
+	t.Setenv("CONFIG_PATH", path)
+
+	cfg, err := LoadFromEnv()
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Equal(t, filepath.Join(dir, "datasets"), cfg.DatasetsFolder)
+}
+
+// TestLoadFromEnvDefaultsToConfigJSON pins the unset case: without CONFIG_PATH
+// the loader falls back to "config.json" relative to the process working
+// directory, exactly like cmd/server/main.go.
+func TestLoadFromEnvDefaultsToConfigJSON(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir, "config.json", validConfigJSON)
+	chdirWithoutGoModAbove(t, dir)
+
+	// CONFIG_PATH must be genuinely unset here: a set-but-empty value would
+	// take the LookupEnv "exists" branch and fall through to LoadConfig's
+	// CONFIG_FILE handling instead of the "config.json" default.
+	if old, had := os.LookupEnv("CONFIG_PATH"); had {
+		require.NoError(t, os.Unsetenv("CONFIG_PATH"))
+		t.Cleanup(func() { _ = os.Setenv("CONFIG_PATH", old) })
+	}
+
+	cfg, err := LoadFromEnv()
+	require.NoError(t, err, "unset CONFIG_PATH must default to ./config.json")
+	require.NotNil(t, cfg)
+	assert.Equal(t, filepath.Join(dir, "datasets"), cfg.DatasetsFolder)
 }

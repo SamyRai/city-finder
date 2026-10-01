@@ -221,11 +221,7 @@ func (r *BenchmarkRunner) measureDataLoading(size int) (types.OperationResult, [
 func (r *BenchmarkRunner) measureS2IndexBuilding(cities []city.SpatialCity) (types.OperationResult, error) {
 	result, err := r.profiler.MeasureOperation("S2 Index Building", func() error {
 		// Build S2 index from cities
-		s2Config := &config.S2{
-			MinLevel: 10,
-			MaxLevel: 16,
-			MaxCells: 8,
-		}
+		s2Config := &config.S2{}
 
 		_, err := coordinates.BuildIndex(cities, s2Config)
 		if err != nil {

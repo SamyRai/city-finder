@@ -22,11 +22,38 @@ type Config struct {
 	S2                  S2     `json:"s2"`
 }
 
+// S2 names the serialized S2 index file. The v1.1 min_level / max_level /
+// max_cells tuning knobs were removed in v1.2: nothing ever consumed them —
+// coordinates.BuildIndex accepts a *S2 but reads no tuning from it (golang/geo's
+// s2.ShapeIndex exposes no such tuning for a PointVector index). A config file
+// still carrying those keys loads fine: the JSON decoder silently ignores
+// unknown keys (see TestLoadConfigIgnoresRemovedS2Keys).
 type S2 struct {
-	MinLevel  int    `json:"min_level"`
-	MaxLevel  int    `json:"max_level"`
-	MaxCells  int    `json:"max_cells"`
 	IndexFile string `json:"index_file"`
+}
+
+// IndexFilePaths returns the on-disk locations of the three serialized indexes
+// (S2, name, postal code): each index file key joined with DatasetsFolder. It
+// mirrors the initializer's indexFilePaths exactly, so index producers
+// (cmd/build-index) and consumers (lib/initializer) agree on the same paths
+// for any config, not just the shipped default.
+func (c *Config) IndexFilePaths() (s2Path, namePath, postalPath string) {
+	return filepath.Join(c.DatasetsFolder, c.S2.IndexFile),
+		filepath.Join(c.DatasetsFolder, c.NameIndexFile),
+		filepath.Join(c.DatasetsFolder, c.PostalCodeIndexFile)
+}
+
+// LoadFromEnv resolves the config file the way the binaries do — the
+// CONFIG_PATH environment variable when it is set (even to an empty string),
+// otherwise the "config.json" default relative to the process working
+// directory — and loads it. cmd/server/main.go resolves CONFIG_PATH inline
+// today; switching it to this helper is a behavior-preserving refactor.
+func LoadFromEnv() (*Config, error) {
+	configPath, exists := os.LookupEnv("CONFIG_PATH")
+	if !exists {
+		configPath = "config.json"
+	}
+	return LoadConfig(configPath)
 }
 
 // LoadConfig loads the JSON configuration at configPath.
@@ -45,8 +72,8 @@ type S2 struct {
 //     and Go API users pass relative paths from their working directory.
 //
 // With an empty configPath, the CONFIG_FILE environment variable is honored
-// (the CONFIG_PATH env var belongs to cmd/server's main, which feeds it into
-// LoadConfig as configPath).
+// (the CONFIG_PATH env var is resolved by the binaries — directly or via
+// LoadFromEnv — and fed into LoadConfig as configPath).
 //
 // datasets_folder inside the config file: absolute values are kept verbatim;
 // relative values resolve against the directory containing the config file

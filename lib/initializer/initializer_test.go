@@ -465,9 +465,6 @@ func testConfig(dir string) *config.Config {
 		NameIndexFile:       "name_index.gob",
 		PostalCodeIndexFile: "postal_code_index.gob",
 		S2: config.S2{
-			MinLevel:  10,
-			MaxLevel:  15,
-			MaxCells:  8,
 			IndexFile: "s2index.gob",
 		},
 	}
