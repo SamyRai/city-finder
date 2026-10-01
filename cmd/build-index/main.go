@@ -155,6 +155,10 @@ type buildPaths struct {
 	s2IndexPath     string
 	nameIndexPath   string
 	postalIndexPath string
+	// excludeAdminDivisions mirrors cfg.ExcludeAdminDivisions when a config
+	// was loaded (false on the legacy-literal fallback), so an index built
+	// here matches what a first boot would build from the same config.
+	excludeAdminDivisions bool
 }
 
 // resolvePaths returns the input and output paths for the given mode.
@@ -201,6 +205,7 @@ func resolvePaths(mode string) buildPaths {
 	paths.postalCodeFile = filepath.Join(cfg.DatasetsFolder, cfg.PostalCodesFile)
 	paths.outputDir = cfg.DatasetsFolder
 	paths.s2IndexPath, paths.nameIndexPath, paths.postalIndexPath = cfg.IndexFilePaths()
+	paths.excludeAdminDivisions = cfg.ExcludeAdminDivisions
 	return paths
 }
 
@@ -273,7 +278,12 @@ func main() {
 	// Step 1: Load Cities Data
 	loadResult := measureOperation("1. Loading Cities Data", 0, func() {
 		var err error
-		cities, err = dataLoader.LoadGeoNamesCSV(dataFile)
+		// The knob threads the same way as the initializer's loadData so a
+		// pre-built index matches what a first boot would build from the
+		// same config (it applies only when an index is (re)built).
+		cities, err = dataLoader.LoadGeoNamesCSVWithOptions(dataFile, dataLoader.LoadOptions{
+			ExcludeAdminDivisions: paths.excludeAdminDivisions,
+		})
 		if err != nil {
 			log.Fatalf("Failed to load cities: %v", err)
 		}
