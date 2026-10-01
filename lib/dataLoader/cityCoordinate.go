@@ -65,8 +65,37 @@ func estimatedCityCount(filepath string, limit int) int {
 	return 0
 }
 
+// LoadOptions parameterizes a GeoNames city load. The zero value is the
+// historical behavior: no row limit, every feature class loaded.
+type LoadOptions struct {
+	// Limit stops the load once Limit cities have been appended (0 = no limit).
+	Limit int
+
+	// ExcludeAdminDivisions skips every row whose GeoNames feature class
+	// (field index 6, 0-based, tab-separated) is exactly "A" — countries
+	// (PCLI), states/provinces (ADM1/ADM2), districts (ADM3/ADM4). Those rows
+	// carry huge synthetic populations and otherwise win mid-ocean
+	// rank=population queries under the gravity model. The check runs before
+	// the mandatory-field and coordinate checks, so a class-A row is always
+	// counted here (skippedAdminDivisions) rather than as a malformed row.
+	//
+	// SEMANTIC SCOPE: the filter applies at dataset LOAD, which happens when
+	// an index is (re)built — warm boots that deserialize existing index
+	// files are unaffected until the operator deletes an index file to force
+	// a rebuild. When enabled, admin-division names (e.g. "California" as an
+	// ADM1 row) also disappear from name lookups and /coordinates results;
+	// that is the point of the knob.
+	ExcludeAdminDivisions bool
+}
+
 // LoadGeoNamesCSVWithLimit loads cities from a GeoNames CSV file with an optional limit
 func LoadGeoNamesCSVWithLimit(filepath string, limit int) ([]city.SpatialCity, error) {
+	return LoadGeoNamesCSVWithOptions(filepath, LoadOptions{Limit: limit})
+}
+
+// LoadGeoNamesCSVWithOptions loads cities from a GeoNames CSV file under
+// LoadOptions. See LoadOptions for the option semantics.
+func LoadGeoNamesCSVWithOptions(filepath string, opts LoadOptions) ([]city.SpatialCity, error) {
 	file, err := os.Open(filepath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %v", err)
@@ -80,18 +109,29 @@ func LoadGeoNamesCSVWithLimit(filepath string, limit int) ([]city.SpatialCity, e
 
 	// Preallocate the slice from a file-size-based row estimate (an explicit
 	// limit takes precedence) instead of a hardcoded 15M rows.
-	cities := make([]city.SpatialCity, 0, estimatedCityCount(filepath, limit))
+	cities := make([]city.SpatialCity, 0, estimatedCityCount(filepath, opts.Limit))
 	lineCount := 0
+	skippedAdminDivisions := 0
 	for scanner.Scan() {
 		line := scanner.Bytes() // Use Bytes() instead of Text() to avoid string allocation
 		lineCount++
 		// Log progress every 1 million lines to reduce overhead (only if limit is large)
-		if limit == 0 && lineCount%1000000 == 0 {
+		if opts.Limit == 0 && lineCount%1000000 == 0 {
 			log.Printf("Processing line %d...", lineCount)
 		}
 
 		// Convert to string once for field extraction
 		lineStr := string(line)
+
+		// Optional feature-class-A exclusion: checked first (and only when
+		// enabled) so the default path does zero extra work; skipped rows are
+		// counted and summarized in ONE log line at end of load, never logged
+		// per row (prod is 13.5M rows).
+		if opts.ExcludeAdminDivisions && findField(lineStr, 6, '\t') == "A" {
+			skippedAdminDivisions++
+			continue
+		}
+
 		// Use strings.Index for more efficient field extraction to reduce allocations
 		field2 := findField(lineStr, 1, '\t')   // name
 		field4 := findField(lineStr, 3, '\t')   // alternatenames
@@ -151,14 +191,20 @@ func LoadGeoNamesCSVWithLimit(filepath string, limit int) ([]city.SpatialCity, e
 		cities = append(cities, spatialCity)
 
 		// Check limit
-		if limit > 0 && len(cities) >= limit {
-			log.Printf("Reached limit of %d cities, stopping early", limit)
+		if opts.Limit > 0 && len(cities) >= opts.Limit {
+			log.Printf("Reached limit of %d cities, stopping early", opts.Limit)
 			break
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("failed to scan file: %v, %v", filepath, err)
+	}
+
+	// Skip summary in the postal loader's style: one line, end of load, only
+	// when rows were actually skipped (never per row).
+	if skippedAdminDivisions > 0 {
+		log.Printf("skipped %d admin division rows (feature class A) in %s", skippedAdminDivisions, filepath)
 	}
 
 	log.Printf("Loaded %d cities from %s\n", len(cities), filepath)
