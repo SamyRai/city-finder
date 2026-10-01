@@ -2,6 +2,8 @@ package dataLoader
 
 import (
 	"encoding/csv"
+	"errors"
+	"io"
 	"log"
 	"os"
 	"strconv"
@@ -35,16 +37,26 @@ func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, er
 	reader := csv.NewReader(file)
 	reader.Comma = '\t'
 	reader.ReuseRecord = true // Reuse record slice to reduce allocations
+	// GeoNames ships ~14M rows and is hand-curated upstream: a row with a
+	// stray extra field must not abort the whole load (and with it server
+	// startup) — FieldsPerRecord=-1 defers to the len(record) check below.
+	// LazyQuotes is deliberately NOT set: with it, an unterminated leading
+	// quote silently swallows every row after the malformed one, losing the
+	// file tail into a single skipped record; a structurally ambiguous quote
+	// fails the load loudly instead, which is the honest failure for an
+	// index that must stay complete.
+	reader.FieldsPerRecord = -1
 
 	// Pre-allocate with reasonable capacity based on typical postal code data size
 	postalCodes := make(map[string]map[string]PostalCodeEntry, 200) // ~200 countries
 
-	skipped := 0
+	skippedCoords := 0
+	skippedShort := 0
 
 	for {
 		record, err := reader.Read()
 		if err != nil {
-			if err.Error() == "EOF" {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			return nil, err
@@ -52,6 +64,7 @@ func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, er
 
 		// Skip malformed records
 		if len(record) < 12 {
+			skippedShort++
 			continue
 		}
 
@@ -62,12 +75,12 @@ func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, er
 		// per-row logging, prod files hold ~14M rows.
 		lat, err := strconv.ParseFloat(record[9], 64)
 		if err != nil {
-			skipped++
+			skippedCoords++
 			continue
 		}
 		lon, err := strconv.ParseFloat(record[10], 64)
 		if err != nil {
-			skipped++
+			skippedCoords++
 			continue
 		}
 		accuracy, _ := strconv.Atoi(record[11])
@@ -94,8 +107,11 @@ func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, er
 		postalCodes[countryCode][postalCode.PostalCode] = postalCode
 	}
 
-	if skipped > 0 {
-		log.Printf("skipped %d postal rows with unparsable coordinates in %s", skipped, filepath)
+	if skippedCoords > 0 {
+		log.Printf("skipped %d postal rows with unparsable coordinates in %s", skippedCoords, filepath)
+	}
+	if skippedShort > 0 {
+		log.Printf("skipped %d postal rows with fewer than 12 fields in %s", skippedShort, filepath)
 	}
 
 	return postalCodes, nil
