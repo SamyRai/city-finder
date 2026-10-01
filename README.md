@@ -22,20 +22,25 @@ Nearest neighbor searches are performed using `s2.NewClosestEdgeQuery`, which le
 
 Nearest-neighbor queries are bounded by `s2.ClosestEdgeQuery` with `MaxResults(1)`, which prunes the search instead of collecting a result for every indexed point. Results are validated against a brute-force great-circle oracle in `s2_oracle_test.go`, and the ShapeIndex is built eagerly at startup so the first query after boot pays no construction cost.
 
-**Production scale** — measured on the full GeoNames dump (13.47M cities, 17.7M unique names; Apple M2, 8 cores, 24 GB RAM):
+**Production scale** — v1.0.0, measured on the full GeoNames dump (13.47M cities, 17.7M unique names; Apple Silicon):
 
-| Metric | Result |
-|---|---|
-| Cold start (download → indexes built) | 5m48s, peak RSS 8.6 GB |
-| Warm start (indexes on disk, datasets not re-parsed) | 65s, peak RSS 9.1 GB |
-| `FindNearestCity` | p50 20 µs, p99 177 µs (10k queries) |
-| `CityByName` exact | p50 9 µs, p99 124 µs (1k queries) |
-| `CityByPostalCode` | p50 0.5 µs, p99 1.1 µs (1k queries) |
-| Index files | 519 MB (S2) / 1.6 GB (name) / 98 MB (postal) |
+| Metric | v1.0.0 | pre-v1.0 (v1 indexes) |
+|---|---|---|
+| Warm start (indexes on disk, datasets not re-parsed) | **20.5 s** | 43–61 s |
+| — of which name index decode | 14 s | 36–54 s |
+| Heap after warm start (post-GC) | **5.5 GB** | 6.3–7.5 GB |
+| `FindNearestCity` (rank=distance) | p50 10 µs, p99 95 µs (10k queries) | p50 20 µs, p99 177–619 µs |
+| `CityByName` exact, real keys | p50 0.33 µs, p99 1.8 µs (1k queries) | p50 0.67–9 µs |
+| `CityByName` fuzzy (1–2-edit typos) | p50 7–21 ms, 1000/1000 typos resolved | disabled at this scale |
+| `CityByPostalCode` | p50 0.4 µs, p99 1.8 µs (1k queries) | p50 0.5 µs |
+| `FindNearestCity` rank=population (land queries) | 0.3–40 ms, exact gravity winner | n/a |
+| Index files | **559 MB (name, zstd v2)** / 521 MB (S2) / 98 MB (postal) | 1.6 GB (name) / 519 MB / 98 MB |
 
-Micro-benchmark context (100k distinct synthetic points): ~3–5 µs per nearest query, ~1.6 KB / 60 allocs — query cost grows with index size, so the production numbers above are the authoritative ones.
+Cold build (parse + all three indexes, no download) takes ~2 min on the same machine; a first boot also downloads ~420 MB of GeoNames archives. Peak RSS is workload-dependent: a warm start alone peaks ≈9 GB; the fuzzy index adds ~1.2 GB resident once built (lazily, on the first fuzzy lookup — that first query also pays a one-time ~30 s build at this scale); population-ranked queries over ocean/sparse points run wider scans and can transiently allocate several GB. The Helm chart's defaults (10 Gi request / 14 Gi limit) cover this with headroom.
 
-Fuzzy name matching (edit distance ≤ 2) is practical on small and medium indexes but its cost grows near-linearly with the number of distinct names, so on very large indexes it is disabled by a threshold (see `name.FuzzyMaxNames`) and lookups fall back to exact matching.
+Micro-benchmark context (100k distinct synthetic points): ~3–5 µs per nearest query — query cost grows with index size, so the production numbers above are the authoritative ones.
+
+Fuzzy name matching (edit distance ≤ 2) works at the full 17.7M-name scale via a q-gram inverted index with length filter and banded Levenshtein verification. It is built lazily on the first fuzzy lookup; `name.FuzzyMaxNames` (default 25M keys) bounds it against unmeasured scales. A documented completeness boundary applies to very short names (≤1 rune at distance 1, ≤4 runes at distance 2); exact matches are always found first regardless.
 
 ## Installation
 
@@ -65,7 +70,7 @@ make build-prod
 go run cmd/build-index/main.go prod
 ```
 
-**Note**: Production mode processes ~12.7 million cities and may take several minutes to complete.
+**Note**: Production mode processes ~13.5 million cities and may take several minutes to complete.
 
 ## Usage
 

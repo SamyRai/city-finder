@@ -48,7 +48,7 @@ README Performance section for methodology.
   automatically): the name index serializes each distinct city once plus
   int32 reference ids, zstd-framed, instead of one struct copy per name
   reference. At production scale the name index shrank 1.6 GB → 559 MB and
-  warm start 43–61 s → ~19 s; decoded heap dropped ~2 GB. `city.City`
+  warm start 43–61 s → 20.5 s; decoded heap dropped ~2 GB. `city.City`
   gained `Population`, so all three index headers bumped v1 → v2 together;
   v1 files are rejected and rebuilt from source data on first boot.
 - Warm-start memory: interned country strings collapse decoded duplication;
@@ -74,10 +74,10 @@ README Performance section for methodology.
 
 ### Performance
 
-- Warm start (all indexes on disk): **~19 s** (was 43–61 s); name index
-  decode alone 36–54 s → ~12 s.
+- Warm start (all indexes on disk): **20.5 s** (was 43–61 s); name index
+  decode alone 36–54 s → 14 s.
 - Name index file: **559 MB** zstd-framed v2 (was 1.6 GB).
-- Decoded heap after warm start: **~5.5 GB** (was ~6.3–7.5 GB).
-- Nearest queries (rank=distance): p50 ~10–21 µs at prod scale.
-- Fuzzy distance-2 typo queries at 17.7M names: p50 ~21 ms (previously
-  disabled at this scale).
+- Decoded heap after warm start: **5.5 GB** (was 6.3–7.5 GB).
+- Nearest queries (rank=distance): p50 ~10 µs at prod scale.
+- Fuzzy typo queries at 17.7M names: p50 7–21 ms (previously disabled at
+  this scale).

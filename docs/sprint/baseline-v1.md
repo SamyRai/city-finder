@@ -31,3 +31,24 @@ Notes:
   35.07M pointer refs into full struct copies versus 13.47M distinct cities.
 - Targets for v2: name index ≤ 800 MB, warm start ≤ 25 s, fuzzy p50 < 50 ms
   at full scale.
+
+## Day-9 final validation (integrated sprint/v1.0, 2026-10-01, same method)
+
+| Metric | v1.0.0 | v1 baseline | Target |
+|---|---|---|---|
+| Warm start total | 20.49 s | 60.65 s (cold-cache) / 38.6–43.1 s (settled) | ≤25 s ✓ |
+| Name decode | 14 s | 36.4–54 s | — |
+| Heap after GC | 5,548 MB | 7,531 MB | — |
+| name_index.gob | 559 MB (zstd v2) | 1,726 MB | ≤800 MB ✓ |
+| s2index.gob / postal | 521 MB / 98 MB | 519 MB / 98 MB | — |
+| nearest (distance) | p50 10.5 µs / p99 94.5 µs | p50 21 µs / p99 619 µs | — |
+| name exact (real keys) | p50 334 ns / p99 1.8 µs | p50 667 ns / p99 9.1 µs | — |
+| fuzzy d2 (mixed typo workload) | p50 7.4 ms, 1000/1000 resolved; first-query lazy build ~30 s | disabled | p50 <50 ms ✓ |
+| postal | p50 375 ns / p99 1.8 µs | p50 1.3 µs / p99 5.0 µs | — |
+| population rank (land classes, lane-measured) | 0.3–40 ms; ocean ~10 s documented worst case | n/a | — |
+
+Cold build on the integrated tree (sources present, no download): 112 s
+total; heap_sys transient 23.7 GB during build. Peak process RSS in the
+measurement run (12.6 GB) includes the lazily built fuzzy index (+1.18 GB)
+and transient allocations from ocean population scans; warm start alone
+peaks ≈9 GB.
