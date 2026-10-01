@@ -1,6 +1,6 @@
 ### A Beginner's Guide to Efficient Geographical Searches in Go
 
-> **Status note (2026-10):** this article records the original design narrative. Measured, current numbers for the S2 query path (`s2.ClosestEdgeQuery` with `MaxResults(1)`: ~3–5 µs per query on 100K points) live in the README's Performance section — the article's pre-benchmark claims predate that work.
+> **Status note (2026-10):** this article records the original design narrative. Measured, current numbers for the S2 query path (`s2.ClosestEdgeQuery` with `MaxResults(1)`: ~3–5 µs per query on 100K points) live in the README's Performance section — the article's pre-benchmark claims predate that work. Since then the API has also gained a rank parameter on `NearestPlace`, and admin attribution is planned for v1.1.
 
 Geographical search algorithms are essential for numerous applications, from finding the nearest restaurant to locating the closest city. This guide will walk you through various algorithms and data structures used to optimize such searches, illustrating our journey in improving performance step-by-step.
 
@@ -100,7 +100,8 @@ func BuildIndex(cities []city.SpatialCity, config *config.S2) (*S2Finder, error)
 }
 
 // NearestPlace now uses s2.NewClosestEdgeQuery for fast and accurate searches.
-func (f *S2Finder) NearestPlace(lat, lon float64) (*city.City, float64, error) {
+// rank selects the ranking: RankDistance (closest) or RankPopulation.
+func (f *S2Finder) NearestPlace(lat, lon float64, rank Rank) (*city.City, float64, error) {
 	if f.Index == nil {
 		return nil, 0, fmt.Errorf("s2 index is not initialized")
 	}
