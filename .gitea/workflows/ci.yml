@@ -13,4 +13,4 @@ jobs:
   go-ci:
     uses: mukimovd/.github/.gitea/workflows/go-ci.yml@main
     with:
-      go-version: '1.25'
+      go-version: '1.26'
