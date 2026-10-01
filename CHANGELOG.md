@@ -10,6 +10,12 @@ and this project adheres to
 
 ### Added
 
+- `POST /nearest/batch`: one round trip for 1–100 lookups. Per-point
+  `rank`/`include` with the same validation, error texts, and population
+  concurrency gate as GET `/nearest` (both handlers now share one query
+  core; GET behavior is byte-identical, existing tests unchanged).
+  Response is a parallel `results` array of the GET response objects with
+  `null` for not-found points.
 - Optional `exclude_admin_divisions` config key (default `false`,
   byte-identical behavior when off): drops GeoNames feature-class-A rows
   (countries/states/provinces and their huge synthetic populations) at
