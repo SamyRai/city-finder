@@ -23,14 +23,6 @@ const (
 	invalidCityLine5 = "2994701\tCity\t\t\t0.0\t181.0\tT\tPK\tAD\tAD,FR\t02\t\t\t\t0\t2811\t2348\tEurope/Andorra\t2023-10-03"               // Invalid longitude
 )
 
-const (
-	validPostalLine    = "AD\tAD100\tCanillo\tCanillo\t02\t\t\t\t\t\t\t42.5833\t1.6667\t6"
-	invalidPostalLine1 = "" // Empty line
-	invalidPostalLine2 = "invalid postal data"
-	invalidPostalLine3 = "AD\tAD100\tCanillo\tCanillo\t02\t\t\t\t\t\t\tinvalid_lat\tinvalid_lon\t6" // Invalid coordinates
-	invalidPostalLine4 = "AD\tAD100\tCanillo\tCanillo\t02\t\t\t\t\t\t\t91.0\t0.0\t6"                // Invalid latitude
-)
-
 func TestLoadCities_ValidData(t *testing.T) {
 	// Create a temporary file with valid data
 	tmpfile, err := os.CreateTemp("", "cities_test_*.txt")

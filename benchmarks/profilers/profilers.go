@@ -15,7 +15,6 @@ type Profiler struct {
 	config       types.BenchmarkConfig
 	cpuFile      *os.File
 	memFile      *os.File
-	traceFile    *os.File
 	startTime    time.Time
 	initialStats runtime.MemStats
 }
