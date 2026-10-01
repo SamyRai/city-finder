@@ -31,7 +31,21 @@ func (f *Finder) FindCityByName(name, countryCode string) *city.City {
 // building, or disabled. See name.Finder.WarmFuzzy for cost notes — the
 // finished structure adds ~1.2 GiB resident at production scale.
 func (f *Finder) WarmFuzzy() {
+	if f.NameFinder == nil {
+		return
+	}
 	f.NameFinder.WarmFuzzy()
+}
+
+// FuzzyBuildState wraps the NameFinder method: it reports the fuzzy index
+// build state (see name.Finder.FuzzyBuildState) — 0 = not built,
+// 1 = building, 2 = built, 3 = disabled. A finder without a name index
+// reports 0.
+func (f *Finder) FuzzyBuildState() int32 {
+	if f.NameFinder == nil {
+		return 0
+	}
+	return f.NameFinder.FuzzyBuildState()
 }
 
 // FindNearestCity wraps the S2Finder method

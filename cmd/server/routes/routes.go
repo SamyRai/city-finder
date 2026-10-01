@@ -159,6 +159,9 @@ func SetupRoutesWithMetrics(app *fiber.App, mainFinder *finder.Finder, reg *metr
 			if delta := cur - lastTrips.Swap(cur); delta > 0 {
 				reg.AddCounter("fuzzy_budget_trips_total", int64(delta))
 			}
+			// 0 = not built, 1 = building, 2 = built, 3 = disabled —
+			// name.Finder.FuzzyBuildState documents the mapping.
+			reg.SetGauge("fuzzy_build_state", float64(mainFinder.FuzzyBuildState()))
 			return c.Type("text", "plain").SendString(reg.Render())
 		})
 	}
