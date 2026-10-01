@@ -7,6 +7,7 @@ import (
 
 	"github.com/SamyRai/cityFinder/benchmarks/types"
 	"github.com/SamyRai/cityFinder/lib/finder"
+	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
 )
 
 // QueryBenchmarkConfig holds configuration for query benchmarks
@@ -181,7 +182,7 @@ func (r *QueryBenchmarkRunner) measureSingleQuery(finderName string, f *finder.F
 
 	for i := 0; i < r.config.Iterations; i++ {
 		queryStart := time.Now()
-		nearestCity, _, err := f.FindNearestCity(loc.Lat, loc.Lon)
+		nearestCity, _, err := f.FindNearestCity(loc.Lat, loc.Lon, coordinates.RankDistance)
 		queryDuration := time.Since(queryStart)
 
 		if err != nil {

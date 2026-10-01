@@ -33,7 +33,7 @@ func TestNearestPlace(t *testing.T) {
 
 	// Test case 1: Find city closest to SF
 	sfLat, sfLon := 37.7750, -122.4190
-	nearest, dist, err := finder.NearestPlace(sfLat, sfLon)
+	nearest, dist, err := finder.NearestPlace(sfLat, sfLon, RankDistance)
 	assert.NoError(t, err)
 	assert.NotNil(t, nearest)
 	assert.Equal(t, "San Francisco", nearest.Name)
@@ -41,7 +41,7 @@ func TestNearestPlace(t *testing.T) {
 
 	// Test case 2: Find city closest to NYC
 	nycLat, nycLon := 40.7128, -74.0060
-	nearest, dist, err = finder.NearestPlace(nycLat, nycLon)
+	nearest, dist, err = finder.NearestPlace(nycLat, nycLon, RankDistance)
 	assert.NoError(t, err)
 	assert.NotNil(t, nearest)
 	assert.Equal(t, "New York", nearest.Name)
@@ -49,7 +49,7 @@ func TestNearestPlace(t *testing.T) {
 
 	// Test case 3: A point in the middle of the Atlantic
 	midAtlanticLat, midAtlanticLon := 30.0, -40.0
-	nearest, _, err = finder.NearestPlace(midAtlanticLat, midAtlanticLon)
+	nearest, _, err = finder.NearestPlace(midAtlanticLat, midAtlanticLon, RankDistance)
 	assert.NoError(t, err)
 	assert.NotNil(t, nearest)
 	assert.Equal(t, "New York", nearest.Name)
@@ -77,7 +77,7 @@ func TestSerialization(t *testing.T) {
 
 	// Test that the deserialized finder works correctly
 	sfLat, sfLon := 37.7750, -122.4190
-	nearest, _, err := deserializedFinder.NearestPlace(sfLat, sfLon)
+	nearest, _, err := deserializedFinder.NearestPlace(sfLat, sfLon, RankDistance)
 	assert.NoError(t, err)
 	assert.NotNil(t, nearest)
 	assert.Equal(t, "San Francisco", nearest.Name)
@@ -89,7 +89,7 @@ func TestEmptyCities(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, finder)
 
-	_, _, err = finder.NearestPlace(0, 0)
+	_, _, err = finder.NearestPlace(0, 0, RankDistance)
 	assert.Error(t, err)
 	assert.Equal(t, "no city found", err.Error())
 }
@@ -102,7 +102,7 @@ func TestSingleCity(t *testing.T) {
 	finder, err := BuildIndex(singleCityList, cfg)
 	assert.NoError(t, err)
 
-	nearest, _, err := finder.NearestPlace(21.3, -157.8)
+	nearest, _, err := finder.NearestPlace(21.3, -157.8, RankDistance)
 	assert.NoError(t, err)
 	assert.NotNil(t, nearest)
 	assert.Equal(t, "Honolulu", nearest.Name)
@@ -118,14 +118,14 @@ func TestCoordinatePrecision(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Test high precision coordinates
-	nearest, dist, err := finder.NearestPlace(40.71280000000001, -74.00600000000001)
+	nearest, dist, err := finder.NearestPlace(40.71280000000001, -74.00600000000001, RankDistance)
 	assert.NoError(t, err)
 	assert.NotNil(t, nearest)
 	assert.Equal(t, "Precise Location", nearest.Name)
 	assert.InDelta(t, 0.0, dist, 1e-10) // Very high precision for exact match
 
 	// Test slight offset still finds correct city
-	nearest, dist, err = finder.NearestPlace(40.7128000001, -74.0060000001)
+	nearest, dist, err = finder.NearestPlace(40.7128000001, -74.0060000001, RankDistance)
 	assert.NoError(t, err)
 	assert.NotNil(t, nearest)
 	assert.Equal(t, "Precise Location", nearest.Name)
@@ -162,7 +162,7 @@ func TestBoundaryConditions(t *testing.T) {
 			assert.NoError(t, err)
 
 			// Try to find the city
-			nearest, _, err := finder.NearestPlace(tt.lat, tt.lon)
+			nearest, _, err := finder.NearestPlace(tt.lat, tt.lon, RankDistance)
 			if tt.expectErr {
 				assert.Error(t, err)
 			} else {
@@ -191,7 +191,7 @@ func TestExtremeCoordinates(t *testing.T) {
 
 	// Test finding each extreme city
 	for _, city := range extremeCities {
-		nearest, dist, err := finder.NearestPlace(city.Latitude, city.Longitude)
+		nearest, dist, err := finder.NearestPlace(city.Latitude, city.Longitude, RankDistance)
 		assert.NoError(t, err)
 		assert.NotNil(t, nearest)
 		assert.Equal(t, city.Name, nearest.Name)
@@ -211,7 +211,7 @@ func TestDistanceAccuracy(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Test distance from a point near Philadelphia to Philadelphia (should be close to 0)
-	nearest, dist, err := finder.NearestPlace(39.9526, -75.1652)
+	nearest, dist, err := finder.NearestPlace(39.9526, -75.1652, RankDistance)
 	assert.NoError(t, err)
 	assert.Equal(t, "Philadelphia", nearest.Name)
 	assert.InDelta(t, 0.0, dist, 1e-6)
@@ -221,14 +221,14 @@ func TestDistanceAccuracy(t *testing.T) {
 	// since the algorithm finds the closest city, not the distance to a specific city
 	midPointLat := (40.7128 + 39.9526) / 2
 	midPointLon := (-74.0060 + -75.1652) / 2
-	nearest, dist, err = finder.NearestPlace(midPointLat, midPointLon)
+	nearest, dist, err = finder.NearestPlace(midPointLat, midPointLon, RankDistance)
 	assert.NoError(t, err)
 	assert.NotNil(t, nearest)
 	assert.True(t, dist >= 0, "Distance should be non-negative")
 	assert.True(t, dist < 200, "Distance should be reasonable for cities on the US East Coast")
 
 	// Test exact match returns 0 distance
-	nearest, dist, err = finder.NearestPlace(40.7128, -74.0060)
+	nearest, dist, err = finder.NearestPlace(40.7128, -74.0060, RankDistance)
 	assert.NoError(t, err)
 	assert.Equal(t, "New York", nearest.Name)
 	assert.InDelta(t, 0.0, dist, 1e-6)
@@ -259,7 +259,7 @@ func TestCoordinateNormalization(t *testing.T) {
 	}
 
 	for _, tc := range testCoords {
-		nearest, _, err := finder.NearestPlace(tc.lat, tc.lon)
+		nearest, _, err := finder.NearestPlace(tc.lat, tc.lon, RankDistance)
 		if tc.shouldFind {
 			assert.NoError(t, err)
 			assert.NotNil(t, nearest)
@@ -295,7 +295,7 @@ func TestHighDensityArea(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		lat := baseLat + float64(i%10)*0.001
 		lon := baseLon + float64(i/10)*0.001
-		nearest, dist, err := finder.NearestPlace(lat, lon)
+		nearest, dist, err := finder.NearestPlace(lat, lon, RankDistance)
 		assert.NoError(t, err)
 		assert.NotNil(t, nearest)
 		assert.True(t, dist < 0.1, "Distance should be very small in high-density area, got %f", dist)
@@ -330,7 +330,7 @@ func TestLargeCoordinateOffsets(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		nearest, dist, err := finder.NearestPlace(tc.lat, tc.lon)
+		nearest, dist, err := finder.NearestPlace(tc.lat, tc.lon, RankDistance)
 		assert.NoError(t, err)
 		assert.NotNil(t, nearest)
 		assert.Equal(t, tc.expected, nearest.Name)

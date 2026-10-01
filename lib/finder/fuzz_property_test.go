@@ -48,7 +48,7 @@ func FuzzCoordinateFinder(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, lat, lon float64) {
 		// Test that the function doesn't crash with any coordinate input
-		result, distance, err := finder.NearestPlace(lat, lon)
+		result, distance, err := finder.NearestPlace(lat, lon, coordinates.RankDistance)
 
 		// Basic invariants that should always hold
 		if err == nil {
@@ -206,7 +206,7 @@ func TestProperty_CoordinateDetection_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, testCity := range testCities {
-		result, distance, err := finder.NearestPlace(testCity.Latitude, testCity.Longitude)
+		result, distance, err := finder.NearestPlace(testCity.Latitude, testCity.Longitude, coordinates.RankDistance)
 		assert.NoError(t, err)
 		assert.NotNil(t, result)
 		assert.True(t, distance < 1.0, "Should find the exact city or very close one, distance: %f", distance)
@@ -240,7 +240,7 @@ func TestProperty_CoordinateDetection_BoundaryConsistency(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result, distance, err := finder.NearestPlace(tc.lat, tc.lon)
+			result, distance, err := finder.NearestPlace(tc.lat, tc.lon, coordinates.RankDistance)
 			assert.NoError(t, err)
 			assert.NotNil(t, result)
 			assert.Equal(t, tc.expected, result.Name)
@@ -321,7 +321,7 @@ func TestProperty_CoordinateClipping(t *testing.T) {
 	}
 
 	for _, coord := range outOfBoundsCoords {
-		result, distance, err := finder.NearestPlace(coord.lat, coord.lon)
+		result, distance, err := finder.NearestPlace(coord.lat, coord.lon, coordinates.RankDistance)
 		// Should either succeed or fail gracefully, but not crash
 		if err == nil {
 			assert.NotNil(t, result)
@@ -353,7 +353,7 @@ func TestProperty_FloatPrecisionEdgeCases(t *testing.T) {
 	}
 
 	for _, coord := range testCoords {
-		result, distance, err := finder.NearestPlace(coord.lat, coord.lon)
+		result, distance, err := finder.NearestPlace(coord.lat, coord.lon, coordinates.RankDistance)
 		assert.NoError(t, err)
 		assert.NotNil(t, result)
 		assert.True(t, distance >= 0)
@@ -401,7 +401,7 @@ func TestProperty_RandomDataConsistency(t *testing.T) {
 		total++
 
 		// Find by coordinates
-		coordResult, distance, err := coordFinder.NearestPlace(testCity.Latitude, testCity.Longitude)
+		coordResult, distance, err := coordFinder.NearestPlace(testCity.Latitude, testCity.Longitude, coordinates.RankDistance)
 		if err != nil || coordResult == nil || distance > 1.0 {
 			continue // Skip if coordinate search doesn't work well
 		}

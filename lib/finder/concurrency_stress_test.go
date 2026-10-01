@@ -141,11 +141,11 @@ func TestConcurrentStress_CoordinateFinder(t *testing.T) {
 				lat := testCity.Latitude + float64(j%10-5)*0.001
 				lon := testCity.Longitude + float64(j%10-5)*0.001
 
-				// NearestPlace is a microsecond-scale read after MaxResults(1),
+				// NearestPlace is a microsecond-scale read over its 16-candidate pool,
 				// so no per-operation timeout is needed: a wall-clock budget
 				// here would count timed-out ops twice (timeout + eventual
 				// completion) and flake under parallel test load.
-				if _, _, err := finder.NearestPlace(lat, lon); err != nil {
+				if _, _, err := finder.NearestPlace(lat, lon, coordinates.RankDistance); err != nil {
 					atomic.AddInt64(&errorCount, 1)
 				} else {
 					atomic.AddInt64(&successCount, 1)
@@ -302,7 +302,7 @@ func TestMemoryPressure_Concurrent(t *testing.T) {
 					case 1: // Coordinate lookup
 						cityIndex := (workerID*operationsPerWorker + j) % len(cities)
 						testCity := cities[cityIndex]
-						coordFinder.NearestPlace(testCity.Latitude, testCity.Longitude)
+						coordFinder.NearestPlace(testCity.Latitude, testCity.Longitude, coordinates.RankDistance)
 
 					case 2: // Postal code lookup
 						countryCode := fmt.Sprintf("C%d", (workerID*operationsPerWorker+j)%100)

@@ -84,7 +84,7 @@ func TestSerializeDeserialize_RoundTripValidatesHeader(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got.Cities, len(testCities))
 
-	nearest, _, err := got.NearestPlace(37.7750, -122.4190)
+	nearest, _, err := got.NearestPlace(37.7750, -122.4190, RankDistance)
 	require.NoError(t, err)
 	assert.Equal(t, "San Francisco", nearest.Name)
 }

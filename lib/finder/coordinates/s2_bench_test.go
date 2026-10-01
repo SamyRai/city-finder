@@ -70,7 +70,7 @@ func BenchmarkNearestPlace(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		point := testPoints[i%len(testPoints)]
-		_, _, _ = finder.NearestPlace(point.lat, point.lon)
+		_, _, _ = finder.NearestPlace(point.lat, point.lon, RankDistance)
 	}
 }
 

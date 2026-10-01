@@ -4,10 +4,12 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"sort"
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/SamyRai/cityFinder/lib/config"
+	"github.com/golang/geo/s2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -151,7 +153,7 @@ func bruteForceNearest(cities []city.SpatialCity, lat, lon float64) (string, flo
 func checkAgainstOracle(t *testing.T, finder *S2Finder, cities []city.SpatialCity, queries []struct{ lat, lon float64 }) {
 	t.Helper()
 	for i, query := range queries {
-		got, gotDist, err := finder.NearestPlace(query.lat, query.lon)
+		got, gotDist, err := finder.NearestPlace(query.lat, query.lon, RankDistance)
 		require.NoError(t, err, "query %d (%.6f, %.6f): NearestPlace failed", i, query.lat, query.lon)
 		require.NotNil(t, got, "query %d (%.6f, %.6f): nil city", i, query.lat, query.lon)
 
@@ -207,4 +209,232 @@ func TestNearestPlaceMatchesBruteForceOracle(t *testing.T) {
 		require.NotNil(t, finder)
 		checkAgainstOracle(t, finder, cities, queries)
 	})
+}
+
+// weightedCitySet is the dedicated fixture for population ranking. It pins
+// the two scenarios the ranking exists for: a village sitting right next to a
+// real city (the city must win under gravity even though the village is
+// closer), and a distant big city that must LOSE to the nearby city because
+// of the squared-distance decay. Zero-population neighbors model the GeoNames
+// norm (most rows carry no population and score 0 everywhere).
+func weightedCitySet() []city.SpatialCity {
+	fixed := []city.SpatialCity{
+		{City: city.City{Name: "Village", Latitude: 20.0000, Longitude: 20.0000, Population: 200}},
+		{City: city.City{Name: "Zero Pop Neighbor", Latitude: 20.0010, Longitude: 20.0010}},
+		{City: city.City{Name: "Near City", Latitude: 20.0600, Longitude: 20.0600, Population: 2_000_000}},
+		{City: city.City{Name: "Mega City", Latitude: 21.5000, Longitude: 21.5000, Population: 20_000_000}},
+		{City: city.City{Name: "Null Island Hut", Latitude: 0.5000, Longitude: 0.5000}},
+		{City: city.City{Name: "Far Big", Latitude: -33.0000, Longitude: 151.0000, Population: 5_000_000}},
+	}
+
+	cities := make([]city.SpatialCity, 0, len(fixed)+18)
+	cities = append(cities, fixed...)
+
+	// Worldwide filler with mixed populations (including zeros) so the
+	// candidate pool is crowded and truncation at rankCandidatePool is
+	// exercised, exactly like the prod index.
+	rng := rand.New(rand.NewSource(20261001))
+	for i := 0; i < 18; i++ {
+		population := int32(0)
+		if i%3 != 0 { // a third of the fillers stay population-less
+			population = int32(rng.Int31n(3_000_000))
+		}
+		cities = append(cities, city.SpatialCity{
+			City: city.City{
+				Name:       "WeightedFiller-" + itoa3(i),
+				Country:    "RC",
+				Latitude:   rng.Float64()*180 - 90,
+				Longitude:  rng.Float64()*360 - 180,
+				Population: population,
+			},
+		})
+	}
+	return cities
+}
+
+// bruteForcePopulationRank mirrors NearestPlace's population ranking over the
+// whole fixture: rank the rankCandidatePool nearest cities (ordered by
+// distance, then city index — the order the s2 query visits candidates in)
+// under score = population / (d*d + 1), with d the haversine km to the query
+// point. Ties on score resolve to the earlier pool entry. It returns the
+// winning city name, the winning score, and the runner-up score (math.Inf(-1)
+// when the pool holds a single entry).
+func bruteForcePopulationRank(cities []city.SpatialCity, lat, lon float64) (string, float64, float64) {
+	type candidate struct {
+		index int
+		dist  float64
+		score float64
+	}
+	all := make([]candidate, len(cities))
+	for i, c := range cities {
+		d := oracleHaversineKm(lat, lon, c.Latitude, c.Longitude)
+		all[i] = candidate{index: i, dist: d, score: float64(c.Population) / (d*d + 1.0)}
+	}
+	sort.Slice(all, func(a, b int) bool {
+		if all[a].dist != all[b].dist {
+			return all[a].dist < all[b].dist
+		}
+		return all[a].index < all[b].index
+	})
+
+	pool := all[:min(len(all), rankCandidatePool)]
+	best := pool[0]
+	second := math.Inf(-1)
+	for _, cand := range pool[1:] {
+		if cand.score > best.score {
+			second = best.score
+			best = cand
+		} else if cand.score > second {
+			second = cand.score
+		}
+	}
+	return cities[best.index].Name, best.score, second
+}
+
+// checkAgainstWeightedOracle runs every query in both ranking modes and
+// compares each with its brute-force oracle: rank=distance against the pure
+// nearest-city oracle, rank=population against the gravity-model oracle.
+// Score comparisons carry a relative tolerance because the finder measures
+// distance via the s2 angle while the oracle uses haversine (agreement to
+// under a meter, per the distance oracle), which perturbs scores in the far
+// decimals.
+func checkAgainstWeightedOracle(t *testing.T, finder *S2Finder, cities []city.SpatialCity, queries []struct{ lat, lon float64 }) {
+	t.Helper()
+	const relativeScoreTolerance = 1e-9
+	for i, query := range queries {
+		// Distance mode must keep matching the pure-distance oracle.
+		gotDistance, gotDistanceKm, err := finder.NearestPlace(query.lat, query.lon, RankDistance)
+		require.NoError(t, err, "query %d (%.6f, %.6f): distance rank failed", i, query.lat, query.lon)
+
+		bestName, bestDist, secondDist := bruteForceNearest(cities, query.lat, query.lon)
+		trueDist := oracleHaversineKm(query.lat, query.lon, gotDistance.Latitude, gotDistance.Longitude)
+		assert.InDelta(t, trueDist, gotDistanceKm, tieToleranceKm,
+			"query %d (%.6f, %.6f): distance rank returned %q at %.6f km, haversine says %.6f km",
+			i, query.lat, query.lon, gotDistance.Name, gotDistanceKm, trueDist)
+		if secondDist-bestDist > tieToleranceKm {
+			assert.Equal(t, bestName, gotDistance.Name,
+				"query %d (%.6f, %.6f): distance rank unique winner mismatch: got %q, want %q",
+				i, query.lat, query.lon, gotDistance.Name, bestName)
+		}
+
+		// Population mode must match the gravity oracle.
+		gotWeighted, gotWeightedKm, err := finder.NearestPlace(query.lat, query.lon, RankPopulation)
+		require.NoError(t, err, "query %d (%.6f, %.6f): population rank failed", i, query.lat, query.lon)
+		require.NotNil(t, gotWeighted)
+
+		wantName, bestScore, secondScore := bruteForcePopulationRank(cities, query.lat, query.lon)
+
+		// The reported distance must be the great-circle distance to the
+		// returned (winning) city, within 1 m.
+		trueWeightedDist := oracleHaversineKm(query.lat, query.lon, gotWeighted.Latitude, gotWeighted.Longitude)
+		assert.InDelta(t, trueWeightedDist, gotWeightedKm, tieToleranceKm,
+			"query %d (%.6f, %.6f): population rank returned %q at %.6f km, haversine says %.6f km",
+			i, query.lat, query.lon, gotWeighted.Name, gotWeightedKm, trueWeightedDist)
+
+		// The returned city's own oracle score must be within floating-point
+		// noise of the oracle winner's score.
+		gotScore := float64(gotWeighted.Population) / (trueWeightedDist*trueWeightedDist + 1.0)
+		assert.GreaterOrEqual(t, gotScore, bestScore*(1-relativeScoreTolerance),
+			"query %d (%.6f, %.6f): population rank returned %q (score %.6f), oracle winner %q scores %.6f",
+			i, query.lat, query.lon, gotWeighted.Name, gotScore, wantName, bestScore)
+
+		// When the gravity winner is unique (runner-up strictly behind beyond
+		// the tolerance), the returned city must be exactly that winner.
+		if secondScore < bestScore*(1-relativeScoreTolerance) {
+			assert.Equal(t, wantName, gotWeighted.Name,
+				"query %d (%.6f, %.6f): population rank unique winner mismatch: got %q, want %q",
+				i, query.lat, query.lon, gotWeighted.Name, wantName)
+		}
+	}
+}
+
+// TestNearestPlacePopulationRankMatchesOracle is the correctness oracle for
+// population-weighted ranking. The fixture guarantees both modes diverge on
+// at least one query (querying between Village and Zero Pop Neighbor: the
+// distance winner is one of the two tiny places while Near City takes the
+// gravity crown from Mega City via the squared-distance decay), so the test
+// cannot pass by accident through an all-zero-population fixture.
+func TestNearestPlacePopulationRankMatchesOracle(t *testing.T) {
+	cities := weightedCitySet()
+
+	type q = struct{ lat, lon float64 }
+	queries := []q{
+		{20.0000, 20.0000}, // exactly at Village: distance=Village, gravity=Near City
+		{20.0005, 20.0005}, // between Village and Zero Pop Neighbor
+		{20.0010, 20.0010}, // exactly at Zero Pop Neighbor
+		{20.0300, 20.0300}, // midpoint Village/Near City
+		{20.0600, 20.0600}, // exactly at Near City
+		{21.5000, 21.5000}, // exactly at Mega City
+		{20.7800, 20.7800}, // between Near City and Mega City
+	}
+
+	rng := rand.New(rand.NewSource(20261002))
+	for i := 0; i < 200; i++ {
+		queries = append(queries, q{rng.Float64()*180 - 90, rng.Float64()*360 - 180})
+	}
+
+	t.Run("BuildIndex", func(t *testing.T) {
+		finder, err := BuildIndex(cities, &config.S2{})
+		require.NoError(t, err)
+		checkAgainstWeightedOracle(t, finder, cities, queries)
+	})
+
+	t.Run("DeserializeIndex", func(t *testing.T) {
+		source, err := BuildIndex(cities, &config.S2{})
+		require.NoError(t, err)
+
+		tmpfile, err := os.CreateTemp("", "s2oraclew_*.gob")
+		require.NoError(t, err)
+		defer func() { _ = os.Remove(tmpfile.Name()) }()
+		require.NoError(t, source.SerializeIndex(tmpfile.Name()))
+
+		finder, err := DeserializeIndex(tmpfile.Name())
+		require.NoError(t, err)
+		checkAgainstWeightedOracle(t, finder, cities, queries)
+	})
+}
+
+// TestNearestPlaceDistanceRankMatchesMaxResultsOne pins the equivalence the
+// distance path relies on: since the candidate pool grew from 1 to
+// rankCandidatePool, results[0] must still be the same city, at the same
+// distance, that the historical MaxResults(1) query returned. The randomized
+// points are checked both against the pre-change query issued verbatim here
+// and (via the oracle suite above) against the brute-force oracle.
+func TestNearestPlaceDistanceRankMatchesMaxResultsOne(t *testing.T) {
+	cities := oracleCitySet()
+	finder, err := BuildIndex(cities, &config.S2{})
+	require.NoError(t, err)
+
+	rng := rand.New(rand.NewSource(20261003))
+	for i := 0; i < 500; i++ {
+		lat := rng.Float64()*180 - 90
+		lon := rng.Float64()*360 - 180
+
+		// The exact query NearestPlace issued before ranking existed.
+		oldQuery := s2.NewClosestEdgeQuery(finder.Index, s2.NewClosestEdgeQueryOptions().MaxResults(1))
+		oldResults := oldQuery.FindEdges(s2.NewMinDistanceToPointTarget(
+			s2.PointFromLatLng(s2.LatLngFromDegrees(lat, lon))))
+		require.NotEmpty(t, oldResults, "query %d: MaxResults(1) returned nothing", i)
+		oldIndex := oldResults[0].EdgeID()
+		require.Less(t, int(oldIndex), len(finder.Cities), "query %d: edge %d out of range", i, oldIndex)
+		oldCity := finder.Cities[oldIndex]
+		oldDistanceKm := oldResults[0].Distance().Angle().Radians() * earthRadiusKm
+
+		got, gotDistanceKm, err := finder.NearestPlace(lat, lon, RankDistance)
+		require.NoError(t, err, "query %d (%.6f, %.6f)", i, lat, lon)
+
+		// Same distance to floating-point noise: both derive from the s2
+		// angle to the winning point, so any real difference means a
+		// different winner. Only an exactly tied distance (duplicate
+		// coordinates hit by a random float query — probability ~0) may
+		// legitimately return a different city.
+		assert.InDelta(t, oldDistanceKm, gotDistanceKm, 1e-12,
+			"query %d (%.6f, %.6f): distance rank returned %q at %.9f km, MaxResults(1) returned %q at %.9f km",
+			i, lat, lon, got.Name, gotDistanceKm, oldCity.Name, oldDistanceKm)
+		if math.Abs(oldDistanceKm-gotDistanceKm) > 1e-12 {
+			assert.Equal(t, oldCity.Name, got.Name,
+				"query %d (%.6f, %.6f): distance rank returned %q, MaxResults(1) returned %q",
+				i, lat, lon, got.Name, oldCity.Name)
+		}
+	}
 }

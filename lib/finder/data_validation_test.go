@@ -172,13 +172,13 @@ func TestDataIntegrity_CoordinateFinder(t *testing.T) {
 				if len(tc.cities) > 0 {
 					// Try to find nearest place to first city coordinates
 					firstCity := tc.cities[0]
-					nearest, dist, err := finder.NearestPlace(firstCity.Latitude, firstCity.Longitude)
+					nearest, dist, err := finder.NearestPlace(firstCity.Latitude, firstCity.Longitude, coordinates.RankDistance)
 					assert.NoError(t, err)
 					assert.NotNil(t, nearest)
 					assert.True(t, dist >= 0, "Distance should be non-negative")
 				} else {
 					// Empty cities should return error
-					_, _, err := finder.NearestPlace(0, 0)
+					_, _, err := finder.NearestPlace(0, 0, coordinates.RankDistance)
 					assert.Error(t, err)
 				}
 			}
@@ -288,7 +288,7 @@ func TestMalformedDataHandling(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotNil(t, finder)
 
-		_, _, err = finder.NearestPlace(0, 0)
+		_, _, err = finder.NearestPlace(0, 0, coordinates.RankDistance)
 		assert.Error(t, err)
 	})
 
@@ -340,7 +340,7 @@ func TestBoundaryConditions_Integrated(t *testing.T) {
 		}
 
 		for _, bt := range boundaryTests {
-			nearest, _, err := coordFinder.NearestPlace(bt.lat, bt.lon)
+			nearest, _, err := coordFinder.NearestPlace(bt.lat, bt.lon, coordinates.RankDistance)
 			if bt.shouldFind {
 				assert.NoError(t, err)
 				assert.NotNil(t, nearest)
@@ -392,7 +392,7 @@ func TestDataConsistency(t *testing.T) {
 	t.Run("Coordinate vs Name consistency", func(t *testing.T) {
 		for _, city := range testCities {
 			// Find by coordinates
-			coordResult, _, err := coordFinder.NearestPlace(city.Latitude, city.Longitude)
+			coordResult, _, err := coordFinder.NearestPlace(city.Latitude, city.Longitude, coordinates.RankDistance)
 			assert.NoError(t, err)
 			assert.NotNil(t, coordResult)
 
@@ -420,7 +420,7 @@ func TestDataConsistency(t *testing.T) {
 				assert.NotNil(t, nameResult, "City from postal code should exist in name index")
 
 				// Should be able to find this city by coordinates
-				coordResult, _, err := coordFinder.NearestPlace(entry.Latitude, entry.Longitude)
+				coordResult, _, err := coordFinder.NearestPlace(entry.Latitude, entry.Longitude, coordinates.RankDistance)
 				assert.NoError(t, err)
 				assert.NotNil(t, coordResult, "City from postal code should exist in coordinate index")
 			}
