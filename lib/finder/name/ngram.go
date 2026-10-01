@@ -204,8 +204,9 @@ func distinctQueryGrams(query string) []string {
 // ±d of the diagonal with a row-minimum early exit. It replaced
 // agnivade/levenshtein in the verify step after a prod-scale profile showed
 // that library's two []rune conversions per candidate (stringtoslicerune +
-// memclr) cost ~half of all distance-2 search time; the library remains a
-// dependency (used by tests and the overflow scan, where volumes are tiny).
+// memclr) cost ~half of all distance-2 search time; the library has since
+// been dropped from the module entirely (the overflow scan in name.go reuses
+// this checker, and the tests carry their own reference DP).
 type levenshteinChecker struct {
 	queryRunes []rune
 	prev, curr []int
