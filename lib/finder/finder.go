@@ -48,6 +48,17 @@ func (f *Finder) FuzzyBuildState() int32 {
 	return f.NameFinder.FuzzyBuildState()
 }
 
+// PrefixNames wraps the NameFinder method: it returns up to maxNames indexed
+// names under countryCode that start with prefix, each paired with its
+// first-referenced city (see name.Finder.PrefixNames for the limit and
+// ordering rules). A finder without a name index returns nil.
+func (f *Finder) PrefixNames(countryCode, prefix string, maxNames int) []name.PrefixMatch {
+	if f.NameFinder == nil {
+		return nil
+	}
+	return f.NameFinder.PrefixNames(countryCode, prefix, maxNames)
+}
+
 // FindNearestCity wraps the S2Finder method
 func (f *Finder) FindNearestCity(lat, lon float64, rank coordinates.Rank) (*city.City, float64, error) {
 	c, dist, err := f.S2Finder.NearestPlace(lat, lon, rank)

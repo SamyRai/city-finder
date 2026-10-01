@@ -394,8 +394,9 @@ func TestCityByNameUnknownCountrySkipsFuzzy(t *testing.T) {
 	finder := BuildIndex(fuzzyFixtureCities())
 	// The existing-but-empty variant: only reachable by direct construction
 	// (every public insertion path adds a name in the same critical section).
+	// An empty nameTable is the flat equivalent of the old empty country map.
 	finder.mutex.Lock()
-	finder.InvertedIndex["QQ"] = map[string][]*city.City{}
+	finder.countries["QQ"] = &nameTable{}
 	finder.mutex.Unlock()
 
 	for _, country := range []string{"XX", "", "QQ"} {

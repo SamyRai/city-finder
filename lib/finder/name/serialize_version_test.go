@@ -27,7 +27,7 @@ func TestSerializedStreamStartsWithHeader(t *testing.T) {
 	assert.NoError(t, gob.NewDecoder(file).Decode(&header))
 	assert.Equal(t, nameIndexMagic, header.Magic)
 	assert.Equal(t, nameIndexVersion, header.Version)
-	assert.Equal(t, len(finder.InvertedIndex), header.Count)
+	assert.Equal(t, len(refsSnapshot(finder)), header.Count)
 }
 
 // TestDeserializeRejectsIncompatibleHeaders covers the header-validation
@@ -45,8 +45,13 @@ func TestDeserializeRejectsIncompatibleHeaders(t *testing.T) {
 		return path
 	}
 
-	legacyFinder := NewNameFinder()
-	legacyFinder.AddCity(city.SpatialCity{City: city.City{Name: "Paris", Country: "FR", Latitude: 48.85, Longitude: 2.35}})
+	// A faithful v1 payload stand-in: the raw nested index the v1 format
+	// wrote (struct-per-reference). The flat in-memory index no longer stores
+	// this shape, but the bytes on disk are what the version check rejects,
+	// so the literal keeps the fixture honest without storage coupling.
+	v1Payload := map[string]map[string][]*city.City{
+		"FR": {"Paris": {{Name: "Paris", Country: "FR", Latitude: 48.85, Longitude: 2.35}}},
+	}
 
 	cases := []struct {
 		desc        string
@@ -66,13 +71,13 @@ func TestDeserializeRejectsIncompatibleHeaders(t *testing.T) {
 			desc: "v1 file is rejected, not decoded",
 			path: write("v1_file.gob", func(enc *gob.Encoder) error {
 				// A faithful v1 stream: header with version 1 followed by the
-				// raw InvertedIndex (struct-per-reference payload). The
+				// raw nested index (struct-per-reference payload). The
 				// rejection must come from the version check, before any
 				// payload decoding could zero-fill Population.
 				if err := enc.Encode(&indexHeader{Magic: nameIndexMagic, Version: 1, Count: 1}); err != nil {
 					return err
 				}
-				return enc.Encode(legacyFinder.InvertedIndex)
+				return enc.Encode(v1Payload)
 			}),
 			wantSub:     []string{"version", "rebuilt"},
 			wantCorrupt: true,
@@ -88,7 +93,7 @@ func TestDeserializeRejectsIncompatibleHeaders(t *testing.T) {
 		{
 			desc: "legacy headerless stream",
 			path: write("legacy.gob", func(enc *gob.Encoder) error {
-				return enc.Encode(legacyFinder.InvertedIndex) // pre-header format: payload first
+				return enc.Encode(v1Payload) // pre-header format: payload first
 			}),
 			wantSub:     []string{"legacy", "rebuilt"},
 			wantCorrupt: true,
