@@ -72,6 +72,49 @@ const (
 // synchronization.
 var FuzzyMaxNames = 25_000_000
 
+// FuzzyMaxCandidates caps the posting-list work a single fuzzy search may
+// perform: the number of posting entries the rarest-lists walk may read
+// before it stops and returns the results verified so far, best-effort, for
+// that one query. It is the v1.1 clamp on the fuzzy tail: at prod scale
+// (17.73M names), distance-2 queries whose length/gram filters degenerate —
+// short or common-gram queries — were measured walking multi-million-entry
+// posting lists for up to ~8 s; the budget bounds that walk per query (the
+// default to a few seconds at prod, tighter budgets to tens of
+// milliseconds — see the measured sweep in docs/design/index-format-v2.md).
+//
+// Semantics when the cap trips mid-query: no error, no panic — the search
+// returns the matches already verified (every returned name is a true
+// Levenshtein match; the cap can only lose results, never fabricate them),
+// the result is excluded from the fuzzy cache so it is never served to a
+// later query as if complete, and FuzzyBudgetTrips() increments. Exact
+// (phase-1) lookups never consult this path and are unaffected.
+//
+// Default rationale (Apple silicon, Oct 2026 GeoNames, 17.73M names; the
+// standard typo workload = 1k real names with 1–2 edits, the adversarial
+// workload = 1k one-to-three-rune queries): the standard workload's largest
+// posting walk is 3,539,399–3,632,442 entries across two independent 1k
+// samples (d2; ~531k at d1) while the adversarial workload's is 4,000,118 —
+// the two tails overlap, so no budget can both keep the standard workload
+// 100% complete AND clamp the adversarial p99 to ~100 ms; a ~500k budget
+// measured 415 ms adversarial d2 p99 but truncated 7.1% of standard d2
+// queries. The default sits above the standard workload's observed maximum
+// (0/1000 truncated at both distances, in both samples) and is deliberately
+// tight rather than generous: every trip is loudly observable via
+// FuzzyBudgetTrips() and the one-time log, so an operator with a heavier
+// typo workload can raise it on evidence, while a generous default would
+// silently weaken the only bound on degenerate queries. Its value at
+// today's data is the worst-case guarantee — no fuzzy query exceeds 4M
+// posting entries of work — not a p99 improvement; see
+// docs/design/index-format-v2.md for the full measured budget sweep. At
+// corpora of 1M names and below the cap is dormant (largest measured walk
+// 225,469 entries).
+//
+// Override it BEFORE concurrent fuzzy searches run: the variable is read
+// once per search without synchronization, identical to FuzzyMaxNames.
+// Negative disables the cap (v1.0 behavior: unbounded walk, full
+// completeness up to the q-gram boundary, unbounded tail).
+var FuzzyMaxCandidates = 4_000_000
+
 // fuzzyState values track the lazy fuzzy index. The state moves not-built ->
 // building -> built, or not-built -> disabled once the FuzzyMaxNames gate
 // trips. Both terminal states are sticky for the Finder's lifetime, with one
@@ -537,22 +580,29 @@ func (nf *Finder) ensureFuzzyBuilt() {
 	}
 }
 
-// fuzzyCandidates returns every name within maxDistance of query, from the
-// immutable n-gram index plus the post-build overflow list. The caller must
-// handle caching; this is the uncached core of getCachedFuzzySearch.
+// fuzzyCandidates returns the names within maxDistance of query, from the
+// immutable n-gram index plus the post-build overflow list, and whether the
+// result is partial (the n-gram walk hit the FuzzyMaxCandidates cap). The
+// caller must handle caching; this is the uncached core of
+// getCachedFuzzySearch.
+//
+// The budget scopes to the n-gram walk only: the overflow list is a small
+// linear scan bounded by the number of post-build AddCity names (no
+// production callers today), so it runs in full even when the walk truncates
+// — a truncated query still rescues typos of recently added names.
 //
 // The read lock is scoped around the candidate generation: AddCity mutates
 // the overflow list and can swap nf.ngrams under the write lock, so an
 // unlocked read would race. Concurrent readers — the common case at query
 // time — do not block each other.
-func (nf *Finder) fuzzyCandidates(query string, maxDistance int) []string {
+func (nf *Finder) fuzzyCandidates(query string, maxDistance int) ([]string, bool) {
 	nf.mutex.RLock()
-	candidates := nf.ngrams.search(query, maxDistance)
+	candidates, truncated := nf.ngrams.search(query, maxDistance)
 	overflow := nf.fuzzyOverflow
 	nf.mutex.RUnlock()
 
 	if len(overflow) == 0 {
-		return candidates
+		return candidates, truncated
 	}
 	// The overflow scan reuses the same banded, allocation-free checker the
 	// n-gram verify step uses (volumes here are tiny, but one distance
@@ -564,7 +614,7 @@ func (nf *Finder) fuzzyCandidates(query string, maxDistance int) []string {
 			candidates = append(candidates, name)
 		}
 	}
-	return candidates
+	return candidates, truncated
 }
 
 // getCachedFuzzySearch performs fuzzy search with caching
@@ -594,7 +644,18 @@ func (nf *Finder) getCachedFuzzySearch(query string, maxDistance int) []string {
 	// Search under the read lock: AddCity appends to the overflow list and
 	// may swap the n-gram pointer under the write lock, so an unlocked
 	// search would race with concurrent additions.
-	candidates := nf.fuzzyCandidates(query, maxDistance)
+	candidates, truncated := nf.fuzzyCandidates(query, maxDistance)
+
+	// Cache honesty: a budget-truncated result is partial for this query.
+	// Never write it to the cache — the 1h TTL would pin it and serve it to
+	// later identical queries as if complete. Exclusion (rather than a
+	// truncated-tag on entries) is the simpler correct option: the only cost
+	// is that a repeated degenerate query re-pays the (now budget-bounded)
+	// search, and raising FuzzyMaxCandidates immediately takes effect for
+	// fresh searches instead of waiting out stale tagged entries.
+	if truncated {
+		return candidates
+	}
 
 	// Cache the result
 	nf.cacheMutex.Lock()

@@ -268,7 +268,7 @@ func TestAddCityDuringBuildIsNotLost(t *testing.T) {
 		// that made it into the committed build are found via the n-gram
 		// index, names that arrived after the commit via the overflow list.
 		typo := "LateCiti" + added[i][len("LateCitt"):]
-		got := finder.fuzzyCandidates(typo, 1)
+		got, _ := finder.fuzzyCandidates(typo, 1)
 		if !containsName(got, added[i]) {
 			t.Fatalf("name %q added during the build window is not fuzzy-searchable: the lock-free swap or the overflow list dropped it (candidates: %d)", added[i], len(got))
 		}

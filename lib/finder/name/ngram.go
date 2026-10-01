@@ -2,8 +2,10 @@ package name
 
 import (
 	"fmt"
+	"log"
 	"math"
 	"sort"
+	"sync/atomic"
 	"unicode/utf8"
 )
 
@@ -35,6 +37,9 @@ import (
 //     name-side gram-count filter (Gm(name) = runes + q − 1 ≥ minCommon
 //     follows from the length bound), so no per-name gram counts are stored.
 //  4. Levenshtein verification of the survivors.
+//  5. Candidate budget: the walk in step 2 stops after FuzzyMaxCandidates
+//     posting entries have been read (see FuzzyMaxCandidates in name.go for
+//     why the counter sits on raw entries, not on verifications).
 //
 // Postings may list a name id more than once (a gram repeated inside one
 // name appends once per occurrence); search dedups with a local seen-set,
@@ -197,6 +202,37 @@ func distinctQueryGrams(query string) []string {
 	return grams
 }
 
+// fuzzyBudgetTrips counts fuzzy searches whose posting walk was cut short by
+// the FuzzyMaxCandidates cap. It is a process-global monotone counter, cheap
+// to maintain (one atomic add per truncated search, none per untruncated
+// one), exposed through FuzzyBudgetTrips for operators and tests.
+var fuzzyBudgetTrips atomic.Uint64
+
+// fuzzyBudgetLogged makes the first budget trip log exactly once, mirroring
+// the one-time disable log of the FuzzyMaxNames gate: no per-query logging,
+// ever.
+var fuzzyBudgetLogged atomic.Bool
+
+// fuzzyWalkedLast records the number of posting entries read by the most
+// recently completed search (capped or not), and fuzzyVerifiedLast the number
+// of candidates that reached Levenshtein verification. They are diagnostics
+// for budget tuning — how close real queries come to FuzzyMaxCandidates, and
+// whether a walk's cost sits in the walk itself or in verification — read by
+// the scale gate and tests. Last-writer-wins across concurrent searches;
+// never used for control flow.
+var (
+	fuzzyWalkedLast   atomic.Int64
+	fuzzyVerifiedLast atomic.Int64
+)
+
+// FuzzyBudgetTrips reports how many fuzzy searches have returned partial
+// results because the FuzzyMaxCandidates cap tripped, since process start.
+// A non-zero value in a healthy deployment means the workload contains
+// queries degenerate enough to hit the cap (see FuzzyMaxCandidates).
+func FuzzyBudgetTrips() uint64 {
+	return fuzzyBudgetTrips.Load()
+}
+
 // levenshteinChecker answers "is the rune-level edit distance between the
 // query and a candidate ≤ d?" without allocating per comparison: the query
 // side is decoded once per search into a reusable buffer, the candidate side
@@ -279,14 +315,19 @@ func (c *levenshteinChecker) atMost(candidate string, d int) bool {
 	return c.prev[n] <= d
 }
 
-// search returns every indexed name within Levenshtein distance d of query,
-// in arbitrary order. See the filtering-chain comment for completeness.
-func (ix *ngramIndex) search(query string, d int) []string {
+// search returns the indexed names within Levenshtein distance d of query,
+// in arbitrary order, plus whether the result is partial: the posting walk
+// stopped early after FuzzyMaxCandidates entries (see FuzzyMaxCandidates in
+// name.go). A partial result is best-effort for that one query — every name
+// it does return is a verified true match — and must not be cached or
+// otherwise treated as complete. See the filtering-chain comment for the
+// full completeness argument.
+func (ix *ngramIndex) search(query string, d int) (matches []string, truncated bool) {
 	qLen := utf8.RuneCountInString(query)
 	grams := distinctQueryGrams(query)
 	g := len(grams)
 	if g == 0 {
-		return nil
+		return nil, false
 	}
 
 	// minCommon from the q-gram lemma; when the bound degenerates to ≤ 0
@@ -320,11 +361,32 @@ func (ix *ngramIndex) search(query string, d int) []string {
 	var check levenshteinChecker
 	check.prepare(query)
 
+	// The budget counts RAW posting entries read (before dedup, filter, and
+	// verification): every unit of downstream work — seen-set probe, length
+	// filter, Levenshtein run — happens at most once per entry read, so this
+	// single counter bounds the whole walk. Counting verifications instead
+	// would leave the dominant cost of degenerate short queries unbounded:
+	// measured at prod, adversarial 1–3-rune queries walk up to 4.0M entries
+	// but verify at most 69,727 (d2) / 7,886 (d1) — the tail lives in the
+	// walk, not the verification. Read once per search, like FuzzyMaxNames;
+	// negative means unlimited.
+	budget := int64(FuzzyMaxCandidates)
+	if budget < 0 {
+		budget = math.MaxInt64
+	}
+	var walked, verified int64
+
 	seen := make(map[int32]struct{})
-	var matches []string
+walk:
 	for i := 0; i < walkCount; i++ {
 		gid := ranked[i].gid
 		for _, id := range ix.post[ix.postOff[gid]:ix.postOff[gid+1]] {
+			if walked >= budget {
+				truncated = true
+				break walk
+			}
+			walked++
+
 			if _, dup := seen[id]; dup {
 				continue
 			}
@@ -334,12 +396,26 @@ func (ix *ngramIndex) search(query string, d int) []string {
 			if delta := int(ix.nameLens[id]) - qLen; delta > d || delta < -d {
 				continue
 			}
+			verified++
 			if check.atMost(ix.names[id], d) {
 				matches = append(matches, ix.names[id])
 			}
 		}
 	}
-	return matches
+
+	fuzzyWalkedLast.Store(walked)
+	fuzzyVerifiedLast.Store(verified)
+	if truncated {
+		fuzzyBudgetTrips.Add(1)
+		// One-time summary, mirroring the FuzzyMaxNames disable log: the
+		// trip itself is the rare event worth surfacing, per-query logging
+		// is not.
+		if fuzzyBudgetLogged.CompareAndSwap(false, true) {
+			log.Printf("fuzzy search candidate budget reached (%d posting entries); the query returned partial results — raise name.FuzzyMaxCandidates (negative disables the cap) if this workload needs full completeness",
+				FuzzyMaxCandidates)
+		}
+	}
+	return matches, truncated
 }
 
 // approxBytes reports the approximate resident size of the index's own
