@@ -212,9 +212,66 @@ an immutable q-gram inverted index over the distinct names:
 - **Known tail**: d2 p99/p99.9 (~0.75–1.1 s at prod) comes from short or
   common-gram queries whose filters degenerate and walk multi-million-entry
   posting lists. CityByName always tries distance 1 first (p50 2.6 ms), so
-  only two-edit typos that miss at distance 1 pay the tail. A per-query
-  candidate budget would clamp it at the cost of another completeness
-  boundary — deliberately left as a v1.1 lever, not shipped silently.
+  only two-edit typos that miss at distance 1 pay the tail. The v1.1
+  candidate budget below is the sanctioned clamp.
+- **Candidate budget (v1.1, as built)**: `name.FuzzyMaxCandidates` (default
+  4,000,000) caps the posting-list work of one fuzzy search: the
+  rarest-lists walk stops after that many RAW posting entries and the search
+  returns the matches verified so far — best-effort for that query, no
+  error, no panic, and every returned name is still a verified true match
+  (the cap can lose results, never fabricate them). Counting raw entries
+  rather than verifications is load-bearing: at prod the adversarial
+  one-to-three-rune workload walks up to 4,000,118 entries but verifies at
+  most 69,727 (d2) / 7,886 (d1) — the tail lives in the walk, so a
+  verification budget would bound nothing. On a trip the partial result is
+  EXCLUDED from the fuzzy cache (a partial result must never be served to a
+  later query as if complete; exclusion beats a truncated-tag because a
+  repeated degenerate query only re-pays the now-bounded search, and a
+  raised budget takes effect immediately instead of waiting out stale
+  tagged entries), `name.FuzzyBudgetTrips()` increments, and a one-time
+  summary log fires
+  (mirroring the FuzzyMaxNames disable log — no per-query logging). The
+  post-build overflow scan is not budgeted: it is a small bounded linear
+  list, so truncated queries still rescue recently added names. The variable
+  is a package-level `var` read once per search without synchronization,
+  exactly like FuzzyMaxNames; negative disables the cap (v1.0 behavior).
+- **Budget tradeoff, measured** (same rig and standard typo workload as the
+  scale table above; adversarial = 1k queries of 1–3 runes drawn as prefixes
+  of real names, d2; trunc = queries that returned partial results):
+
+  | budget | std d2 trunc | std d2 p99 | adv d2 trunc | adv d2 p99 | adv d2 max |
+  |---|---|---|---|---|---|
+  | unlimited (v1.0) | 0/1000 | 0.60–0.89 s | 0/1000 | 0.87–3.0 s | 2.4–8.1 s |
+  | 500,000 | 71/1000 | 517 ms | 805/1000 | 415 ms | 0.99 s |
+  | 1,000,000 | 38/1000 | 388 ms | 561/1000 | 671 ms | 1.05 s |
+  | 2,000,000 | 15/1000 | 428 ms | 224/1000 | 1.69 s | 4.9 s |
+  | **4,000,000 (default)** | **0/1000** (two independent samples) | 0.28–0.89 s (untruncated) | 1–2/1000 | 1.2–1.4 s | 2.1–4.4 s |
+  | 8,000,000 / 16,000,000 | 0/1000 | ≈ unlimited | 0/1000 | ≈ unlimited | ≈ unlimited |
+
+  The honest headline: the standard tail and the adversarial tail are the
+  SAME phenomenon — short/common-gram queries whose walked lists blow up.
+  The standard workload's largest walk (3,632,442 entries at d2; 531,662 at
+  d1) nearly equals the adversarial maximum (4,000,118), so no single budget
+  can keep the standard workload 100% complete AND clamp adversarial p99 to
+  ~100 ms: 500k measured 415 ms adversarial p99 but truncated 7.1% of
+  standard d2 queries. The default therefore protects completeness (0/1000
+  truncated at both distances at prod; the cap is dormant at 1M-name scale
+  and below, largest measured walk 225,469) and buys a worst-case BOUND — no
+  fuzzy query can exceed 4M posting entries of work, so data growth or
+  harsher queries cannot reopen a multi-second tail at today's ~4M-entry
+  ceiling — rather than a p99 improvement at today's data. Operators who
+  prefer the opposite corner (sub-500 ms adversarial p99, a few percent of
+  real-typo queries returning partial results) set
+  `name.FuzzyMaxCandidates = 500000` and watch `FuzzyBudgetTrips()`.
+  Prod-scale p99s carry roughly ±2–3x run-to-run noise (single-pass
+  methodology; the multi-hundred-MB dedup maps of degenerate queries make
+  the measurements GC- and load-sensitive — identical untruncated work
+  measured 565 ms and 889 ms std d2 p99 in different runs, and one
+  contaminated config measured a 43 s max on zero-truncation work identical
+  to a 2 s run and was excluded as environmental), while truncation counts
+  and walk statistics are deterministic. The 1M-name-scale numbers are
+  unaffected by any swept budget (largest measured walk 225,469 entries;
+  0/1000 truncation everywhere): the cap is dormant below prod scale.
 - **Go/no-go gate (1M, run before committing)**: structure 82 MB and d2 p50
   1.05 ms measured (pre-verifier-fix numbers); linear extrapolation to
   17.73M projected ~1.5 GB (< 3 GB budget) and d2 p50 well under the 100 ms

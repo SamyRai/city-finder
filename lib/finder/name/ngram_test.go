@@ -97,7 +97,11 @@ func TestNGramSearchMatchesBruteForce(t *testing.T) {
 		// Safety threshold from the boundary analysis: runeLen > q(d-1)+1.
 		safeLen := ngramQ*(d-1) + 2
 		for _, q := range queries {
-			got := index.search(q, d)
+			got, truncated := index.search(q, d)
+			// The default FuzzyMaxCandidates budget must never engage at
+			// small scale: this corpus walks a few hundred entries per
+			// query, orders of magnitude under the cap.
+			assert.Falsef(t, truncated, "search(%q, %d) tripped the default candidate budget", q, d)
 			for _, m := range got {
 				dist := refLevenshtein(q, m)
 				assert.LessOrEqualf(t, dist, d,
@@ -189,8 +193,10 @@ func TestLevenshteinCheckerMatchesReference(t *testing.T) {
 func TestNGramSearchEmptyAndShort(t *testing.T) {
 	index, err := buildNGramIndex(ngramCorpus())
 	require.NoError(t, err)
-	assert.Empty(t, index.search("", 2))
-	assert.Empty(t, index.search("AVeryLongQueryNameThatMatchesNothingAtAll", 2))
+	empty, _ := index.search("", 2)
+	assert.Empty(t, empty)
+	none, _ := index.search("AVeryLongQueryNameThatMatchesNothingAtAll", 2)
+	assert.Empty(t, none)
 }
 
 // TestNGramBuildCapsOverlongNameLengths pins the uint16 length-table guard:
@@ -208,7 +214,7 @@ func TestNGramBuildCapsOverlongNameLengths(t *testing.T) {
 	assert.Equal(t, uint16(math.MaxUint16), index.nameLens[1],
 		"overlong name length must be capped, not wrapped")
 
-	matches := index.search("Parls", 1) // distance-1 typo of Paris
+	matches, _ := index.search("Parls", 1) // distance-1 typo of Paris
 	assert.Contains(t, matches, "Paris", "normal names must stay fuzzy-findable")
 	assert.NotContains(t, matches, overlong, "the overlong name must never surface as a match")
 }
@@ -266,7 +272,8 @@ func TestFuzzyOverflowCoversPostBuildAdds(t *testing.T) {
 	finder.mutex.RUnlock()
 	assert.Zero(t, over, "a committed build must clear the overflow list")
 	require.NotNil(t, ngrams)
-	assert.Contains(t, ngrams.search("Berli", 1), "Berlin", "the rebuilt structure must contain the added name")
+	rebuilt, _ := ngrams.search("Berli", 1)
+	assert.Contains(t, rebuilt, "Berlin", "the rebuilt structure must contain the added name")
 }
 
 // TestCityByNameConcurrentDuringNGramBuild is the race-safety gate for the
@@ -324,6 +331,9 @@ func TestNGramApproxBytesSanity(t *testing.T) {
 	index, err := buildNGramIndex(ngramCorpus())
 	require.NoError(t, err)
 	assert.Positive(t, index.approxBytes())
-	assert.NotEmpty(t, index.search("Paris", 1))
-	assert.True(t, strings.Contains(strings.Join(index.search("Paris", 1), ","), "Paris"))
+	first, _ := index.search("Paris", 1)
+	second, _ := index.search("Paris", 1)
+	assert.NotEmpty(t, first)
+	assert.True(t, strings.Contains(strings.Join(first, ","), "Paris"))
+	assert.Equal(t, first, second, "repeated identical searches must be deterministic")
 }

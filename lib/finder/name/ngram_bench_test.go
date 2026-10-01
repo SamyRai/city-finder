@@ -48,7 +48,7 @@ func BenchmarkNGramSearch(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		if got := finder.ngrams.search(fmt.Sprintf("BenchCitt%06d", i%100000), 2); len(got) == 0 {
+		if got, _ := finder.ngrams.search(fmt.Sprintf("BenchCitt%06d", i%100000), 2); len(got) == 0 {
 			b.Fatal("typo query must find its base name")
 		}
 	}

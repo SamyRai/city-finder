@@ -48,7 +48,7 @@ func TestNGramProfile(t *testing.T) {
 	start := time.Now()
 	var hits int
 	for _, q := range queries {
-		if got := index.search(q, 2); len(got) > 0 {
+		if got, _ := index.search(q, 2); len(got) > 0 {
 			hits++
 		}
 	}
