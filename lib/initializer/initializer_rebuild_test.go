@@ -39,7 +39,7 @@ func TestEnsureFinders_RebuildsTruncatedS2Index(t *testing.T) {
 	require.NotNil(t, f2)
 
 	// The rebuilt finder must answer queries from the source data.
-	cityResult, _, err := f2.S2Finder.NearestPlace(42.5876, 1.7418)
+	cityResult, _, err := f2.S2Finder.NearestPlace(42.5876, 1.7418, coordinates.RankDistance)
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(cityResult.Name, "Roc Meler"),
 		"unexpected nearest city %q", cityResult.Name)

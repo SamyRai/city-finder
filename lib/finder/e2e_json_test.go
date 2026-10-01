@@ -202,7 +202,7 @@ func testCoordinateFinder(t *testing.T, finder *coordinates.S2Finder, places []T
 	for _, place := range places {
 		totalLookups++
 
-		result, distance, err := finder.NearestPlace(place.Latitude, place.Longitude)
+		result, distance, err := finder.NearestPlace(place.Latitude, place.Longitude, coordinates.RankDistance)
 
 		if err == nil && result != nil {
 			successfulLookups++
@@ -312,7 +312,7 @@ func testCrossFinderConsistency(t *testing.T, nameFinder *name.Finder,
 
 		// Get results from all finders
 		nameResult := nameFinder.CityByName(place.Name, place.Country)
-		coordResult, _, coordErr := coordFinder.NearestPlace(place.Latitude, place.Longitude)
+		coordResult, _, coordErr := coordFinder.NearestPlace(place.Latitude, place.Longitude, coordinates.RankDistance)
 
 		var postalResult *city.City
 		if place.PostalCode != "" {
@@ -394,7 +394,7 @@ func TestEndToEnd_JSONBased_EdgeCases(t *testing.T) {
 
 	t.Run("InvalidCoordinates", func(t *testing.T) {
 		// Test with coordinates far from any city
-		result, distance, err := coordFinder.NearestPlace(0.0, 0.0) // Middle of ocean
+		result, distance, err := coordFinder.NearestPlace(0.0, 0.0, coordinates.RankDistance) // Middle of ocean
 		if err == nil && result != nil {
 			// Should still return a result (nearest city), but distance should be large
 			assert.True(t, distance > 100, "Distance should be large for ocean coordinates")
@@ -418,7 +418,7 @@ func TestEndToEnd_JSONBased_EdgeCases(t *testing.T) {
 
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
-				result, distance, err := coordFinder.NearestPlace(tc.lat, tc.lon)
+				result, distance, err := coordFinder.NearestPlace(tc.lat, tc.lon, coordinates.RankDistance)
 				if tc.valid {
 					// Should handle gracefully
 					if err != nil {

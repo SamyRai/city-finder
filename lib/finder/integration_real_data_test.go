@@ -230,7 +230,7 @@ func TestRealDataIntegration_CoordinateFinder(t *testing.T) {
 		totalLookups++
 
 		// Search for the city using its own coordinates (should find itself or very close)
-		result, distance, err := finder.NearestPlace(testCity.Latitude, testCity.Longitude)
+		result, distance, err := finder.NearestPlace(testCity.Latitude, testCity.Longitude, coordinates.RankDistance)
 
 		if err == nil && result != nil {
 			successfulLookups++
@@ -350,7 +350,7 @@ func TestRealDataIntegration_CrossFinderConsistency(t *testing.T) {
 
 					// Check that all finders return consistent coordinate information
 					nameResult := nameFinder.CityByName(testCity.Name, testCity.Country)
-					coordResult, _, coordErr := coordFinder.NearestPlace(testCity.Latitude, testCity.Longitude)
+					coordResult, _, coordErr := coordFinder.NearestPlace(testCity.Latitude, testCity.Longitude, coordinates.RankDistance)
 					postalResult := postalFinder.CityByPostalCode(postalEntry.PostalCode, postalCountry)
 
 					if nameResult != nil && coordErr == nil && coordResult != nil && postalResult != nil {

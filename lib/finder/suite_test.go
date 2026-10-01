@@ -47,7 +47,7 @@ func (suite *FinderTestSuite) TestBasicFunctionality() {
 	suite.Equal(cities[0].Name, result.Name)
 
 	// Test coordinate finder
-	nearest, distance, err := coordFinder.NearestPlace(cities[0].Latitude, cities[0].Longitude)
+	nearest, distance, err := coordFinder.NearestPlace(cities[0].Latitude, cities[0].Longitude, coordinates.RankDistance)
 	suite.NoError(err)
 	suite.NotNil(nearest)
 	suite.True(distance >= 0)
@@ -92,7 +92,7 @@ func (suite *FinderTestSuite) TestDataIntegrity() {
 		suite.NotNil(nameResult)
 
 		// Find by coordinates
-		coordResult, _, err := coordFinder.NearestPlace(testCity.Latitude, testCity.Longitude)
+		coordResult, _, err := coordFinder.NearestPlace(testCity.Latitude, testCity.Longitude, coordinates.RankDistance)
 		suite.NoError(err)
 		suite.NotNil(coordResult)
 

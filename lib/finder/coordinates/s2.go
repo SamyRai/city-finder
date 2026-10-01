@@ -4,6 +4,7 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"time"
 
@@ -14,6 +15,29 @@ import (
 )
 
 const earthRadiusKm = 6371.0
+
+// Rank selects how NearestPlace chooses the winning city from the candidate
+// pool around the query point.
+type Rank int
+
+const (
+	// RankDistance returns the closest candidate. It is the zero value so
+	// the historical nearest-neighbor behavior remains the default.
+	RankDistance Rank = iota
+	// RankPopulation returns the candidate with the highest gravity-model
+	// score (see NearestPlace for the formula).
+	RankPopulation
+)
+
+// rankCandidatePool is how many nearest candidates NearestPlace fetches
+// before applying the ranking mode. The distance mode needs only the closest
+// result; the population mode scores the pool with a gravity model that
+// decays with squared distance, so its winner always comes from the query
+// point's immediate neighborhood — 16 keeps the pool comfortably larger than
+// any realistic winner neighborhood while staying far from the unpruned
+// default (one result per indexed point). It is a structural constant for
+// decay-based ranking, not a tuning knob.
+const rankCandidatePool = 16
 
 // S2Finder uses a ShapeIndex for efficient nearest neighbor searches.
 type S2Finder struct {
@@ -113,15 +137,34 @@ func BuildIndex(cities []city.SpatialCity, config *config.S2) (*S2Finder, error)
 	return &S2Finder{Index: index, Cities: cityData}, nil
 }
 
-// NearestPlace finds the nearest city to the given latitude and longitude.
-func (f *S2Finder) NearestPlace(lat, lon float64) (*city.City, float64, error) {
+// NearestPlace finds the city nearest to the given latitude and longitude,
+// ordered by the requested ranking mode over a shared candidate pool of the
+// rankCandidatePool closest indexed points.
+//
+// rank == RankDistance (the default, and the behavior of every pre-ranking
+// release): returns the closest city. ClosestEdgeQuery.FindEdges returns its
+// results sorted by distance, so results[0] is the same city the historical
+// MaxResults(1) query returned.
+//
+// rank == RankPopulation: ranks the same candidate pool with a gravity model,
+//
+//	score = population / (d*d + 1)
+//
+// where d is the great-circle distance in kilometers on the same sphere the
+// reported distance uses. The +1 keeps the denominator positive and makes a
+// query issued at a city's exact coordinates score that city at exactly its
+// population. Ties on score are broken by the smaller distance, then stably
+// by candidate index: candidates arrive sorted by distance, so scanning in
+// order and keeping a strictly greater score yields both tie-breaks for free.
+func (f *S2Finder) NearestPlace(lat, lon float64, rank Rank) (*city.City, float64, error) {
 	if f.Index == nil {
 		return nil, 0, fmt.Errorf("s2 index is not initialized")
 	}
 	targetPoint := s2.PointFromLatLng(s2.LatLngFromDegrees(lat, lon))
-	// MaxResults(1) prunes the search: the default (MaxInt32) would collect
-	// and sort a result for every indexed point on each query.
-	query := s2.NewClosestEdgeQuery(f.Index, s2.NewClosestEdgeQueryOptions().MaxResults(1))
+	// Fetch a fixed candidate pool instead of a single result. Pruning the
+	// query (vs the MaxInt32 default) still avoids collecting and sorting a
+	// result for every indexed point on each query.
+	query := s2.NewClosestEdgeQuery(f.Index, s2.NewClosestEdgeQueryOptions().MaxResults(rankCandidatePool))
 	target := s2.NewMinDistanceToPointTarget(targetPoint)
 	results := query.FindEdges(target)
 
@@ -129,16 +172,54 @@ func (f *S2Finder) NearestPlace(lat, lon float64) (*city.City, float64, error) {
 		return nil, 0, fmt.Errorf("no city found")
 	}
 
-	closest := results[0]
-	cityIndex := closest.EdgeID()
+	var winner s2.EdgeQueryResult
+	switch rank {
+	case RankDistance:
+		winner = results[0]
+	case RankPopulation:
+		winner = f.bestPopulationRank(results)
+	default:
+		return nil, 0, fmt.Errorf("invalid rank %d", int(rank))
+	}
+	cityIndex := winner.EdgeID()
 	if int(cityIndex) >= len(f.Cities) {
 		return nil, 0, fmt.Errorf("invalid city index %d found (total cities: %d)", cityIndex, len(f.Cities))
 	}
 	nearestCity := f.Cities[cityIndex]
 
-	distanceKm := closest.Distance().Angle().Radians() * earthRadiusKm
+	distanceKm := winner.Distance().Angle().Radians() * earthRadiusKm
 
 	return &nearestCity, distanceKm, nil
+}
+
+// bestPopulationRank returns the result with the highest gravity-model score
+// population / (d*d + 1). See NearestPlace for the formula and tie-breaks;
+// the strictly-greater comparison resolves equal scores to the earlier
+// candidate, which — because results arrive sorted by distance — is the
+// nearer one, and at equal distance the lower candidate index.
+func (f *S2Finder) bestPopulationRank(results []s2.EdgeQueryResult) s2.EdgeQueryResult {
+	best := results[0]
+	bestScore := f.populationRankScore(best)
+	for _, candidate := range results[1:] {
+		if score := f.populationRankScore(candidate); score > bestScore {
+			best, bestScore = candidate, score
+		}
+	}
+	return best
+}
+
+// populationRankScore scores one query result under the gravity model. An
+// out-of-range edge index cannot occur with a consistently built finder (the
+// point vector and the city slice come from the same source); scoring it as
+// -Inf keeps a corrupt index from panicking before NearestPlace's own bounds
+// check can report it.
+func (f *S2Finder) populationRankScore(result s2.EdgeQueryResult) float64 {
+	cityIndex := int(result.EdgeID())
+	if cityIndex < 0 || cityIndex >= len(f.Cities) {
+		return math.Inf(-1)
+	}
+	distanceKm := result.Distance().Angle().Radians() * earthRadiusKm
+	return float64(f.Cities[cityIndex].Population) / (distanceKm*distanceKm + 1.0)
 }
 
 // SerializeIndex saves the finder's data to a file using gob. The stream is
