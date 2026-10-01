@@ -33,10 +33,20 @@ func Initialize(cfg *config.Config) (*finder.Finder, error) {
 	}
 	defer release()
 
-	if err := ensureDatasets(cfg); err != nil {
+	admin1NamesPath := ensureAdmin1NamesPath(cfg)
+
+	s2Path, namePath, postalPath := indexFilePaths(cfg)
+	if allIndexesPresent(s2Path, namePath, postalPath) {
+		// Warm start: the raw datasets would only be needed to rebuild an
+		// index, and datasetSource.load re-ensures them on demand in that
+		// case. Skipping here avoids a ~442 MB re-download plus a ~1.9 GB
+		// re-extract for volumes seeded with indexes but no datasets (or
+		// after an operator deleted the raw files).
+		log.Printf("all indexes present, skipping dataset ensure (delete an index file to force a refresh)")
+	} else if err := ensureDatasets(cfg); err != nil {
 		return nil, err
 	}
-	return ensureFinders(cfg, ensureAdmin1NamesPath(cfg))
+	return ensureFinders(cfg, admin1NamesPath)
 }
 
 // ensureDatasetsFolder creates the datasets folder when missing. MkdirAll so
@@ -206,11 +216,28 @@ func downloadAndExtractDataset(url, zipName, fileName string, cfg *config.Config
 			if err := unzipAndRename(zipPath, cfg.DatasetsFolder, fileName); err != nil {
 				return fmt.Errorf("failed to extract re-downloaded %s: %v", zipName, err)
 			}
+			removeExtractedArchive(zipPath)
+		} else {
+			removeExtractedArchive(zipPath)
 		}
 	} else {
 		log.Printf("Dataset file %s already exists, skipping extraction.", filePath)
 	}
 	return nil
+}
+
+// removeExtractedArchive deletes a zip after its successful extraction. The
+// archive is a re-downloadable cache of the extracted dataset; keeping it
+// pins ~442 MB of dead weight per volume (allCountries + zipCodes zips).
+// Best-effort: a failure to remove never fails the boot.
+func removeExtractedArchive(zipPath string) {
+	if err := os.Remove(zipPath); err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("warning: could not remove archive %s after extraction: %v", zipPath, err)
+		}
+		return
+	}
+	log.Printf("removed archive %s after successful extraction", zipPath)
 }
 
 // downloadTimeout bounds an entire dataset download (headers plus body).
@@ -379,14 +406,22 @@ type datasetSource struct {
 	loaded      bool
 }
 
-// load loads the raw datasets on first call and is a no-op afterwards.
+// load loads the raw datasets on first call and is a no-op afterwards. A
+// failed load retries once after re-running ensureDatasets: a warm start that
+// found all indexes skips the dataset ensure, so a rebuild triggered by a
+// corrupt/legacy index may reach this point with the raw files absent.
 func (s *datasetSource) load() error {
 	if s.loaded {
 		return nil
 	}
 	cities, postalCodes, err := loadData(s.cfg)
 	if err != nil {
-		return err
+		if ensureErr := ensureDatasets(s.cfg); ensureErr != nil {
+			return fmt.Errorf("%v (additionally, ensuring the missing datasets failed: %v)", err, ensureErr)
+		}
+		if cities, postalCodes, err = loadData(s.cfg); err != nil {
+			return err
+		}
 	}
 	s.cities, s.postalCodes, s.loaded = cities, postalCodes, true
 	return nil
