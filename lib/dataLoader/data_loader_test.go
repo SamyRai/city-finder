@@ -150,7 +150,7 @@ func TestLoadPostalCodes_InvalidData(t *testing.T) {
 	}{
 		{"Empty file", "", 0},
 		{"Invalid format - too few fields", "AD\tAD100\n", 0},
-		{"Valid data", "AD\tAD100\tCanillo\tCanillo\t02\t\t\t\t\t\t42.5833\t1.6667\t6\n", 1},
+		{"Valid data", "AD\tAD100\tCanillo\tCanillo\t02\t\t\t\t\t42.5833\t1.6667\t6\n", 1},
 	}
 
 	for _, tc := range testCases {
@@ -176,10 +176,10 @@ func TestLoadPostalCodes_InvalidData(t *testing.T) {
 
 func TestLoadPostalCodes_SpecialFormats(t *testing.T) {
 	specialLines := []string{
-		"CA\tK1A 0A6\tOttawa\t\t\t\t\t\t\t\t45.4215\t-75.6972\t1", // Canadian format with space
-		"GB\tSW1A 1AA\tLondon\t\t\t\t\t\t\t\t51.5074\t-0.1278\t1", // UK format
-		"DE\t12345\tBerlin\t\t\t\t\t\t\t\t52.5200\t13.4050\t1",    // German format
-		"JP\t123-4567\tTokyo\t\t\t\t\t\t\t\t35.6762\t139.6503\t1", // Japanese format
+		"CA\tK1A 0A6\tOttawa\t\t\t\t\t\t\t45.4215\t-75.6972\t1", // Canadian format with space
+		"GB\tSW1A 1AA\tLondon\t\t\t\t\t\t\t51.5074\t-0.1278\t1", // UK format
+		"DE\t12345\tBerlin\t\t\t\t\t\t\t52.5200\t13.4050\t1",    // German format
+		"JP\t123-4567\tTokyo\t\t\t\t\t\t\t35.6762\t139.6503\t1", // Japanese format
 	}
 
 	tmpfile, err := os.CreateTemp("", "postal_special_test_*.txt")
@@ -311,7 +311,7 @@ func TestDataLoader_MemoryEfficiency(t *testing.T) {
 
 	// Create test data with varying line lengths
 	for i := 0; i < 1000; i++ {
-		line := fmt.Sprintf("XX\t%d\tCity%d\t\t\t\t\t\t\t\t%f\t%f\t1\n",
+		line := fmt.Sprintf("XX\t%d\tCity%d\t\t\t\t\t\t\t%f\t%f\t1\n",
 			i, i, float64(i%180)-90.0, float64(i%360)-180.0)
 		_, err = tmpfile.WriteString(line)
 		require.NoError(t, err)

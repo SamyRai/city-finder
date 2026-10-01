@@ -2,6 +2,7 @@ package dataLoader
 
 import (
 	"encoding/csv"
+	"log"
 	"os"
 	"strconv"
 )
@@ -38,6 +39,8 @@ func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, er
 	// Pre-allocate with reasonable capacity based on typical postal code data size
 	postalCodes := make(map[string]map[string]PostalCodeEntry, 200) // ~200 countries
 
+	skipped := 0
+
 	for {
 		record, err := reader.Read()
 		if err != nil {
@@ -52,8 +55,21 @@ func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, er
 			continue
 		}
 
-		lat, _ := strconv.ParseFloat(record[9], 64)
-		lon, _ := strconv.ParseFloat(record[10], 64)
+		// A row whose latitude or longitude cannot be parsed is not indexed:
+		// silently defaulting it to (0,0) put Null-Island coordinates behind
+		// /postalCode lookups. Accuracy stays lenient on purpose (it is a
+		// 0-6 hint, not a coordinate). One summary line at end of load — no
+		// per-row logging, prod files hold ~14M rows.
+		lat, err := strconv.ParseFloat(record[9], 64)
+		if err != nil {
+			skipped++
+			continue
+		}
+		lon, err := strconv.ParseFloat(record[10], 64)
+		if err != nil {
+			skipped++
+			continue
+		}
 		accuracy, _ := strconv.Atoi(record[11])
 
 		postalCode := PostalCodeEntry{
@@ -76,6 +92,10 @@ func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, er
 			postalCodes[countryCode] = make(map[string]PostalCodeEntry, 1000) // Pre-allocate reasonable capacity per country
 		}
 		postalCodes[countryCode][postalCode.PostalCode] = postalCode
+	}
+
+	if skipped > 0 {
+		log.Printf("skipped %d postal rows with unparsable coordinates in %s", skipped, filepath)
 	}
 
 	return postalCodes, nil
