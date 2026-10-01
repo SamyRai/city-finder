@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -417,6 +418,26 @@ func TestServerTestSuite(t *testing.T) {
 // TestServerGracefulShutdownSignal builds the real server binary, starts it
 // on a random port with the fixture datasets, waits for /healthz over real
 // HTTP, sends SIGTERM, and asserts a clean exit 0 within a few seconds.
+// syncBuffer guards a child process's output: os/exec drains Stdout/Stderr
+// from goroutines that live until Wait returns, while the signal test
+// snapshots the logs while the server is still running.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 func TestServerGracefulShutdownSignal(t *testing.T) {
 	if testing.Short() {
 		t.Skip("process-level signal test skipped in short mode")
@@ -465,15 +486,15 @@ func TestServerGracefulShutdownSignal(t *testing.T) {
 	port := ln.Addr().(*net.TCPAddr).Port
 	require.NoError(t, ln.Close())
 
-	var logs bytes.Buffer
+	logs := &syncBuffer{}
 	cmd := exec.Command(binPath)
 	cmd.Dir = rootDir
 	cmd.Env = append(os.Environ(),
 		"CONFIG_PATH="+relToRoot(cfgPath),
 		"PORT="+strconv.Itoa(port),
 	)
-	cmd.Stdout = &logs
-	cmd.Stderr = &logs
+	cmd.Stdout = logs
+	cmd.Stderr = logs
 	require.NoError(t, cmd.Start())
 
 	done := make(chan error, 1)
