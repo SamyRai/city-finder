@@ -24,6 +24,16 @@ func (f *Finder) FindCityByName(name, countryCode string) *city.City {
 	return f.NameFinder.CityByName(name, countryCode)
 }
 
+// WarmFuzzy wraps the NameFinder method: it starts the fuzzy (n-gram) index
+// build in the background without blocking, so the initializer can call it
+// right after init and the first user typo query skips the degraded
+// exact-only window. Idempotent; no-op when the index is already built,
+// building, or disabled. See name.Finder.WarmFuzzy for cost notes — the
+// finished structure adds ~1.2 GiB resident at production scale.
+func (f *Finder) WarmFuzzy() {
+	f.NameFinder.WarmFuzzy()
+}
+
 // FindNearestCity wraps the S2Finder method
 func (f *Finder) FindNearestCity(lat, lon float64, rank coordinates.Rank) (*city.City, float64, error) {
 	c, dist, err := f.S2Finder.NearestPlace(lat, lon, rank)

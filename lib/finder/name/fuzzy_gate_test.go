@@ -32,42 +32,66 @@ func gateCities(count int) []city.SpatialCity {
 	return cities
 }
 
+// waitFuzzyBuilt drives the lazy fuzzy state machine to fuzzyBuilt. The
+// build runs in a background goroutine, so any test that needs the built
+// index after triggering it (directly or via a lookup) waits here. The
+// ensureFuzzyBuilt nudge matters: a build discarded because AddCity raced
+// its snapshot resets to fuzzyNotBuilt and only a fresh call restarts it.
+// Must run on the test/benchmark goroutine (it calls tb.Fatal).
+func waitFuzzyBuilt(tb testing.TB, nf *Finder) {
+	tb.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for nf.fuzzyState.Load() != fuzzyBuilt {
+		switch nf.fuzzyState.Load() {
+		case fuzzyDisabled:
+			tb.Fatal("fuzzy index reached fuzzyDisabled (FuzzyMaxNames gate or build failure); wanted fuzzyBuilt")
+		}
+		if time.Now().After(deadline) {
+			tb.Fatal("fuzzy index did not reach fuzzyBuilt within 60s")
+		}
+		nf.ensureFuzzyBuilt()
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // TestCityByNameBuildDoesNotBlockExactLookups proves the lazy n-gram build no
-// longer holds nf.mutex for writing while it runs. One goroutine triggers the
-// build with a typo lookup (guaranteed miss -> phases 2/3), while the main
-// goroutine hammers exact lookups and records the worst latency.
+// longer runs in the triggering request. The typo lookup that wins the CAS
+// spawns the build in a background goroutine and itself returns on the
+// degraded exact-only path — a fast nil instead of a 30-90 s hang — while
+// the main goroutine hammers exact lookups and records the worst latency.
 //
-// The assertion is relative (worst exact < half the build-triggering lookup's
-// total duration) so it holds on fast and slow machines alike.
+// The assertions are relative (trigger and worst exact well under half the
+// build's wall time) so they hold on fast and slow machines alike. A
+// regression to the synchronous build fails the trigger-elapsed assertion:
+// the triggering lookup would block for (nearly) the whole build.
 func TestCityByNameBuildDoesNotBlockExactLookups(t *testing.T) {
 	const nameCount = 200_000
 	finder := BuildIndex(gateCities(nameCount))
 
-	done := make(chan time.Duration, 1)
+	buildStart := time.Now()
+	triggerDone := make(chan struct {
+		elapsed time.Duration
+		got     *city.City
+	}, 1)
 	go func() {
 		start := time.Now()
-		// Guaranteed miss: exact phase fails, phases 2/3 trigger the lazy
-		// build and search the finished tree.
-		finder.CityByName("zzz-definitely-not-a-city", "GC")
-		done <- time.Since(start)
+		// Guaranteed miss: exact phase fails, phases 2/3 would need the
+		// fuzzy index — which is only starting to build. The triggering
+		// query must return the exact-only nil now, not wait out the build.
+		got := finder.CityByName("zzz-definitely-not-a-city", "GC")
+		triggerDone <- struct {
+			elapsed time.Duration
+			got     *city.City
+		}{time.Since(start), got}
 	}()
 
+	// Exact lookups run across the whole build window; the loop ends when
+	// the background build lands.
 	var worstExact atomic.Int64
 	deadline := time.Now().Add(30 * time.Second) // hard guard: fail, never hang
-	for {
-		select {
-		case triggerElapsed := <-done:
-			worst := time.Duration(worstExact.Load())
-			if worst >= triggerElapsed/2 {
-				t.Fatalf("exact lookups stalled behind the BK-tree build: worst exact lookup %v vs build-triggering lookup %v (must be well under half)",
-					worst, triggerElapsed)
-			}
-			t.Logf("build-triggering lookup: %v; worst exact lookup during build: %v", triggerElapsed, worst)
-			return
-		default:
-		}
+	for finder.fuzzyState.Load() != fuzzyBuilt {
 		if time.Now().After(deadline) {
-			t.Fatal("hard timeout: the build-triggering lookup did not finish within 30s")
+			t.Fatal("hard timeout: the background build did not finish within 30s")
 		}
 
 		start := time.Now()
@@ -77,6 +101,34 @@ func TestCityByNameBuildDoesNotBlockExactLookups(t *testing.T) {
 		if d := int64(time.Since(start)); d > worstExact.Load() {
 			worstExact.Store(d)
 		}
+	}
+	buildElapsed := time.Since(buildStart)
+
+	// The triggering query must have returned (with the degraded nil) well
+	// before the build finished.
+	select {
+	case trig := <-triggerDone:
+		if trig.got != nil {
+			t.Fatalf("the triggering query must return the exact-only nil, got %q", trig.got.Name)
+		}
+		if trig.elapsed >= buildElapsed/2 {
+			t.Fatalf("the triggering lookup blocked on the build: %v vs build wall time %v (must be well under half)",
+				trig.elapsed, buildElapsed)
+		}
+		if worst := time.Duration(worstExact.Load()); worst >= buildElapsed/2 {
+			t.Fatalf("exact lookups stalled behind the build: worst exact lookup %v vs build wall time %v (must be well under half)",
+				worst, buildElapsed)
+		}
+		t.Logf("build wall time: %v; triggering lookup: %v; worst exact lookup during build: %v",
+			buildElapsed, trig.elapsed, time.Duration(worstExact.Load()))
+	case <-time.After(5 * time.Second):
+		t.Fatal("the triggering lookup did not return within 5s of the build completing")
+	}
+
+	// The background build did land: a typo query now resolves through the
+	// finished structure.
+	if got := finder.CityByName("GateCitt000042", "GC"); got == nil || got.Name != "GateCity000042" {
+		t.Fatalf("post-build typo lookup: got %+v, want GateCity000042", got)
 	}
 }
 
@@ -201,9 +253,11 @@ func TestFuzzyMissDuringBuildIsNotCached(t *testing.T) {
 		t.Fatalf("not-ready misses must not be cached: size=%d pars1=%v pars2=%v paars2=%v", size, pars1, pars2, paars2)
 	}
 
-	// The build completes: the same query must now resolve and repopulate
-	// the cache.
+	// The build completes: retrigger it and wait out the background build,
+	// then the same query must resolve and repopulate the cache.
 	finder.fuzzyState.Store(fuzzyNotBuilt)
+	finder.CityByName("Pars", "FR") // retriggers the background build
+	waitFuzzyBuilt(t, finder)
 	if got := finder.CityByName("Pars", "FR"); got == nil || got.Name != "Paris" {
 		t.Fatalf("after the build the same query must hit, got %+v", got)
 	}
@@ -229,34 +283,26 @@ func TestAddCityDuringBuildIsNotLost(t *testing.T) {
 	const nameCount = 100_000
 	finder := BuildIndex(gateCities(nameCount))
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		finder.CityByName("zzz-definitely-not-a-city", "GC") // triggers the build
-	}()
+	// Trigger the build; it now runs in the background, so the trigger
+	// returns immediately and the AddCity loop below races the actual
+	// build window (snapshot vs commit key-count check).
+	finder.CityByName("zzz-definitely-not-a-city", "GC") // triggers the background build
 
 	// Continuously add fresh names while the build runs, bounded so the loop
 	// terminates even if the build is instant on future hardware.
 	var added []string
-	buildDone := false
-	for i := 0; i < 5000 && !buildDone; i++ {
+	for i := 0; i < 5000 && finder.fuzzyState.Load() != fuzzyBuilt; i++ {
 		name := fmt.Sprintf("LateCitt%04d", i)
 		finder.AddCity(city.SpatialCity{City: city.City{Name: name, Country: "GC", Latitude: 2, Longitude: 2}})
 		added = append(added, name)
-		select {
-		case <-done:
-			buildDone = true
-		default:
-		}
 	}
-	<-done
 
 	// Force any discarded build to be retried and settle into the built
 	// state, then verify every concurrently added name is fuzzy-searchable.
-	finder.CityByName("zzz-also-not-a-city", "GC")
-	if st := finder.fuzzyState.Load(); st != fuzzyBuilt {
-		t.Fatalf("fuzzy state after settling = %d, want fuzzyBuilt (%d)", st, fuzzyBuilt)
-	}
+	// (A build that lost the snapshot race resets to fuzzyNotBuilt and only
+	// a fresh ensureFuzzyBuilt call — which waitFuzzyBuilt supplies —
+	// restarts it.)
+	waitFuzzyBuilt(t, finder)
 
 	step := len(added) / 200
 	if step < 1 {
@@ -285,4 +331,143 @@ func containsName(names []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// TestWarmFuzzyIdempotentNonBlocking pins the WarmFuzzy contract: the call
+// arranges the background build and returns immediately (well under the
+// build's wall time), further calls are no-ops that leave the built state
+// intact, and on an empty index it settles back to fuzzyNotBuilt (nothing to
+// build; later AddCity growth can still trigger a fresh build).
+func TestWarmFuzzyIdempotentNonBlocking(t *testing.T) {
+	finder := BuildIndex(gateCities(50_000)) // build measurably outlasts the call
+
+	start := time.Now()
+	finder.WarmFuzzy()
+	callElapsed := time.Since(start)
+	if st := finder.fuzzyState.Load(); st != fuzzyBuilding && st != fuzzyBuilt {
+		t.Fatalf("after WarmFuzzy the state must be fuzzyBuilding (or already fuzzyBuilt), got %d", st)
+	}
+
+	waitFuzzyBuilt(t, finder)
+	buildElapsed := time.Since(start)
+	if callElapsed >= buildElapsed/2 {
+		t.Fatalf("WarmFuzzy blocked on the build: call took %v vs build wall time %v (must be well under half)",
+			callElapsed, buildElapsed)
+	}
+	t.Logf("WarmFuzzy call: %v; background build wall time: %v", callElapsed, buildElapsed)
+
+	// Idempotent: calls from the built state are no-ops.
+	for i := 0; i < 3; i++ {
+		finder.WarmFuzzy()
+	}
+	if st := finder.fuzzyState.Load(); st != fuzzyBuilt {
+		t.Fatalf("WarmFuzzy after built must be a no-op, state = %d", st)
+	}
+	if got := finder.CityByName("GateCitt000042", "GC"); got == nil || got.Name != "GateCity000042" {
+		t.Fatalf("typo lookup after warm-up: got %+v, want GateCity000042", got)
+	}
+
+	// Empty index: the background build yields no structure and the state
+	// settles back to fuzzyNotBuilt — warm-up must not wedge it in
+	// fuzzyBuilding or claim fuzzyBuilt.
+	empty := NewNameFinder()
+	empty.WarmFuzzy()
+	deadline := time.Now().Add(10 * time.Second)
+	for empty.fuzzyState.Load() == fuzzyBuilding {
+		if time.Now().After(deadline) {
+			t.Fatal("empty-finder warm-up stuck in fuzzyBuilding")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if st := empty.fuzzyState.Load(); st != fuzzyNotBuilt {
+		t.Fatalf("empty finder warm-up must settle back to fuzzyNotBuilt, got %d", st)
+	}
+}
+
+// TestCityByNameUnknownCountrySkipsFuzzy pins the country early-exit: a
+// query whose country code has no entries in the name index returns the
+// exact-miss nil without triggering ANY fuzzy work — no lazy build (the
+// state machine stays fuzzyNotBuilt, no n-gram structure appears), no walk,
+// no cache traffic. This covers both a missing country key and an
+// existing-but-empty country map.
+func TestCityByNameUnknownCountrySkipsFuzzy(t *testing.T) {
+	finder := BuildIndex(fuzzyFixtureCities())
+	// The existing-but-empty variant: only reachable by direct construction
+	// (every public insertion path adds a name in the same critical section).
+	finder.mutex.Lock()
+	finder.InvertedIndex["QQ"] = map[string][]*city.City{}
+	finder.mutex.Unlock()
+
+	for _, country := range []string{"XX", "", "QQ"} {
+		if got := finder.CityByName("Pariis", country); got != nil {
+			t.Fatalf("CityByName(%q, %q) = %q, want nil via the country early-exit", "Pariis", country, got.Name)
+		}
+	}
+
+	if st := finder.fuzzyState.Load(); st != fuzzyNotBuilt {
+		t.Fatalf("unknown-country typo must not trigger the fuzzy build, state = %d", st)
+	}
+	finder.mutex.RLock()
+	ngrams := finder.ngrams
+	finder.mutex.RUnlock()
+	if ngrams != nil {
+		t.Fatal("unknown-country typo must not build an n-gram structure")
+	}
+	finder.cacheMutex.RLock()
+	cacheSize := len(finder.fuzzyCache)
+	finder.cacheMutex.RUnlock()
+	if cacheSize != 0 {
+		t.Fatalf("unknown-country typo must not touch the fuzzy cache, got %d entries", cacheSize)
+	}
+
+	// Sanity: the early exit is per-country — a fuzzy query for a country
+	// WITH entries still resolves normally once the build has run.
+	finder.WarmFuzzy()
+	waitFuzzyBuilt(t, finder)
+	if got := finder.CityByName("Pariis", "FR"); got == nil || got.Name != "Paris" {
+		t.Fatalf("existing-country typo must still resolve via fuzzy, got %+v", got)
+	}
+	if st := finder.fuzzyState.Load(); st != fuzzyBuilt {
+		t.Fatalf("warm-up must have built the index, state = %d", st)
+	}
+}
+
+// TestAddCityVisibleAfterUncachedEmptyMiss is the L1 regression test: an
+// empty fuzzy miss must NOT be cached, so a name AddCity adds afterwards is
+// visible to the very next identical query (via the always-scanned overflow
+// list). Under the old behavior the empty result was pinned for the 1h TTL
+// and the repeat kept serving the stale nil. Non-empty results keep being
+// cached unchanged.
+func TestAddCityVisibleAfterUncachedEmptyMiss(t *testing.T) {
+	finder := BuildIndex(fuzzyFixtureCities())
+	finder.WarmFuzzy()
+	waitFuzzyBuilt(t, finder)
+
+	query := "Springfielm" // distance 1 from "Springfield"; nothing indexed is within distance 2
+	if got := finder.CityByName(query, "US"); got != nil {
+		t.Fatalf("query with no indexed match must return nil, got %q", got.Name)
+	}
+	finder.cacheMutex.RLock()
+	_, q1 := finder.fuzzyCache[query+"_1"]
+	_, q2 := finder.fuzzyCache[query+"_2"]
+	finder.cacheMutex.RUnlock()
+	if q1 || q2 {
+		t.Fatalf("empty fuzzy results must not be cached: %q_1=%v %q_2=%v", query, q1, query, q2)
+	}
+
+	finder.AddCity(city.SpatialCity{City: city.City{Name: "Springfield", Country: "US", Latitude: 39.78, Longitude: -89.65}})
+
+	// The same query must now resolve through the overflow scan.
+	got := finder.CityByName(query, "US")
+	if got == nil || got.Name != "Springfield" {
+		t.Fatalf("repeat query after AddCity must find the new name, got %+v", got)
+	}
+
+	// Non-empty results are cached as before (unchanged behavior).
+	finder.cacheMutex.RLock()
+	_, cached := finder.fuzzyCache[query+"_1"]
+	finder.cacheMutex.RUnlock()
+	if !cached {
+		t.Fatal("the now non-empty fuzzy result must be cached")
+	}
 }

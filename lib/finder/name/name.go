@@ -60,8 +60,9 @@ const (
 //
 // Default rationale (measured on Apple silicon, Oct 2026 GeoNames): at the
 // prod scale of 18,698,093 keys / 17,727,652 distinct names the lazy
-// n-gram build takes ~94 s (lock-free; only the one lookup that triggered
-// it waits), the structure holds 1.18 GiB resident, and typo queries run at
+// n-gram build takes ~94 s (lock-free, in a background goroutine — the
+// triggering lookup returns exact-only rather than waiting it out), the
+// structure holds 1.18 GiB resident, and typo queries run at
 // distance-1 p50 2.6 ms and distance-2 p50 20.6 ms / p99 749 ms — inside
 // the <50 ms p50 target with memory under the 3 GiB budget. The default
 // therefore sits above prod with ~34% key headroom. See
@@ -500,23 +501,22 @@ func (nf *Finder) totalIndexKeys() int {
 	return total
 }
 
-// ensureFuzzyBuilt lazily brings the fuzzy index to a terminal state: built,
-// or disabled when the index exceeds FuzzyMaxNames. It is safe to call from
-// any lookup path — the common case is one atomic load — and a build already
-// in progress is neither waited on nor duplicated: concurrent callers simply
-// observe a not-ready index for that one request.
+// ensureFuzzyBuilt lazily brings the fuzzy index toward a terminal state:
+// built, or disabled when the index exceeds FuzzyMaxNames. It is safe to
+// call from any lookup path — the common case is one atomic load — and no
+// caller ever waits on a build: the goroutine that wins the fuzzyNotBuilt ->
+// fuzzyBuilding CAS only ARRANGES the work, spawning buildFuzzyIndex in a
+// background goroutine and returning immediately. The triggering lookup then
+// takes the same degraded exact-only path concurrent lookups always did
+// (previously it blocked for the full 30-90 s in-request build), and every
+// later fuzzy lookup observes the finished index once the build lands.
 //
 // The build itself deliberately holds NO lock. Only the name snapshot (RLock)
 // and the final pointer swap (Lock, microseconds) take the mutex, so exact
 // lookups keep flowing while the n-gram index is under construction.
 func (nf *Finder) ensureFuzzyBuilt() {
 	switch nf.fuzzyState.Load() {
-	case fuzzyBuilt, fuzzyDisabled:
-		return
-	case fuzzyBuilding:
-		// Another goroutine is mid-build. Waiting is what stalled lookups
-		// in the BK-tree era; duplicating the work doubles it. Report
-		// not-ready instead.
+	case fuzzyBuilt, fuzzyDisabled, fuzzyBuilding:
 		return
 	}
 
@@ -540,8 +540,22 @@ func (nf *Finder) ensureFuzzyBuilt() {
 		return // lost the race to another builder; it publishes the index
 	}
 
-	// Lock-free construction of an immutable structure: readers can neither
-	// observe a half-built index nor be blocked by the build.
+	// Spawn and return: the goroutine owns the state machine from here
+	// (building -> built/notBuilt/disabled), and no lookup path ever blocks
+	// on it. A discarded build resets to fuzzyNotBuilt and is retried by the
+	// next ensureFuzzyBuilt call — WarmFuzzy gives initializers an explicit
+	// way to trigger that retry loop.
+	go nf.buildFuzzyIndex(names, totalKeys)
+}
+
+// buildFuzzyIndex is the background half of ensureFuzzyBuilt; it runs in its
+// own goroutine on the snapshot (names, totalKeys) the triggering caller
+// took. The goroutine is owned by the Finder, terminates on its own after
+// exactly one build, and never holds nf.mutex across the construction.
+//
+// Lock-free construction of an immutable structure: readers can neither
+// observe a half-built index nor be blocked by the build.
+func (nf *Finder) buildFuzzyIndex(names []string, totalKeys int) {
 	index, err := buildNGramIndex(names)
 	if err != nil {
 		// Terminal disable, not a retry: the corpus cannot be indexed within
@@ -578,6 +592,23 @@ func (nf *Finder) ensureFuzzyBuilt() {
 		// fuzzy attempt retries with fresher data.
 		nf.fuzzyState.Store(fuzzyNotBuilt)
 	}
+}
+
+// WarmFuzzy triggers the lazy fuzzy (n-gram) index build in the background
+// without blocking the caller. It is idempotent and safe to call from any
+// state: with the index already built, building, or disabled it is a no-op
+// (one atomic load), and on a fresh index it snapshots the inverted index
+// and hands the construction to a background goroutine (see
+// ensureFuzzyBuilt for the state machine).
+//
+// Call it once after initialization so the first user typo query does not
+// fall into the degraded exact-only window: until the background build
+// lands, fuzzy lookups return exact-only results. At production scale
+// (Oct 2026 GeoNames, ~18.7M keys) the build takes ~94 s single-threaded
+// and the finished structure adds ~1.2 GiB resident on top of the inverted
+// index — schedule the warm-up (and the memory) accordingly.
+func (nf *Finder) WarmFuzzy() {
+	nf.ensureFuzzyBuilt()
 }
 
 // fuzzyCandidates returns the names within maxDistance of query, from the
@@ -617,7 +648,10 @@ func (nf *Finder) fuzzyCandidates(query string, maxDistance int) ([]string, bool
 	return candidates, truncated
 }
 
-// getCachedFuzzySearch performs fuzzy search with caching
+// getCachedFuzzySearch performs fuzzy search with caching. Only complete,
+// non-empty results enter the cache: truncated results (FuzzyMaxCandidates
+// tripped) and empty results (a later AddCity must become visible to the
+// same query) are computed fresh on every call.
 func (nf *Finder) getCachedFuzzySearch(query string, maxDistance int) []string {
 	cacheKey := fmt.Sprintf("%s_%d", query, maxDistance)
 
@@ -654,6 +688,17 @@ func (nf *Finder) getCachedFuzzySearch(query string, maxDistance int) []string {
 	// search, and raising FuzzyMaxCandidates immediately takes effect for
 	// fresh searches instead of waiting out stale tagged entries.
 	if truncated {
+		return candidates
+	}
+
+	// An EMPTY complete result is just as unsafe to pin. AddCity makes new
+	// names fuzzy-visible on the very next search (post-build additions are
+	// scanned from the overflow list every time), so a cached empty miss
+	// would keep serving stale nils for the full TTL after the city
+	// appeared — contradicting the "overflow is always scanned" guarantee.
+	// Skipping the cache only costs one re-search per repeated no-hit query,
+	// bounded by FuzzyMaxCandidates like every other walk.
+	if len(candidates) == 0 {
 		return candidates
 	}
 
@@ -701,20 +746,38 @@ func (nf *Finder) evictFuzzyCacheLocked() {
 
 // CityByName finds the coordinates of a city by its name using hybrid search strategy
 func (nf *Finder) CityByName(name string, countryCode string) *city.City {
-	// Phase 1: Try exact match first (fastest)
+	// Phase 1: Try exact match first (fastest). The country map is fetched
+	// once so the same read lock also answers "does this country hold any
+	// indexed names at all" for the early exit below.
 	nf.mutex.RLock()
-	if cities, exists := nf.InvertedIndex[countryCode][name]; exists && len(cities) > 0 {
-		nf.mutex.RUnlock()
-		return cities[0]
+	countryMap, hasCountry := nf.InvertedIndex[countryCode]
+	hasEntries := hasCountry && len(countryMap) > 0
+	if hasEntries {
+		if cities, exists := countryMap[name]; exists && len(cities) > 0 {
+			nf.mutex.RUnlock()
+			return cities[0]
+		}
 	}
 	nf.mutex.RUnlock()
+
+	// Country early-exit: fuzzy candidates only ever resolve per-country
+	// (phases 2/3 re-probe the very same InvertedIndex[countryCode]), so
+	// when the country holds no indexed names the fuzzy phases cannot
+	// produce a hit. Return the exact-miss nil without touching the fuzzy
+	// machinery — no lazy n-gram build trigger, no walk, no cache traffic.
+	// Without this, a single typo'd query against an unknown country code
+	// would pay for (or even kick off) the whole ~94 s prod-scale build.
+	if !hasEntries {
+		return nil
+	}
 
 	// Phases 2/3: approximate matching as a pre-filter, then full fuzzy. Both
 	// are cheap no-ops unless the fuzzy index is actually built: over the
 	// FuzzyMaxNames threshold matching is disabled (exact-only) for this
-	// Finder's lifetime, and while another goroutine is still building the
-	// index this lookup reports not-ready rather than waiting. Either way no
-	// fuzzy work runs and no empty result pollutes the cache.
+	// Finder's lifetime, and while the background build is still running —
+	// including the very lookup that triggered it — this lookup reports
+	// not-ready rather than waiting. Either way no fuzzy work runs and no
+	// empty result pollutes the cache.
 	nf.ensureFuzzyBuilt()
 	if nf.fuzzyState.Load() == fuzzyBuilt {
 		fastCandidates := nf.getCachedFuzzySearch(name, 1) // Use tighter threshold for speed

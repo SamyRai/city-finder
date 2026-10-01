@@ -20,10 +20,12 @@ func benchFuzzyFinder(b *testing.B, count int) *Finder {
 }
 
 // BenchmarkEnsureFuzzyBuilt measures the one-time lazy n-gram build over
-// 100k unique names. It resets the structure between iterations so every
-// iteration pays a full build; without the reset every iteration after the
-// first would fast-path out of ensureFuzzyBuilt (state already fuzzyBuilt)
-// and measure nothing.
+// 100k unique names. The build runs in a background goroutine, so each
+// iteration triggers it and then waits it out with the timer running — the
+// wait IS the build. Without the wait the loop would spawn unbounded
+// concurrent builds; without the reset every iteration after the first
+// would fast-path out of ensureFuzzyBuilt (state already fuzzyBuilt) and
+// measure nothing.
 func BenchmarkEnsureFuzzyBuilt(b *testing.B) {
 	finder := benchFuzzyFinder(b, 100000)
 	b.ResetTimer()
@@ -34,6 +36,7 @@ func BenchmarkEnsureFuzzyBuilt(b *testing.B) {
 		finder.mutex.Unlock()
 		finder.fuzzyState.Store(fuzzyNotBuilt)
 		finder.ensureFuzzyBuilt()
+		waitFuzzyBuilt(b, finder)
 	}
 }
 
@@ -42,9 +45,7 @@ func BenchmarkEnsureFuzzyBuilt(b *testing.B) {
 func BenchmarkNGramSearch(b *testing.B) {
 	finder := benchFuzzyFinder(b, 100000)
 	finder.ensureFuzzyBuilt()
-	if finder.fuzzyState.Load() != fuzzyBuilt {
-		b.Fatal("index failed to build")
-	}
+	waitFuzzyBuilt(b, finder)
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {

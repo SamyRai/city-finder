@@ -177,10 +177,10 @@ func TestFuzzyBudgetTripCounterAndOneTimeLog(t *testing.T) {
 // reads never consult the budget).
 func TestFuzzyBudgetExcludesTruncatedFromCache(t *testing.T) {
 	finder := BuildIndex(fuzzyFixtureCities())
-	// Force the lazy build with a DIFFERENT query than the one under test,
-	// so the forcing lookup's own cache entry cannot mask the behavior.
-	finder.CityByName("Londn", "GB")
-	require.Equal(t, int32(fuzzyBuilt), finder.fuzzyState.Load())
+	// Force the lazy background build; WarmFuzzy does not touch the cache,
+	// so no forcing lookup's cache entry can mask the behavior below.
+	finder.WarmFuzzy()
+	waitFuzzyBuilt(t, finder)
 
 	finder.cacheMutex.RLock()
 	baseCache := len(finder.fuzzyCache)
@@ -221,8 +221,8 @@ func TestFuzzyBudgetExcludesTruncatedFromCache(t *testing.T) {
 // fuzzy-findable even while the walk is truncated.
 func TestFuzzyBudgetOverflowStillScannedWhenTruncated(t *testing.T) {
 	finder := BuildIndex(fuzzyFixtureCities())
-	finder.CityByName("Londn", "GB") // force the lazy build
-	require.Equal(t, int32(fuzzyBuilt), finder.fuzzyState.Load())
+	finder.WarmFuzzy() // force the lazy background build
+	waitFuzzyBuilt(t, finder)
 
 	finder.AddCity(city.SpatialCity{
 		City: city.City{Name: "Berlin2", Country: "DE", Latitude: 52.52, Longitude: 13.41},
@@ -239,8 +239,8 @@ func TestFuzzyBudgetOverflowStillScannedWhenTruncated(t *testing.T) {
 	finder.cacheMutex.RLock()
 	cacheSize := len(finder.fuzzyCache)
 	finder.cacheMutex.RUnlock()
-	// Only the build-forcing lookup's entry may exist; the truncated query
-	// itself must add nothing.
+	// No forcing lookup ran (WarmFuzzy is cache-free), so the cache holds
+	// only what it held before; the truncated query itself must add nothing.
 	assert.Equal(t, baseCache, cacheSize, "an n-gram-truncated result stays out of the cache even with overflow hits")
 }
 

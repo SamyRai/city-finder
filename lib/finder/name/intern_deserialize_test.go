@@ -160,6 +160,10 @@ func TestDeserializeInterningSavesMemory(t *testing.T) {
 		return
 	}
 	assert.Equal(t, name, got.Name)
+	// The fuzzy index builds in the background now; warm it before the
+	// fuzzy assertion so the first typo query does not race the build.
+	finder.WarmFuzzy()
+	waitFuzzyBuilt(t, finder)
 	assert.NotNil(t, finder.CityByName(fmt.Sprintf("IntnCitt%05d", 1), "RepublicOfNania01"), "distance-1 fuzzy lookup after interning")
 	runtime.KeepAlive(finder)
 }

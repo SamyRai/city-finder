@@ -29,9 +29,13 @@ func fuzzyFixtureCities() []city.SpatialCity {
 // TestCityByNameFuzzyRevived proves fuzzy search works on an index produced by
 // BuildIndex (which intentionally skips collectAllNames): a distance-1 typo is
 // resolved by the phase-2 fuzzy pass and a distance-2 typo by the phase-3 pass,
-// while the country filter still rejects cross-country matches.
+// while the country filter still rejects cross-country matches. The first
+// fuzzy query no longer waits out the build (it runs in the background), so
+// the test warms up explicitly before asserting resolution.
 func TestCityByNameFuzzyRevived(t *testing.T) {
 	finder := BuildIndex(fuzzyFixtureCities())
+	finder.WarmFuzzy()
+	waitFuzzyBuilt(t, finder)
 
 	// Phase 2: distance-1 typo ("Pars" -> "Paris").
 	got := finder.CityByName("Pars", "FR")
@@ -57,21 +61,25 @@ func TestCityByNameFuzzyRevived(t *testing.T) {
 // phase 2 produces a non-empty candidate list (a distance-1 tree hit) that does
 // not resolve in the requested country, and the (name, 2) cache key is cold,
 // forcing phase 3 to take the write lock while the phase-2 read lock is (pre
-// fix) still held via defer.
+// fix) still held via defer. The fuzzy index is warmed first so the query
+// actually exercises phases 2/3 (a country with no entries would now return
+// via the early exit before reaching fuzzy at all).
 func TestCityByNameNoSelfDeadlock(t *testing.T) {
 	finder := NewNameFinder()
 	finder.AddCity(city.SpatialCity{City: city.City{Name: "Paris", Country: "FR", Latitude: 48.85, Longitude: 2.35}})
 	finder.AddCity(city.SpatialCity{City: city.City{Name: "London", Country: "GB", Latitude: 51.50, Longitude: -0.12}})
+	finder.WarmFuzzy()
+	waitFuzzyBuilt(t, finder)
 
 	done := make(chan *city.City, 1)
 	go func() {
-		done <- finder.CityByName("Pars", "XX") // XX has no indexed names
+		done <- finder.CityByName("Pars", "GB") // "Paris" is a d1 candidate but not indexed under GB
 	}()
 
 	select {
 	case got := <-done:
 		if got != nil {
-			t.Fatalf("expected nil for unknown country, got %q", got.Name)
+			t.Fatalf("expected nil for a country without the candidate, got %q", got.Name)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("CityByName self-deadlocked: read lock held across phase-3 cache miss (5s timeout)")
@@ -79,9 +87,11 @@ func TestCityByNameNoSelfDeadlock(t *testing.T) {
 }
 
 // TestCityByNameConcurrentMixedRace hammers CityByName from 8 goroutines with
-// a mix of exact hits, typos (fuzzy path, cold cache keys), and guaranteed
-// misses. Run under -race this must stay clean: the lazy tree build, the tree
-// searches, and the fuzzy cache are all shared mutable state.
+// a mix of exact hits, typos that resolve via fuzzy (cold cache keys), and
+// guaranteed misses against a country that EXISTS (so the query walks the
+// full fuzzy path rather than returning via the unknown-country early exit).
+// Run under -race this must stay clean: the background n-gram build, the
+// n-gram searches, and the fuzzy cache are all shared mutable state.
 func TestCityByNameConcurrentMixedRace(t *testing.T) {
 	cities := make([]city.SpatialCity, 200)
 	for i := range cities {
@@ -108,10 +118,10 @@ func TestCityByNameConcurrentMixedRace(t *testing.T) {
 					if finder.CityByName(fmt.Sprintf("RaceCity%03d", i), fmt.Sprintf("RC%d", i%7)) != nil {
 						atomic.AddInt64(&hits, 1)
 					}
-				case 1: // typo, never resolves in RC9 -> full fuzzy path
-					finder.CityByName(fmt.Sprintf("RaceCitt%03d", i), "RC9")
-				default: // guaranteed miss with a distinct cache key each time
-					finder.CityByName(fmt.Sprintf("zz-no-such-city-%d-%d", w, i), "ZZ")
+				case 1: // distance-1 typo, resolves in the indexed country once the build lands
+					finder.CityByName(fmt.Sprintf("RaceCitt%03d", i), fmt.Sprintf("RC%d", i%7))
+				default: // guaranteed miss in an EXISTING country: full fuzzy walk, distinct query each time
+					finder.CityByName(fmt.Sprintf("zz-no-such-city-%d-%d", w, i), "RC0")
 				}
 			}
 		}(w)
@@ -120,18 +130,33 @@ func TestCityByNameConcurrentMixedRace(t *testing.T) {
 	assert.Positive(t, atomic.LoadInt64(&hits), "exact-match lookups must keep working")
 }
 
-// TestFuzzyCacheIsBounded drives more distinct miss queries than the cache cap
-// and asserts the cache never grows past it. The literal mirrors
-// maxFuzzyCacheEntries in name.go (kept as a literal so this test also compiles
-// against the unfixed tree, where it must fail).
+// TestFuzzyCacheIsBounded drives more distinct MATCHING queries than the
+// cache cap and asserts the cache never grows past it. The queries must
+// produce non-empty results: empty results are not cached (a later AddCity
+// must become visible to the same query), so only matches exercise the
+// bound. The names carry a multiplicative-hash suffix (a bijection on
+// uint32, so names stay unique) — with near-identical names every query's
+// grams would be shared by the whole corpus and each d2 walk would visit
+// every name, making the test minutes slow under -race for no extra
+// coverage. The literal mirrors maxFuzzyCacheEntries in name.go (kept as a
+// literal so this test also compiles against the unfixed tree, where it must
+// fail).
 func TestFuzzyCacheIsBounded(t *testing.T) {
 	const intendedCap = 10000
 
-	finder := NewNameFinder()
-	finder.AddCity(city.SpatialCity{City: city.City{Name: "Paris", Country: "FR", Latitude: 48.85, Longitude: 2.35}})
+	hashedName := func(i int) string { return fmt.Sprintf("zz%08x", uint32(i)*2654435761) }
+	cities := make([]city.SpatialCity, intendedCap+500)
+	for i := range cities {
+		cities[i] = city.SpatialCity{
+			City: city.City{Name: hashedName(i), Country: "ZC", Latitude: 1, Longitude: 1},
+		}
+	}
+	finder := BuildIndex(cities)
+	finder.WarmFuzzy()
+	waitFuzzyBuilt(t, finder)
 
 	for i := 0; i < intendedCap+500; i++ {
-		finder.getCachedFuzzySearch(fmt.Sprintf("zz%d", i), 2)
+		finder.getCachedFuzzySearch(hashedName(i), 2)
 	}
 
 	finder.cacheMutex.RLock()
@@ -147,8 +172,10 @@ func TestFuzzyCacheIsBounded(t *testing.T) {
 // n-gram index.
 func TestSerializeDeserializeFuzzyRoundTrip(t *testing.T) {
 	finder := BuildIndex(fuzzyFixtureCities())
+	finder.WarmFuzzy()
+	waitFuzzyBuilt(t, finder)
 
-	// Populate the BK-tree before serializing.
+	// Populate the fuzzy structure before serializing.
 	if got := finder.CityByName("Pars", "FR"); got == nil || got.Name != "Paris" {
 		t.Fatalf("pre-serialize fuzzy lookup failed: %+v", got)
 	}
@@ -161,6 +188,12 @@ func TestSerializeDeserializeFuzzyRoundTrip(t *testing.T) {
 
 	restored, err := DeserializeIndex(tmpfile.Name())
 	assert.NoError(t, err)
+
+	// The restored finder starts fuzzy-fresh; warm it up before the fuzzy
+	// assertion (the first post-deserialize fuzzy query no longer waits out
+	// the background build).
+	restored.WarmFuzzy()
+	waitFuzzyBuilt(t, restored)
 
 	got := restored.CityByName("Pars", "FR")
 	if got == nil || got.Name != "Paris" {
@@ -188,11 +221,16 @@ func TestDeserializeRevivesFuzzy(t *testing.T) {
 	assert.Nil(t, ngrams, "v2 must deserialize without a fuzzy structure")
 	assert.Equal(t, int32(fuzzyNotBuilt), restored.fuzzyState.Load(), "fuzzy state must start notBuilt")
 
+	// The first fuzzy query triggers the background build and returns
+	// exact-only; warm up and wait it out, then the typo resolves through
+	// the freshly built n-gram index.
+	restored.WarmFuzzy()
+	waitFuzzyBuilt(t, restored)
+	assert.Equal(t, int32(fuzzyBuilt), restored.fuzzyState.Load(), "warm-up must have built the index")
 	got := restored.CityByName("Pars", "FR")
 	if got == nil || got.Name != "Paris" {
 		t.Fatalf("fuzzy lookup after deserializing: %+v, want Paris", got)
 	}
-	assert.Equal(t, int32(fuzzyBuilt), restored.fuzzyState.Load(), "the typo lookup must have built the index")
 }
 
 // TestDeserializeGarbageTailReturnsError checks that a decode error in the
