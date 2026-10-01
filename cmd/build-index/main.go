@@ -146,6 +146,69 @@ func formatNumber(n int64) string {
 	return fmt.Sprintf("%.1fB", float64(n)/1000000000)
 }
 
+// buildPaths bundles every filesystem location one build run reads from or
+// writes to. s2Config is handed to coordinates.BuildIndex, which currently
+// accepts but does not read it.
+type buildPaths struct {
+	dataFile        string
+	postalCodeFile  string
+	outputDir       string
+	s2IndexPath     string
+	nameIndexPath   string
+	postalIndexPath string
+	s2Config        *config.S2
+}
+
+// resolvePaths returns the input and output paths for the given mode.
+//
+// Test mode uses fixed testdata literals (inputs and the *_test.gob outputs).
+//
+// Prod mode resolves everything from the config located the same way
+// cmd/server locates it (CONFIG_PATH env var, "config.json" default — see
+// config.LoadFromEnv). The serialized index outputs come from
+// (*config.Config).IndexFilePaths, which joins each index file key with the
+// config's datasets_folder exactly like the initializer's indexFilePaths on
+// the reader side, so a build under any non-default config is the one the
+// initializer will actually load. When no config file can be loaded, prod
+// falls back to the legacy literal names below with a warning — build-index
+// must remain runnable before a config exists. With the shipped default
+// config.json the fallback values coincide with the config-driven ones.
+func resolvePaths(mode string) buildPaths {
+	if mode == "test" {
+		return buildPaths{
+			dataFile:        "testdata/allCountries.txt",
+			postalCodeFile:  "testdata/zipCodes.txt",
+			outputDir:       "testdata",
+			s2IndexPath:     filepath.Join("testdata", "s2index_test.gob"),
+			nameIndexPath:   filepath.Join("testdata", "name_index_test.gob"),
+			postalIndexPath: filepath.Join("testdata", "postal_code_index_test.gob"),
+			s2Config:        &config.S2{},
+		}
+	}
+
+	// mode == "prod": legacy literals double as the missing-config fallback.
+	paths := buildPaths{
+		dataFile:        "datasets/allCountries.txt",
+		postalCodeFile:  "datasets/zipCodes.txt",
+		outputDir:       "datasets",
+		s2IndexPath:     "datasets/s2index.gob",
+		nameIndexPath:   "datasets/name_index.gob",
+		postalIndexPath: "datasets/postal_code_index.gob",
+		s2Config:        &config.S2{},
+	}
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		log.Printf("Warning: could not load config (%v); falling back to legacy literal dataset and index file names %s / %s — symlink them if the initializer produced different names", err, paths.dataFile, paths.postalCodeFile)
+		return paths
+	}
+	paths.dataFile = filepath.Join(cfg.DatasetsFolder, cfg.AllCitiesFile)
+	paths.postalCodeFile = filepath.Join(cfg.DatasetsFolder, cfg.PostalCodesFile)
+	paths.outputDir = cfg.DatasetsFolder
+	paths.s2IndexPath, paths.nameIndexPath, paths.postalIndexPath = cfg.IndexFilePaths()
+	paths.s2Config = &cfg.S2
+	return paths
+}
+
 func main() {
 	for i := 0; i < 70; i++ {
 		fmt.Print("=")
@@ -184,29 +247,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Set data file paths and output directory based on mode. Prod resolves
-	// the dataset filenames from the same config the initializer uses
-	// (config.json / CONFIG_PATH), so the two never disagree about names; the
-	// literals below are only a fallback for a missing config file.
-	var dataFile, postalCodeFile, outputDir string
-	s2Config := &config.S2{MinLevel: 10, MaxLevel: 16, MaxCells: 8}
-	if mode == "test" {
-		dataFile = "testdata/allCountries.txt"
-		postalCodeFile = "testdata/zipCodes.txt"
-		outputDir = "testdata"
-	} else { // mode == "prod"
-		outputDir = "datasets"
-		dataFile = "datasets/allCountries.txt"
-		postalCodeFile = "datasets/zipCodes.txt"
-		if cfg, err := config.LoadConfig("config.json"); err != nil {
-			log.Printf("Warning: could not load config (%v); falling back to legacy literal dataset names %s / %s — symlink them if the initializer produced different names", err, dataFile, postalCodeFile)
-		} else {
-			dataFile = filepath.Join(cfg.DatasetsFolder, cfg.AllCitiesFile)
-			postalCodeFile = filepath.Join(cfg.DatasetsFolder, cfg.PostalCodesFile)
-			outputDir = cfg.DatasetsFolder
-			s2Config = &cfg.S2
-		}
-	}
+	// Resolve data file paths, output directory, and serialized index output
+	// paths based on mode. Prod resolves BOTH the dataset filenames and the
+	// index output paths from the same config the initializer uses, located
+	// the same way cmd/server locates it (CONFIG_PATH env var with a
+	// "config.json" default — config.LoadFromEnv), so build-index writes its
+	// outputs exactly where the initializer looks for them. Test mode uses
+	// fixed testdata literals.
+	paths := resolvePaths(mode)
+	dataFile, postalCodeFile, outputDir := paths.dataFile, paths.postalCodeFile, paths.outputDir
+	s2Config := paths.s2Config
 
 	fmt.Printf("Mode:         %s\n", mode)
 	fmt.Printf("Data Files:\n")
@@ -295,32 +345,23 @@ func main() {
 	fmt.Println()
 
 	serializeResult := measureOperation("6. Serializing Indexes", 0, func() {
-		// Determine filename suffix based on mode
-		fileSuffix := "_test.gob"
-		if mode == "prod" {
-			fileSuffix = ".gob"
-		}
-
 		// Serialize S2 index
-		s2IndexPath := fmt.Sprintf("%s/s2index%s", outputDir, fileSuffix)
-		if err := s2Finder.SerializeIndex(s2IndexPath); err != nil {
+		if err := s2Finder.SerializeIndex(paths.s2IndexPath); err != nil {
 			log.Fatalf("Failed to serialize S2 index: %v", err)
 		}
-		fmt.Printf("  ✓ S2 index saved to: %s\n", s2IndexPath)
+		fmt.Printf("  ✓ S2 index saved to: %s\n", paths.s2IndexPath)
 
 		// Serialize Name index
-		nameIndexPath := fmt.Sprintf("%s/name_index%s", outputDir, fileSuffix)
-		if err := nameFinder.SerializeIndex(nameIndexPath); err != nil {
+		if err := nameFinder.SerializeIndex(paths.nameIndexPath); err != nil {
 			log.Fatalf("Failed to serialize Name index: %v", err)
 		}
-		fmt.Printf("  ✓ Name index saved to: %s\n", nameIndexPath)
+		fmt.Printf("  ✓ Name index saved to: %s\n", paths.nameIndexPath)
 
 		// Serialize Postal Code index
-		postalIndexPath := fmt.Sprintf("%s/postal_code_index%s", outputDir, fileSuffix)
-		if err := postalFinder.SerializeIndex(postalIndexPath); err != nil {
+		if err := postalFinder.SerializeIndex(paths.postalIndexPath); err != nil {
 			log.Fatalf("Failed to serialize Postal Code index: %v", err)
 		}
-		fmt.Printf("  ✓ Postal Code index saved to: %s\n", postalIndexPath)
+		fmt.Printf("  ✓ Postal Code index saved to: %s\n", paths.postalIndexPath)
 	})
 	printResult(serializeResult)
 
