@@ -1,6 +1,8 @@
 package name
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/gob"
 	"io"
 	"os"
@@ -9,9 +11,51 @@ import (
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/city"
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// writeV2File builds a v2 file with a handcrafted header and payload in the
+// production framing: raw gob header, then the payload gob-compressed into
+// one CRC-checked zstd frame. Tests use it to reach validation paths behind
+// the compression layer.
+func writeV2File(t *testing.T, path string, header indexHeader, payload nameIndexPayloadV2) {
+	t.Helper()
+	var raw bytes.Buffer
+	require.NoError(t, gob.NewEncoder(&raw).Encode(&payload))
+
+	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(nameIndexZstdLevel), zstd.WithEncoderCRC(nameIndexZstdCRC))
+	require.NoError(t, err)
+	compressed := enc.EncodeAll(raw.Bytes(), nil)
+
+	f, err := os.Create(path)
+	require.NoError(t, err)
+	require.NoError(t, gob.NewEncoder(f).Encode(&header))
+	_, werr := f.Write(compressed)
+	require.NoError(t, werr)
+	require.NoError(t, f.Close())
+}
+
+// readV2File decodes a v2 file exactly the way the production reader layers
+// it: the raw gob header first (shared bufio), then the decompressed payload
+// bytes. Tests use it to inspect the decompressed stream.
+func readV2File(t *testing.T, path string) (indexHeader, []byte) {
+	t.Helper()
+	f, err := os.Open(path)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+
+	br := bufio.NewReader(f)
+	var header indexHeader
+	require.NoError(t, gob.NewDecoder(br).Decode(&header))
+
+	compressed, err := io.ReadAll(br)
+	require.NoError(t, err)
+	payloadBytes, err := decodeZstdFrame(compressed)
+	require.NoError(t, err)
+	return header, payloadBytes
+}
 
 // sharedCityFixture builds a dataset whose cities are each referenced under
 // several names (primary + alternates), and one city that is manually indexed
@@ -141,30 +185,26 @@ func TestSerializeV2CountValidation(t *testing.T) {
 }
 
 // TestSerializeV2FileDoesNotContainRuntimeState verifies the dropped trailer:
-// a v2 stream must decode header + payload and then END. Any trailing value
-// (e.g. a serialized BK-tree, as v1 wrote) means the file was not written by
-// this format.
+// the decompressed v2 stream must decode header + payload and then END. Any
+// trailing value (e.g. a serialized BK-tree, as v1 wrote) means the file was
+// not written by this format.
 func TestSerializeV2FileDoesNotContainRuntimeState(t *testing.T) {
 	original, _ := sharedCityFixture()
 	original.isBKTreeBuilt = true
 	original.allNames = []string{"Paris", "London"}
 	path := serializeToTemp(t, original)
 
-	file, err := os.Open(path)
-	require.NoError(t, err)
-	defer func() { _ = file.Close() }()
+	_, payloadBytes := readV2File(t, path)
 
-	decoder := gob.NewDecoder(file)
-	var header indexHeader
-	require.NoError(t, decoder.Decode(&header))
+	payloadDec := gob.NewDecoder(bytes.NewReader(payloadBytes))
 	var payload nameIndexPayloadV2
-	require.NoError(t, decoder.Decode(&payload))
+	require.NoError(t, payloadDec.Decode(&payload))
 
 	// Decode into the type v1 wrote next (bool isBKTreeBuilt): a clean v2
 	// stream must be exhausted here, so the expected error is EOF — not a
 	// type mismatch from leftover runtime state.
 	var leftover bool
-	err = decoder.Decode(&leftover)
+	err := payloadDec.Decode(&leftover)
 	assert.ErrorIs(t, err, io.EOF,
 		"the v2 stream must end after the payload: no BK-tree, no isBKTreeBuilt, no allNames")
 }
@@ -172,19 +212,15 @@ func TestSerializeV2FileDoesNotContainRuntimeState(t *testing.T) {
 // TestDeserializeV2HeaderCountMismatch rejects a payload whose country count
 // disagrees with the header (the count-validation gate at file level).
 func TestDeserializeV2HeaderCountMismatch(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "bad_count.gob")
-	f, err := os.Create(path)
-	require.NoError(t, err)
-	enc := gob.NewEncoder(f)
-	require.NoError(t, enc.Encode(&indexHeader{Magic: nameIndexMagic, Version: nameIndexVersion, Count: 7}))
-	require.NoError(t, enc.Encode(&nameIndexPayloadV2{
-		Cities: []city.City{{Name: "Paris", Country: "FR"}},
-		Refs:   map[string]map[string][]int32{"FR": {"Paris": {0}}},
-	}))
-	require.NoError(t, f.Close())
+	path := filepath.Join(t.TempDir(), "bad_count.gob")
+	writeV2File(t, path,
+		indexHeader{Magic: nameIndexMagic, Version: nameIndexVersion, Count: 7},
+		nameIndexPayloadV2{
+			Cities: []city.City{{Name: "Paris", Country: "FR"}},
+			Refs:   map[string]map[string][]int32{"FR": {"Paris": {0}}},
+		})
 
-	_, err = DeserializeIndex(path)
+	_, err := DeserializeIndex(path)
 	assert.ErrorIs(t, err, ErrCorruptIndex, "a country-count mismatch is corruption")
 	assert.Contains(t, err.Error(), "recorded 7")
 }
@@ -193,21 +229,66 @@ func TestDeserializeV2HeaderCountMismatch(t *testing.T) {
 // distinct-city table — the rehydration bounds check must return an error,
 // not panic, on corrupt input.
 func TestDeserializeV2RefOutsideCityTable(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "bad_ref.gob")
-	f, err := os.Create(path)
-	require.NoError(t, err)
-	enc := gob.NewEncoder(f)
-	require.NoError(t, enc.Encode(&indexHeader{Magic: nameIndexMagic, Version: nameIndexVersion, Count: 1}))
-	require.NoError(t, enc.Encode(&nameIndexPayloadV2{
-		Cities: []city.City{{Name: "Paris", Country: "FR"}},
-		Refs:   map[string]map[string][]int32{"FR": {"Paris": {0, 99}}},
-	}))
-	require.NoError(t, f.Close())
+	path := filepath.Join(t.TempDir(), "bad_ref.gob")
+	writeV2File(t, path,
+		indexHeader{Magic: nameIndexMagic, Version: nameIndexVersion, Count: 1},
+		nameIndexPayloadV2{
+			Cities: []city.City{{Name: "Paris", Country: "FR"}},
+			Refs:   map[string]map[string][]int32{"FR": {"Paris": {0, 99}}},
+		})
 
-	_, err = DeserializeIndex(path)
+	_, err := DeserializeIndex(path)
 	assert.ErrorIs(t, err, ErrCorruptIndex, "an out-of-range city id is corruption")
 	assert.Contains(t, err.Error(), "outside")
+}
+
+// TestDeserializeZstdCorruptionIsCorruptIndex pins the zstd-layer corruption
+// contract: a file whose frame is damaged mid-payload — or truncated — must
+// surface as ErrCorruptIndex (rebuildable corruption), never as a panic or a
+// wrapped fs error (which the initializer would treat as fatal).
+func TestDeserializeZstdCorruptionIsCorruptIndex(t *testing.T) {
+	// A payload large enough that a corruption window at 2/3 of the file is
+	// safely inside the zstd frame, well past the tiny raw header.
+	cities := make([]city.SpatialCity, 2000)
+	for i := range cities {
+		cities[i] = city.SpatialCity{
+			City:     city.City{Name: "CorruptCity" + string(rune('A'+i%26)) + string(rune('a'+i%26)) + string(rune('0'+i%10)) + "0123456789", Country: "CC", Latitude: float64(i), Longitude: float64(i)},
+			AltNames: []string{"CorruptAlt" + string(rune('A'+i%26)) + "0123456789"},
+		}
+	}
+	finder := BuildIndex(cities)
+	path := serializeToTemp(t, finder)
+	originalBytes, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Greater(t, len(originalBytes), 4096, "fixture must produce a multi-KB frame")
+
+	t.Run("mid-payload byte corruption", func(t *testing.T) {
+		corrupt := append([]byte(nil), originalBytes...)
+		off := len(corrupt) * 2 / 3
+		for i := 0; i < 64; i++ { // a window, not a single byte: deterministic damage
+			corrupt[off+i] ^= 0xFF
+		}
+		corruptPath := filepath.Join(t.TempDir(), "corrupt_mid.gob")
+		require.NoError(t, os.WriteFile(corruptPath, corrupt, 0o600))
+
+		f, err := DeserializeIndex(corruptPath)
+		assert.Nil(t, f, "a corrupted frame must not yield a finder")
+		require.Error(t, err, "a corrupted frame must fail, not panic")
+		assert.ErrorIs(t, err, ErrCorruptIndex, "zstd corruption is rebuildable corruption")
+		assert.NotErrorIs(t, err, os.ErrNotExist, "must not masquerade as an fs error")
+	})
+
+	t.Run("truncated frame", func(t *testing.T) {
+		cut := len(originalBytes) / 2
+		truncPath := filepath.Join(t.TempDir(), "trunc.gob")
+		require.NoError(t, os.WriteFile(truncPath, originalBytes[:cut], 0o600))
+
+		f, err := DeserializeIndex(truncPath)
+		assert.Nil(t, f)
+		require.Error(t, err, "a truncated frame must fail, not panic")
+		assert.ErrorIs(t, err, ErrCorruptIndex, "truncation is rebuildable corruption")
+		assert.NotErrorIs(t, err, os.ErrNotExist, "must not masquerade as an fs error")
+	})
 }
 
 // TestAddCityAfterDeserializeV2 proves the post-deserialize mutation path:
