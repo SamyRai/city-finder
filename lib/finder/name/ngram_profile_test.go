@@ -31,7 +31,10 @@ func TestNGramProfile(t *testing.T) {
 	shuffled := append([]string(nil), names...)
 	rng.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
 
-	index := buildNGramIndex(shuffled)
+	index, err := buildNGramIndex(shuffled)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var queries []string
 	for i := 0; len(queries) < 300; i++ {
