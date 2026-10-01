@@ -220,7 +220,7 @@ The memory floor matters: a cold start on an empty volume peaks around 9 GB RSS 
 | Variable | Default in image | Purpose |
 |---|---|---|
 | `PORT` | `3000` | HTTP listen port. |
-| `CONFIG_PATH` | `/etc/cityfinder/config.json` | Config file to load. Use an absolute path: the loader resolves relative paths against a detected project root (a `go.mod` walk-up), which containers do not have. |
+| `CONFIG_PATH` | `/etc/cityfinder/config.json` | Config file to load. Absolute paths are opened as-is; a relative path resolves against the container's working directory (`/app`), and a relative `datasets_folder` inside the config resolves against the config file's directory. |
 
 To run with your own config, mount it and point `CONFIG_PATH` at it (`docker run -v "$PWD/my-config.json:/etc/cityfinder/config.json:ro" ...`). The shipped default config keeps all GeoNames URLs and file names from the repo-root `config.json` but pins `datasets_folder` to `/data/datasets`.
 

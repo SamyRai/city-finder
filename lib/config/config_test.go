@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/SamyRai/cityFinder/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,26 +32,40 @@ const validConfigJSON = `{
   "s2": {"min_level": 10, "max_level": 15, "max_cells": 8, "index_file": "s2index.gob"}
 }`
 
-// projectRoot returns the repository root the same way LoadConfig resolves it
-// (FindProjectRoot walks up from the working directory to go.mod).
-func projectRoot(t *testing.T) string {
+// chdirWithoutGoModAbove chdir's into dir and verifies the precondition the
+// project-root-independence tests rely on: no go.mod exists in dir or any of
+// its ancestors. Under v1.0 semantics LoadConfig hard-failed in that
+// situation ("failed to find project root"), so the tests prove the v1.1
+// guarantee: loading never discovers a project root at all. Standard test
+// temp directories (TMPDIR and friends) satisfy the precondition; a host
+// with a stray go.mod above the temp dir cannot exercise it, so the test
+// skips rather than passes vacuously.
+func chdirWithoutGoModAbove(t *testing.T, dir string) {
 	t.Helper()
-	root, err := util.FindProjectRoot()
-	require.NoError(t, err)
-	return root
+	for d := dir; ; d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(d, "go.mod")); err == nil {
+			t.Skipf("cannot verify project-root independence: %s has a go.mod ancestor %s", dir, d)
+		}
+		if filepath.Dir(d) == d {
+			break
+		}
+	}
+	t.Chdir(dir)
 }
 
 // TestLoadConfigHappyPath loads a fully populated config from an absolute
 // path and checks every field decodes and that a relative datasets_folder is
-// resolved against the project root.
+// resolved against the config file's directory (v1.1 semantics; v1.0 joined
+// it onto a discovered project root).
 func TestLoadConfigHappyPath(t *testing.T) {
-	path := writeConfig(t, t.TempDir(), "config.json", validConfigJSON)
+	dir := t.TempDir()
+	path := writeConfig(t, dir, "config.json", validConfigJSON)
 
 	cfg, err := LoadConfig(path)
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
 
-	assert.Equal(t, filepath.Join(projectRoot(t), "datasets"), cfg.DatasetsFolder)
+	assert.Equal(t, filepath.Join(dir, "datasets"), cfg.DatasetsFolder)
 	assert.Equal(t, "https://example.org/allCountries.zip", cfg.AllCitiesURL)
 	assert.Equal(t, "https://example.org/zip/allCountries.zip", cfg.PostalCodesURL)
 	assert.Equal(t, "allCountries_dump.txt", cfg.AllCitiesFile)
@@ -68,44 +81,71 @@ func TestLoadConfigHappyPath(t *testing.T) {
 }
 
 // TestLoadConfigAbsolutePathNotMangled pins the absolute-path contract: an
-// absolute configPath must be opened as-is. Joining it onto the project root
-// (the previous behavior) would turn /tmp/x/config.json into
-// <root>/tmp/x/config.json and fail with a confusing open error.
+// absolute configPath must be opened as-is. Joining it onto some base
+// directory would turn /tmp/x/config.json into <base>/tmp/x/config.json and
+// fail with a confusing open error.
 func TestLoadConfigAbsolutePathNotMangled(t *testing.T) {
 	path := writeConfig(t, t.TempDir(), "config.json", validConfigJSON)
 	require.True(t, filepath.IsAbs(path), "temp paths must be absolute for this test to mean anything")
 
 	cfg, err := LoadConfig(path)
-	require.NoError(t, err, "an absolute config path must be opened as-is, not joined onto the project root")
+	require.NoError(t, err, "an absolute config path must be opened as-is, not joined onto another base")
 	require.NotNil(t, cfg)
 }
 
-// TestLoadConfigRelativePathResolvedAgainstRoot pins the relative-path
-// contract: a relative configPath resolves against the FindProjectRoot
-// output, not against the process working directory. The path is derived
-// root-relative the same way the cmd/server process tests do.
-func TestLoadConfigRelativePathResolvedAgainstRoot(t *testing.T) {
-	root := projectRoot(t)
-	abs := writeConfig(t, t.TempDir(), "config.json", validConfigJSON)
-	rel, err := filepath.Rel(root, abs)
-	require.NoError(t, err)
+// TestLoadConfigAbsolutePathNeedsNoProjectRoot is the core v1.1 regression
+// test: with the process working directory outside any Go module (no go.mod
+// up to the filesystem root), an absolute CONFIG_PATH must still load. v1.0
+// called util.FindProjectRoot unconditionally and failed here, which is why
+// the container image shipped a fake /app/go.mod marker.
+func TestLoadConfigAbsolutePathNeedsNoProjectRoot(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, dir, "config.json", validConfigJSON)
+	chdirWithoutGoModAbove(t, t.TempDir())
 
-	cfg, err := LoadConfig(rel)
-	require.NoError(t, err, "a root-relative config path must resolve against the project root")
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err, "an absolute config path must load without any project-root discovery")
 	require.NotNil(t, cfg)
+	assert.Equal(t, filepath.Join(dir, "datasets"), cfg.DatasetsFolder)
+}
+
+// TestLoadConfigRelativePathResolvedAgainstCWD pins the v1.1 relative-path
+// rule: a relative configPath resolves against the process working directory.
+// The negative case is differential: the repository root contains a
+// config.json, so v1.0's project-root resolution would have loaded it from an
+// unrelated CWD — v1.1 must fail to open instead, proving the resolution base
+// changed from project root to CWD.
+func TestLoadConfigRelativePathResolvedAgainstCWD(t *testing.T) {
+	dir := t.TempDir()
+	writeConfig(t, dir, "config.json", validConfigJSON)
+	chdirWithoutGoModAbove(t, dir)
+
+	cfg, err := LoadConfig("config.json")
+	require.NoError(t, err, "a relative config path must resolve against the CWD")
+	require.NotNil(t, cfg)
+	assert.Equal(t, filepath.Join(dir, "datasets"), cfg.DatasetsFolder)
+
+	// From a different CWD the same relative path must not resolve at all
+	// (v1.0 would have found the repo-root config.json).
+	chdirWithoutGoModAbove(t, t.TempDir())
+	_, err = LoadConfig("config.json")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to open config file")
 }
 
 // TestLoadConfigEnvVarHonored covers the CONFIG_FILE fallback: with an empty
-// configPath, LoadConfig reads the env var. (The CONFIG_PATH env var belongs
-// to cmd/server's main(), which feeds it into LoadConfig as configPath.)
+// configPath, LoadConfig reads the env var and resolves it under the same
+// rules. (The CONFIG_PATH env var belongs to cmd/server's main(), which feeds
+// it into LoadConfig as configPath.)
 func TestLoadConfigEnvVarHonored(t *testing.T) {
-	path := writeConfig(t, t.TempDir(), "config.json", validConfigJSON)
+	dir := t.TempDir()
+	path := writeConfig(t, dir, "config.json", validConfigJSON)
 	t.Setenv("CONFIG_FILE", path)
 
 	cfg, err := LoadConfig("")
 	require.NoError(t, err, "CONFIG_FILE must be honored when configPath is empty")
 	require.NotNil(t, cfg)
-	assert.Equal(t, filepath.Join(projectRoot(t), "datasets"), cfg.DatasetsFolder)
+	assert.Equal(t, filepath.Join(dir, "datasets"), cfg.DatasetsFolder)
 }
 
 // TestLoadConfigNoPathNoEnvErrors: with neither a configPath nor CONFIG_FILE
@@ -118,7 +158,7 @@ func TestLoadConfigNoPathNoEnvErrors(t *testing.T) {
 }
 
 // TestLoadConfigMissingFileErrors covers the missing-file path for both an
-// absolute and a root-relative path.
+// absolute and a relative (CWD-based) path.
 func TestLoadConfigMissingFileErrors(t *testing.T) {
 	_, err := LoadConfig(filepath.Join(t.TempDir(), "no_such_config.json"))
 	require.Error(t, err)
@@ -140,9 +180,10 @@ func TestLoadConfigInvalidJSONErrors(t *testing.T) {
 // TestLoadConfigNoDefaultsDocuments documents that LoadConfig applies no
 // defaults of its own: an empty JSON object yields the zero-value Config, and
 // the only normalization is the datasets_folder path joining, where "" maps
-// to the project root itself.
+// to the config file's directory itself.
 func TestLoadConfigNoDefaultsDocuments(t *testing.T) {
-	path := writeConfig(t, t.TempDir(), "config.json", `{}`)
+	dir := t.TempDir()
+	path := writeConfig(t, dir, "config.json", `{}`)
 
 	cfg, err := LoadConfig(path)
 	require.NoError(t, err)
@@ -152,20 +193,22 @@ func TestLoadConfigNoDefaultsDocuments(t *testing.T) {
 	assert.Empty(t, cfg.NameIndexFile)
 	assert.Zero(t, cfg.S2.MinLevel)
 	assert.Zero(t, cfg.S2.MaxCells)
-	assert.Equal(t, projectRoot(t), cfg.DatasetsFolder,
-		`datasets_folder "" joins to the project root`)
+	assert.Equal(t, dir, cfg.DatasetsFolder,
+		`datasets_folder "" joins to the config file's directory`)
 }
 
 // TestLoadConfigDatasetsFolderPaths pins the datasets_folder joining rules:
-// relative values resolve against the project root, absolute values are kept
-// verbatim (previously both were joined, which mangled absolute paths).
+// relative values resolve against the config file's directory, absolute
+// values are kept verbatim. The relative case also pins that the resolution
+// ignores the CWD: the test runs from an unrelated directory.
 func TestLoadConfigDatasetsFolderPaths(t *testing.T) {
-	root := projectRoot(t)
+	dir := t.TempDir()
 
-	rel := writeConfig(t, t.TempDir(), "config.json", `{"datasets_folder": "my_datasets"}`)
+	rel := writeConfig(t, dir, "config.json", `{"datasets_folder": "my_datasets"}`)
+	chdirWithoutGoModAbove(t, t.TempDir())
 	cfg, err := LoadConfig(rel)
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(root, "my_datasets"), cfg.DatasetsFolder)
+	assert.Equal(t, filepath.Join(dir, "my_datasets"), cfg.DatasetsFolder)
 
 	absData := t.TempDir()
 	abs := writeConfig(t, t.TempDir(), "config.json",
@@ -173,5 +216,20 @@ func TestLoadConfigDatasetsFolderPaths(t *testing.T) {
 	cfg, err = LoadConfig(abs)
 	require.NoError(t, err)
 	assert.Equal(t, absData, cfg.DatasetsFolder,
-		"an absolute datasets_folder must be preserved, not prefixed with the project root")
+		"an absolute datasets_folder must be preserved, not prefixed with another base")
+}
+
+// TestLoadConfigRepoRootLayoutPreserved documents that the default
+// development layout keeps its v1.0 meaning: the repo-root config.json sits
+// in the same directory as the "datasets" folder it names, so resolving
+// datasets_folder against the config file's directory (v1.1) yields the same
+// repo-root/datasets path the old project-root join produced.
+func TestLoadConfigRepoRootLayoutPreserved(t *testing.T) {
+	cfgDir := t.TempDir()
+	writeConfig(t, cfgDir, "config.json", validConfigJSON)
+	chdirWithoutGoModAbove(t, cfgDir)
+
+	cfg, err := LoadConfig("config.json")
+	require.NoError(t, err, "the config must load relative to the CWD where it lives")
+	assert.Equal(t, filepath.Join(cfgDir, "datasets"), cfg.DatasetsFolder)
 }

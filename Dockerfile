@@ -43,15 +43,14 @@ LABEL org.opencontainers.image.title="city-finder" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.version="${VERSION}"
 
-# lib/config.LoadConfig resolves every relative path against a "project root"
-# it discovers by walking up from the CWD to a go.mod file, and fails outright
-# when none exists. The runtime image therefore ships the module file as a
-# root marker next to WORKDIR, and every path the server consumes is
-# absolute: CONFIG_PATH=/etc/cityfinder/config.json (below) and
-# datasets_folder=/data/datasets (deploy/config.json). Removing this marker
-# requires a source change (config loading must not depend on project-root
-# discovery) — owned outside the deploy lane; flagged in the lane report.
-COPY --from=builder /src/go.mod /app/go.mod
+# Every path the server consumes is absolute —
+# CONFIG_PATH=/etc/cityfinder/config.json (below) and
+# datasets_folder=/data/datasets (deploy/config.json) — so config loading
+# performs no path discovery of any kind. (v1.0 resolved relative paths via a
+# go.mod walk-up and hard-failed without one, which forced a fake /app/go.mod
+# marker into this image; lib/config dropped that dependency in v1.1.) A
+# relative CONFIG_PATH override resolves against /app, and a relative
+# datasets_folder against the config file's directory.
 
 # Default configuration: absolute paths only, datasets under the /data volume.
 # Override by mounting your own file and pointing CONFIG_PATH at it.
@@ -60,6 +59,8 @@ COPY deploy/config.json /etc/cityfinder/config.json
 COPY --from=builder /out/cityfinder /cityfinder
 COPY --from=builder --chown=nonroot:nonroot /out/data /data
 
+# Working directory for the (absolute) binary; also the resolution base for
+# a relative CONFIG_PATH override.
 WORKDIR /app
 ENV PORT=3000 \
     CONFIG_PATH=/etc/cityfinder/config.json
