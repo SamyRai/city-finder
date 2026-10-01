@@ -30,6 +30,15 @@ and this project adheres to
 
 ### Changed
 
+- The fuzzy (n-gram) index builds in a background goroutine: the first
+  fuzzy query no longer runs the ~30–90 s build synchronously in-request —
+  it returns the same fast exact-only degradation concurrent queries always
+  had, and the server triggers the build at startup via `WarmFuzzy()`
+  (idempotent, non-blocking, also exposed for library users).
+  `CityByName` short-circuits before any fuzzy work when the country has
+  no indexed names, and empty non-truncated fuzzy results are no longer
+  cached (a name added after a miss is visible to the next identical
+  query, honoring the documented overflow guarantee).
 - Dataset extraction is crash-atomic: the zip entry streams through
   `<file>.part` and is renamed into place only after a complete copy,
   mirroring the download path.
