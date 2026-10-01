@@ -1,6 +1,8 @@
 package name
 
 import (
+	"fmt"
+	"math"
 	"sort"
 	"unicode/utf8"
 )
@@ -99,13 +101,19 @@ func (s *ngramScratch) forEachGram(name string, runeLn *int, fn func()) {
 }
 
 // buildNGramIndex constructs the index over names. It is pure with respect
-// to names (string headers are shared, never copied).
-func buildNGramIndex(names []string) *ngramIndex {
+// to names (string headers are shared, never copied). It fails only when the
+// corpus holds more gram postings than the int32 CSR offsets can address.
+func buildNGramIndex(names []string) (*ngramIndex, error) {
 	gramIDs := make(map[string]int32)
 	counts := make([]int32, 0, 1<<16) // gram id -> posting count
 	nameLens := make([]uint16, len(names))
 	var s ngramScratch
 	var runeLn int
+
+	// Total postings accumulated in int64: the per-gram int32 counters and
+	// the int32 offset sums below are trusted only after this total proves
+	// they cannot have wrapped.
+	var totalPostings int64
 
 	// Pass 1: assign gram ids, count postings per gram, record rune lens.
 	// map[string]int32 lookups keyed by string([]byte) are allocation-free;
@@ -119,11 +127,31 @@ func buildNGramIndex(names []string) *ngramIndex {
 				counts = append(counts, 0)
 			}
 			counts[gid]++
+			totalPostings++
 		})
+		// Rune lengths are stored as uint16 for footprint; names of 65,536+
+		// runes would silently wrap. Cap instead: such a name can never pass
+		// the length filter (|runes(name) − runes(query)| ≤ d) for any
+		// query a caller can realistically issue, so the fuzzy layer simply
+		// cannot find it — an acceptable loss for a best-effort typo-rescue
+		// layer. Exact (phase 1) lookups do not consult this index and are
+		// unaffected.
+		if runeLn > math.MaxUint16 {
+			runeLn = math.MaxUint16
+		}
 		nameLens[id] = uint16(runeLn)
 	}
 
-	// CSR offsets from prefix sums.
+	// Explicit overflow gate: the CSR payload and offsets are int32 by
+	// construction, so more than MaxInt32 postings would wrap the prefix
+	// sums into negative offsets and corrupt the index. Refuse to build.
+	// (Unreachable under the default FuzzyMaxNames gate; it exists so a
+	// pathological corpus fails loudly instead of silently.)
+	if totalPostings > math.MaxInt32 {
+		return nil, fmt.Errorf("n-gram index requires %d gram postings, exceeding the int32 offset limit (%d); refusing to build a corrupt index", totalPostings, int64(math.MaxInt32))
+	}
+
+	// CSR offsets from prefix sums; total ≤ MaxInt32 was proven above.
 	postOff := make([]int32, len(counts)+1)
 	total := int32(0)
 	for gid, c := range counts {
@@ -150,7 +178,7 @@ func buildNGramIndex(names []string) *ngramIndex {
 		post:     post,
 		postOff:  postOff,
 		gramIDs:  gramIDs,
-	}
+	}, nil
 }
 
 // distinctQueryGrams returns the distinct padded grams of query, deduped

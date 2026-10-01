@@ -77,7 +77,10 @@ func TestNGramScaleGate(t *testing.T) {
 
 		before := settleHeap()
 		buildStart := time.Now()
-		index := buildNGramIndex(corpus)
+		index, err := buildNGramIndex(corpus)
+		if err != nil {
+			t.Fatalf("buildNGramIndex at scale %q: %v", scale, err)
+		}
 		buildDur := time.Since(buildStart)
 		structure := settleHeap() - before
 		runtime.KeepAlive(index)

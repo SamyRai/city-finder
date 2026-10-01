@@ -500,7 +500,17 @@ func (nf *Finder) ensureFuzzyBuilt() {
 
 	// Lock-free construction of an immutable structure: readers can neither
 	// observe a half-built index nor be blocked by the build.
-	index := buildNGramIndex(names)
+	index, err := buildNGramIndex(names)
+	if err != nil {
+		// Terminal disable, not a retry: the corpus cannot be indexed within
+		// int32 CSR offsets, so every rebuild would fail identically. Mirrors
+		// the FuzzyMaxNames disable above — exact-only from here on. Only the
+		// goroutine that won the fuzzyBuilding CAS reaches this point, so the
+		// log fires exactly once.
+		nf.fuzzyState.Store(fuzzyDisabled)
+		log.Printf("fuzzy n-gram index build failed; fuzzy matching disabled (exact-only): %v", err)
+		return
+	}
 
 	// Commit under the write lock. The index only ever grows — every
 	// insertion path appends under this same lock, nothing removes — so an

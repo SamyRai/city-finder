@@ -2,6 +2,7 @@ package name
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -44,7 +45,8 @@ func ngramCorpus() []string {
 // holds for ALL lengths.
 func TestNGramSearchMatchesBruteForce(t *testing.T) {
 	corpus := ngramCorpus()
-	index := buildNGramIndex(corpus)
+	index, err := buildNGramIndex(corpus)
+	require.NoError(t, err)
 
 	bruteForceMatches := func(query string, maxDistance, minRunes int) []string {
 		var matches []string
@@ -157,9 +159,30 @@ func TestLevenshteinCheckerMatchesReference(t *testing.T) {
 // nothing without panicking, and queries longer than every name return
 // nothing (length filter).
 func TestNGramSearchEmptyAndShort(t *testing.T) {
-	index := buildNGramIndex(ngramCorpus())
+	index, err := buildNGramIndex(ngramCorpus())
+	require.NoError(t, err)
 	assert.Empty(t, index.search("", 2))
 	assert.Empty(t, index.search("AVeryLongQueryNameThatMatchesNothingAtAll", 2))
+}
+
+// TestNGramBuildCapsOverlongNameLengths pins the uint16 length-table guard:
+// a name of ≥ 65,536 runes is recorded as the MaxUint16 cap rather than the
+// silently wrapped value, the build still succeeds, and normal fuzzy queries
+// are unaffected (the overlong name simply cannot pass the length filter for
+// any realistic query). Exact phase-1 lookups never consult nameLens, so
+// they are unaffected by construction.
+func TestNGramBuildCapsOverlongNameLengths(t *testing.T) {
+	overlong := strings.Repeat("a", math.MaxUint16+10) // 65,545 runes: wraps to 9 today
+	index, err := buildNGramIndex([]string{"Paris", overlong})
+	require.NoError(t, err)
+	require.Len(t, index.nameLens, 2)
+	assert.Equal(t, uint16(5), index.nameLens[0])
+	assert.Equal(t, uint16(math.MaxUint16), index.nameLens[1],
+		"overlong name length must be capped, not wrapped")
+
+	matches := index.search("Parls", 1) // distance-1 typo of Paris
+	assert.Contains(t, matches, "Paris", "normal names must stay fuzzy-findable")
+	assert.NotContains(t, matches, overlong, "the overlong name must never surface as a match")
 }
 
 // TestFuzzyTypoRescueEndToEnd drives CityByName through the new structure at
@@ -270,7 +293,8 @@ func TestCityByNameConcurrentDuringNGramBuild(t *testing.T) {
 // TestNGramApproxBytesSanity checks the size reporter used by the scale gates
 // reports a plausible positive number.
 func TestNGramApproxBytesSanity(t *testing.T) {
-	index := buildNGramIndex(ngramCorpus())
+	index, err := buildNGramIndex(ngramCorpus())
+	require.NoError(t, err)
 	assert.Positive(t, index.approxBytes())
 	assert.NotEmpty(t, index.search("Paris", 1))
 	assert.True(t, strings.Contains(strings.Join(index.search("Paris", 1), ","), "Paris"))
