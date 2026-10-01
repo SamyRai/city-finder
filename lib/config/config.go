@@ -3,7 +3,6 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/SamyRai/cityFinder/util"
 	"os"
 	"path/filepath"
 )
@@ -28,49 +27,77 @@ type S2 struct {
 	IndexFile string `json:"index_file"`
 }
 
+// LoadConfig loads the JSON configuration at configPath.
+//
+// Path resolution is project-root-independent (v1.1 semantics; v1.0 resolved
+// every relative path against a "project root" discovered by walking up from
+// the CWD to a go.mod file and failed outright when none existed, even for an
+// absolute CONFIG_PATH — which forced the container image to ship a fake
+// go.mod marker):
+//
+//   - An absolute configPath is opened as-is; no project-root discovery is
+//     performed anywhere on this path.
+//   - A relative configPath resolves against the process working directory.
+//     This is a deliberate v1.1 behavior change from project-root-relative
+//     resolution: CWD-relative is the standard meaning of a relative path,
+//     and Go API users pass relative paths from their working directory.
+//
+// With an empty configPath, the CONFIG_FILE environment variable is honored
+// (the CONFIG_PATH env var belongs to cmd/server's main, which feeds it into
+// LoadConfig as configPath).
+//
+// datasets_folder inside the config file: absolute values are kept verbatim;
+// relative values resolve against the directory containing the config file
+// (v1.0 joined them onto the discovered project root — another v1.1 change).
+// For the shipped repo-root config.json whose datasets_folder is "datasets",
+// the config directory IS the repository root, so the default development
+// layout resolves exactly as before.
 func LoadConfig(configPath string) (*Config, error) {
 	cfg := &Config{}
-
-	rootDir, err := util.FindProjectRoot()
-	if err != nil {
-		return nil, fmt.Errorf("failed to find project root: %v", err)
-	}
 
 	if configPath == "" {
 		configPath = os.Getenv("CONFIG_FILE")
 	}
 
-	// If a configPath is provided, load config from that path.
-	// Relative paths resolve against the project root; absolute paths are
-	// opened as-is (joining them onto the root would mangle them).
-	if configPath != "" {
-		if !filepath.IsAbs(configPath) {
-			configPath = filepath.Join(rootDir, configPath)
-		}
-		file, err := os.Open(configPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to open config file: %v", err)
-		}
-		decoder := json.NewDecoder(file)
-		decodeErr := decoder.Decode(cfg)
-		closeErr := file.Close()
-
-		if decodeErr != nil {
-			return nil, fmt.Errorf("failed to decode config file: %v", decodeErr)
-		}
-		if closeErr != nil {
-			return nil, fmt.Errorf("failed to close config file: %v", closeErr)
-		}
-
-		// Same rule for the datasets folder: relative values are
-		// root-relative (matching how the index file paths are joined by
-		// the initializer), absolute values are kept verbatim.
-		if !filepath.IsAbs(cfg.DatasetsFolder) {
-			cfg.DatasetsFolder = filepath.Join(rootDir, cfg.DatasetsFolder)
-		}
-
-		return cfg, nil
+	if configPath == "" {
+		return nil, fmt.Errorf("no config file provided")
 	}
 
-	return nil, fmt.Errorf("no config file provided")
+	// A relative config path resolves against the process working directory
+	// (see the doc comment for the v1.0 → v1.1 semantics change).
+	if !filepath.IsAbs(configPath) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve working directory: %v", err)
+		}
+		configPath = filepath.Join(cwd, configPath)
+	} else {
+		configPath = filepath.Clean(configPath)
+	}
+
+	file, err := os.Open(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open config file: %v", err)
+	}
+	decoder := json.NewDecoder(file)
+	decodeErr := decoder.Decode(cfg)
+	closeErr := file.Close()
+
+	if decodeErr != nil {
+		return nil, fmt.Errorf("failed to decode config file: %v", decodeErr)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("failed to close config file: %v", closeErr)
+	}
+
+	// Relative datasets_folder values resolve against the config file's
+	// directory (v1.0 joined them onto the discovered project root; another
+	// v1.1 change, see the LoadConfig doc comment). Absolute values are kept
+	// verbatim, matching how the initializer joins the index file names onto
+	// cfg.DatasetsFolder.
+	if !filepath.IsAbs(cfg.DatasetsFolder) {
+		cfg.DatasetsFolder = filepath.Join(filepath.Dir(configPath), cfg.DatasetsFolder)
+	}
+
+	return cfg, nil
 }

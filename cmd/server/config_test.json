@@ -1,5 +1,5 @@
 {
-  "datasets_folder": "testdata",
+  "datasets_folder": "../testdata",
   "all_cities_url": "",
   "postal_codes_url": "",
   "all_cities_file": "allCountries.txt",

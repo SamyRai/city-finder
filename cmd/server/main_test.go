@@ -47,7 +47,9 @@ func (suite *ServerTestSuite) SetupSuite() {
 	rootDir, err := util.FindProjectRoot()
 	require.NoError(suite.T(), err)
 
-	cfg, err := config.LoadConfig("cmd/server/config_test.json")
+	// Relative to the package directory (the go test working directory):
+	// config.LoadConfig resolves relative paths against the CWD.
+	cfg, err := config.LoadConfig("config_test.json")
 	require.NoError(suite.T(), err)
 
 	dataDir := suite.T().TempDir()
@@ -546,21 +548,17 @@ func TestServerGracefulShutdownSignal(t *testing.T) {
 		require.NoError(t, err, "go build failed: %s", out)
 	}
 
-	// The binary resolves both CONFIG_PATH and datasets_folder relative to
-	// the project root (config.LoadConfig joins them with FindProjectRoot()
-	// output), so the temp dirs must be referenced root-relative.
-	relToRoot := func(path string) string {
-		rel, err := filepath.Rel(rootDir, path)
-		require.NoError(t, err)
-		return rel
-	}
-
+	// Absolute paths throughout: config.LoadConfig resolves a relative
+	// CONFIG_PATH against the process CWD and a relative datasets_folder
+	// against the config file's directory, so the temp dirs are referenced
+	// directly instead of root-relative as the v1.0 project-root loader
+	// required.
 	dataDir := t.TempDir()
 	for _, name := range []string{"allCountries.txt", "zipCodes.txt"} {
 		require.NoError(t, copyFile(filepath.Join(rootDir, "testdata", name), filepath.Join(dataDir, name)))
 	}
 	cfg := config.Config{
-		DatasetsFolder:      relToRoot(dataDir),
+		DatasetsFolder:      dataDir,
 		AllCitiesFile:       "allCountries.txt",
 		PostalCodesFile:     "zipCodes.txt",
 		NameIndexFile:       "name_index_proc_test.gob",
@@ -582,7 +580,7 @@ func TestServerGracefulShutdownSignal(t *testing.T) {
 	cmd := exec.Command(binPath)
 	cmd.Dir = rootDir
 	cmd.Env = append(os.Environ(),
-		"CONFIG_PATH="+relToRoot(cfgPath),
+		"CONFIG_PATH="+cfgPath,
 		"PORT="+strconv.Itoa(port),
 	)
 	cmd.Stdout = logs
