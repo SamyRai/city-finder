@@ -388,6 +388,82 @@ paths:
               schema:
                 type: string
               example: "City not found"
+  /autocomplete:
+    get:
+      summary: Prefix search over indexed city names
+      operationId: autocomplete
+      description: |
+        Returns indexed names starting with the given prefix within one
+        country, in sorted order, each paired with the first city the name
+        resolves to (homonyms collapse to their first city in load order —
+        the same winner the exact-lookup phase returns). Backed by the
+        flattened sorted-name tables: no fuzzy index dependency, available
+        immediately after boot. No matches and unknown country codes both
+        return an empty `matches` array.
+      parameters:
+        - name: name
+          in: query
+          required: true
+          description: >
+            Name prefix (trimmed). Names longer than 200 runes return 400.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+          example: Par
+        - name: country-code
+          in: query
+          required: true
+          description: ISO 3166-1 alpha-2 country code (trimmed, uppercased).
+          schema:
+            type: string
+            minLength: 1
+          example: FR
+        - name: limit
+          in: query
+          required: false
+          description: Maximum matches (default 10, must be 1-50).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 10
+          example: 5
+      responses:
+        "200":
+          description: Sorted prefix matches (possibly empty).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  matches:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        city:
+                          $ref: "#/components/schemas/City"
+              example:
+                matches:
+                  - { name: Paris, city: { Latitude: 48.8566, Longitude: 2.3522, Name: Paris, Country: FR } }
+        "400":
+          description: >
+            Missing or over-long name, missing country code, or an invalid
+            limit. Plain text; validated in that order.
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                nameRequired:
+                  value: "Name is required"
+                countryRequired:
+                  value: "Country code is required"
+                badLimit:
+                  value: "Invalid limit (must be 1-50)"
   /postalCode:
     get:
       summary: Find a city by postal code

@@ -10,6 +10,9 @@ and this project adheres to
 
 ### Added
 
+- `GET /autocomplete`: prefix search over the flattened name index —
+  sorted matches, each name paired with its first city, limit 1-50
+  (default 10), empty array on no match; no fuzzy-index dependency.
 - `POST /nearest/batch`: one round trip for 1–100 lookups. Per-point
   `rank`/`include` with the same validation, error texts, and population
   concurrency gate as GET `/nearest` (both handlers now share one query
@@ -43,6 +46,15 @@ and this project adheres to
 
 ### Changed
 
+- The in-memory exact name index is flattened: per-country sorted name
+  slices + int32 CSR postings over one distinct-city pointer table,
+  replacing the nested `map[country]map[name][]*city.City`. Measured at
+  full scale (13.47M cities / 18.7M names): name-finder heap −1.43 GiB
+  (−29%) — the entire avoidable nested-map overhead; the flat structure
+  itself is ~0.48 GiB at payload scale. On-disk v2 format unchanged
+  (compat proven against an index serialized pre-refactor); pointer-sharing
+  semantics preserved; cold build pays ~38 s for the flatten sort; exact
+  lookup stays sub-µs (p50 292→585 ns) with zero allocations.
 - The fuzzy (n-gram) index builds in a background goroutine: the first
   fuzzy query no longer runs the ~30–90 s build synchronously in-request —
   it returns the same fast exact-only degradation concurrent queries always
