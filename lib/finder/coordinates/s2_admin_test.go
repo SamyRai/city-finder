@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/city"
-	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -47,7 +46,7 @@ var adminFixtureNames = map[string]string{
 // separately).
 func buildAdminFixtureFinder(t *testing.T, names map[string]string) *S2Finder {
 	t.Helper()
-	f, err := BuildIndex(adminFixtureCities, &config.S2{})
+	f, err := BuildIndex(adminFixtureCities)
 	require.NoError(t, err)
 	f.Admin1Names = names
 	return f

@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/city"
-	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/golang/geo/s2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -41,7 +40,7 @@ func TestTopPopulationsOf(t *testing.T) {
 	})
 
 	t.Run("weighted fixture: sorted descending, positives only", func(t *testing.T) {
-		finder, err := BuildIndex(weightedCitySet(), &config.S2{})
+		finder, err := BuildIndex(weightedCitySet())
 		require.NoError(t, err)
 
 		positives := 0
@@ -100,13 +99,13 @@ func TestNearestPlacePopulationRankAllZeroPopulation(t *testing.T) {
 	}
 
 	t.Run("BuildIndex", func(t *testing.T) {
-		finder, err := BuildIndex(cities, &config.S2{})
+		finder, err := BuildIndex(cities)
 		require.NoError(t, err)
 		check(t, finder)
 	})
 
 	t.Run("DeserializeIndex", func(t *testing.T) {
-		source, err := BuildIndex(cities, &config.S2{})
+		source, err := BuildIndex(cities)
 		require.NoError(t, err)
 
 		tmpfile, err := os.CreateTemp("", "s2oraclezero_*.gob")
@@ -138,7 +137,7 @@ func TestPopulationRankTopKBoundStopsEscalationEarly(t *testing.T) {
 		{City: city.City{Name: "Zero Pop Atoll", Latitude: 10.0, Longitude: -150.0}},
 		{City: city.City{Name: "Zero Pop Reef", Latitude: -45.0, Longitude: 20.0}},
 	}
-	finder, err := BuildIndex(cities, &config.S2{})
+	finder, err := BuildIndex(cities)
 	require.NoError(t, err)
 	require.EqualValues(t, 40_000_000, finder.maxPopulation)
 
@@ -219,7 +218,7 @@ func TestPopulationRankPopKScaleOracle(t *testing.T) {
 		}})
 	}
 
-	finder, err := BuildIndex(cities, &config.S2{})
+	finder, err := BuildIndex(cities)
 	require.NoError(t, err)
 
 	// Table derivation checks: exactly K entries, popK = the smallest giant

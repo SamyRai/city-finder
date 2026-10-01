@@ -24,10 +24,11 @@ type Config struct {
 
 // S2 names the serialized S2 index file. The v1.1 min_level / max_level /
 // max_cells tuning knobs were removed in v1.2: nothing ever consumed them —
-// coordinates.BuildIndex accepts a *S2 but reads no tuning from it (golang/geo's
-// s2.ShapeIndex exposes no such tuning for a PointVector index). A config file
-// still carrying those keys loads fine: the JSON decoder silently ignores
-// unknown keys (see TestLoadConfigIgnoresRemovedS2Keys).
+// coordinates.BuildIndex took a *S2 but read no tuning from it (golang/geo's
+// s2.ShapeIndex exposes no such tuning for a PointVector index), so the
+// parameter was removed as well. A config file still carrying those keys
+// loads fine: the JSON decoder silently ignores unknown keys (see
+// TestLoadConfigIgnoresRemovedS2Keys).
 type S2 struct {
 	IndexFile string `json:"index_file"`
 }

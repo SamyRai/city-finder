@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/SamyRai/cityFinder/cmd/server/metrics"
-	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/SamyRai/cityFinder/lib/finder"
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
 	"github.com/SamyRai/cityFinder/lib/finder/name"
@@ -20,7 +19,7 @@ import (
 // setupTestApp uses, for tests that exercise the metrics surface.
 func setupMetricsApp(t *testing.T) *fiber.App {
 	t.Helper()
-	s2f, err := coordinates.BuildIndex(adminRouteCities, &config.S2{})
+	s2f, err := coordinates.BuildIndex(adminRouteCities)
 	require.NoError(t, err)
 	s2f.Admin1Names = adminRouteNames
 	app := fiber.New()
@@ -32,7 +31,7 @@ func setupMetricsApp(t *testing.T) *fiber.App {
 // /coordinates handler tests.
 func setupNameApp(t *testing.T) *fiber.App {
 	t.Helper()
-	s2f, err := coordinates.BuildIndex(adminRouteCities, &config.S2{})
+	s2f, err := coordinates.BuildIndex(adminRouteCities)
 	require.NoError(t, err)
 	app := fiber.New()
 	SetupRoutes(app, &finder.Finder{S2Finder: s2f, NameFinder: name.BuildIndex(adminRouteCities)})

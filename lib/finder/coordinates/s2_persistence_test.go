@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/city"
-	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -76,7 +75,7 @@ func writeFramedIndex(t *testing.T, path string, h fileHeader, payload Serializa
 
 func buildTestS2Finder(t *testing.T) *S2Finder {
 	t.Helper()
-	f, err := BuildIndex(testCities, &config.S2{})
+	f, err := BuildIndex(testCities)
 	require.NoError(t, err)
 	return f
 }

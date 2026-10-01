@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/city"
-	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/SamyRai/cityFinder/lib/dataLoader"
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
 	"github.com/SamyRai/cityFinder/lib/finder/name"
@@ -106,8 +105,6 @@ func TestDataIntegrity_NameFinder(t *testing.T) {
 }
 
 func TestDataIntegrity_CoordinateFinder(t *testing.T) {
-	cfg := &config.S2{}
-
 	testCases := []struct {
 		name        string
 		cities      []city.SpatialCity
@@ -160,7 +157,7 @@ func TestDataIntegrity_CoordinateFinder(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			finder, err := coordinates.BuildIndex(tc.cities, cfg)
+			finder, err := coordinates.BuildIndex(tc.cities)
 
 			if tc.expectError {
 				assert.Error(t, err, tc.description)
@@ -283,8 +280,7 @@ func TestMalformedDataHandling(t *testing.T) {
 	})
 
 	t.Run("Coordinate finder with nil cities", func(t *testing.T) {
-		cfg := &config.S2{}
-		finder, err := coordinates.BuildIndex(nil, cfg)
+		finder, err := coordinates.BuildIndex(nil)
 		assert.NoError(t, err)
 		assert.NotNil(t, finder)
 
@@ -319,8 +315,7 @@ func TestBoundaryConditions_Integrated(t *testing.T) {
 		"DW": {"99902": {CountryCode: "DW", PostalCode: "99902", PlaceName: "Date Line West", Latitude: 0.0, Longitude: -179.9999, Accuracy: 1}},
 	}
 
-	cfg := &config.S2{}
-	coordFinder, err := coordinates.BuildIndex(testCities, cfg)
+	coordFinder, err := coordinates.BuildIndex(testCities)
 	require.NoError(t, err)
 
 	nameFinder := name.BuildIndex(testCities)
@@ -383,8 +378,7 @@ func TestDataConsistency(t *testing.T) {
 		"AC": {"90210": {CountryCode: "AC", PostalCode: "90210", PlaceName: "Another City", Latitude: 34.0522, Longitude: -118.2437, Accuracy: 1}},
 	}
 
-	cfg := &config.S2{}
-	coordFinder, _ := coordinates.BuildIndex(testCities, cfg)
+	coordFinder, _ := coordinates.BuildIndex(testCities)
 	nameFinder := name.BuildIndex(testCities)
 	postalFinder := postalCode.BuildIndex(testPostalCodes)
 

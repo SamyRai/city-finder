@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/SamyRai/cityFinder/lib/city"
-	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/golang/geo/s1"
 	"github.com/golang/geo/s2"
 	"github.com/klauspost/compress/zstd"
@@ -276,8 +275,9 @@ func commaFormat(n int) string {
 	return b.String()
 }
 
-// BuildIndex creates an S2 spatial index from raw city data.
-func BuildIndex(cities []city.SpatialCity, config *config.S2) (*S2Finder, error) {
+// BuildIndex creates an S2 spatial index from raw city data. The index is
+// always built with golang/geo's ShapeIndex defaults; there is nothing to tune.
+func BuildIndex(cities []city.SpatialCity) (*S2Finder, error) {
 	points := make(s2.PointVector, len(cities))
 	cityData := make([]city.City, len(cities))
 	admin1IDs := make([]int32, len(cities))
@@ -444,7 +444,7 @@ func (f *S2Finder) nearest(lat, lon float64, rank Rank) (*city.City, int, float6
 		return nil, 0, 0, fmt.Errorf("invalid rank %d", int(rank))
 	}
 	cityIndex := winner.EdgeID()
-	if cityIndex < 0 || cityIndex >= len(f.Cities) {
+	if cityIndex < 0 || int(cityIndex) >= len(f.Cities) {
 		return nil, 0, 0, fmt.Errorf("invalid city index %d found (total cities: %d)", cityIndex, len(f.Cities))
 	}
 	nearestCity := f.Cities[cityIndex]

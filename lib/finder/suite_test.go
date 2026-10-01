@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
 	"github.com/SamyRai/cityFinder/lib/finder/name"
 	"github.com/stretchr/testify/suite"
@@ -37,8 +36,7 @@ func (suite *FinderTestSuite) TestBasicFunctionality() {
 	// Create test data for this test
 	cities := suite.helper.GenerateTestCities(10)
 	nameFinder := name.BuildIndex(cities)
-	cfg := &config.S2{}
-	coordFinder, err := coordinates.BuildIndex(cities, cfg)
+	coordFinder, err := coordinates.BuildIndex(cities)
 	suite.NoError(err)
 
 	// Test name finder
@@ -81,8 +79,7 @@ func (suite *FinderTestSuite) TestDataIntegrity() {
 	// Create test data
 	cities := suite.helper.GenerateTestCities(5)
 	nameFinder := name.BuildIndex(cities)
-	cfg := &config.S2{}
-	coordFinder, err := coordinates.BuildIndex(cities, cfg)
+	coordFinder, err := coordinates.BuildIndex(cities)
 	suite.NoError(err)
 
 	// Test that finders return consistent data

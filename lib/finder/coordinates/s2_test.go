@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/city"
-	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -17,8 +16,7 @@ var testCities = []city.SpatialCity{
 }
 
 func TestBuildIndex(t *testing.T) {
-	cfg := &config.S2{}
-	finder, err := BuildIndex(testCities, cfg)
+	finder, err := BuildIndex(testCities)
 
 	assert.NoError(t, err)
 	assert.NotNil(t, finder)
@@ -28,8 +26,7 @@ func TestBuildIndex(t *testing.T) {
 }
 
 func TestNearestPlace(t *testing.T) {
-	cfg := &config.S2{}
-	finder, _ := BuildIndex(testCities, cfg)
+	finder, _ := BuildIndex(testCities)
 
 	// Test case 1: Find city closest to SF
 	sfLat, sfLon := 37.7750, -122.4190
@@ -64,8 +61,7 @@ func TestSerialization(t *testing.T) {
 	}()
 
 	// Build the initial finder and serialize it
-	cfg := &config.S2{}
-	finder, _ := BuildIndex(testCities, cfg)
+	finder, _ := BuildIndex(testCities)
 	err = finder.SerializeIndex(tmpfile.Name())
 	assert.NoError(t, err)
 
@@ -84,8 +80,7 @@ func TestSerialization(t *testing.T) {
 }
 
 func TestEmptyCities(t *testing.T) {
-	cfg := &config.S2{}
-	finder, err := BuildIndex([]city.SpatialCity{}, cfg)
+	finder, err := BuildIndex([]city.SpatialCity{})
 	assert.NoError(t, err)
 	assert.NotNil(t, finder)
 
@@ -95,11 +90,10 @@ func TestEmptyCities(t *testing.T) {
 }
 
 func TestSingleCity(t *testing.T) {
-	cfg := &config.S2{}
 	singleCityList := []city.SpatialCity{
 		{City: city.City{Name: "Honolulu", Latitude: 21.3069, Longitude: -157.8583}},
 	}
-	finder, err := BuildIndex(singleCityList, cfg)
+	finder, err := BuildIndex(singleCityList)
 	assert.NoError(t, err)
 
 	nearest, _, err := finder.NearestPlace(21.3, -157.8, RankDistance)
@@ -109,12 +103,11 @@ func TestSingleCity(t *testing.T) {
 }
 
 func TestCoordinatePrecision(t *testing.T) {
-	cfg := &config.S2{}
 	cities := []city.SpatialCity{
 		{City: city.City{Name: "Precise Location", Latitude: 40.71280000000001, Longitude: -74.00600000000001}},
 		{City: city.City{Name: "Nearby Location", Latitude: 40.7128, Longitude: -74.0060}},
 	}
-	finder, err := BuildIndex(cities, cfg)
+	finder, err := BuildIndex(cities)
 	assert.NoError(t, err)
 
 	// Test high precision coordinates
@@ -133,8 +126,6 @@ func TestCoordinatePrecision(t *testing.T) {
 }
 
 func TestBoundaryConditions(t *testing.T) {
-	cfg := &config.S2{}
-
 	tests := []struct {
 		name      string
 		lat       float64
@@ -158,7 +149,7 @@ func TestBoundaryConditions(t *testing.T) {
 			cities := []city.SpatialCity{
 				{City: city.City{Name: tt.name, Latitude: tt.lat, Longitude: tt.lon}},
 			}
-			finder, err := BuildIndex(cities, cfg)
+			finder, err := BuildIndex(cities)
 			assert.NoError(t, err)
 
 			// Try to find the city
@@ -175,8 +166,6 @@ func TestBoundaryConditions(t *testing.T) {
 }
 
 func TestExtremeCoordinates(t *testing.T) {
-	cfg := &config.S2{}
-
 	// Test with cities at extreme coordinates
 	extremeCities := []city.SpatialCity{
 		{City: city.City{Name: "North Pole", Latitude: 90.0, Longitude: 0.0}},
@@ -186,7 +175,7 @@ func TestExtremeCoordinates(t *testing.T) {
 		{City: city.City{Name: "Max Precision", Latitude: 40.7128000000000001, Longitude: -74.0060000000000001}},
 	}
 
-	finder, err := BuildIndex(extremeCities, cfg)
+	finder, err := BuildIndex(extremeCities)
 	assert.NoError(t, err)
 
 	// Test finding each extreme city
@@ -200,14 +189,12 @@ func TestExtremeCoordinates(t *testing.T) {
 }
 
 func TestDistanceAccuracy(t *testing.T) {
-	cfg := &config.S2{}
-
 	// Create cities with known distances
 	nyc := city.SpatialCity{City: city.City{Name: "New York", Latitude: 40.7128, Longitude: -74.0060}}
 	// Philadelphia is approximately 150km southwest of NYC
 	phl := city.SpatialCity{City: city.City{Name: "Philadelphia", Latitude: 39.9526, Longitude: -75.1652}}
 
-	finder, err := BuildIndex([]city.SpatialCity{nyc, phl}, cfg)
+	finder, err := BuildIndex([]city.SpatialCity{nyc, phl})
 	assert.NoError(t, err)
 
 	// Test distance from a point near Philadelphia to Philadelphia (should be close to 0)
@@ -235,15 +222,13 @@ func TestDistanceAccuracy(t *testing.T) {
 }
 
 func TestCoordinateNormalization(t *testing.T) {
-	cfg := &config.S2{}
-
 	// Test that coordinates are handled correctly (no built-in normalization in S2 finder)
 	// This tests the robustness of the S2 library with edge coordinates
 	cities := []city.SpatialCity{
 		{City: city.City{Name: "Test City", Latitude: 40.7128, Longitude: -74.0060}},
 	}
 
-	finder, err := BuildIndex(cities, cfg)
+	finder, err := BuildIndex(cities)
 	assert.NoError(t, err)
 
 	// Test coordinates that might cause issues if not normalized properly
@@ -269,8 +254,6 @@ func TestCoordinateNormalization(t *testing.T) {
 }
 
 func TestHighDensityArea(t *testing.T) {
-	cfg := &config.S2{}
-
 	// Create many cities in a small area to test high-density scenarios
 	var cities []city.SpatialCity
 	baseLat, baseLon := 40.7128, -74.0060
@@ -288,7 +271,7 @@ func TestHighDensityArea(t *testing.T) {
 		})
 	}
 
-	finder, err := BuildIndex(cities, cfg)
+	finder, err := BuildIndex(cities)
 	assert.NoError(t, err)
 
 	// Test finding cities in high-density area
@@ -303,8 +286,6 @@ func TestHighDensityArea(t *testing.T) {
 }
 
 func TestLargeCoordinateOffsets(t *testing.T) {
-	cfg := &config.S2{}
-
 	// Test with cities that have large coordinate differences
 	cities := []city.SpatialCity{
 		{City: city.City{Name: "Equator", Latitude: 0.0, Longitude: 0.0}},
@@ -314,7 +295,7 @@ func TestLargeCoordinateOffsets(t *testing.T) {
 		{City: city.City{Name: "West", Latitude: 0.0, Longitude: -175.0}},
 	}
 
-	finder, err := BuildIndex(cities, cfg)
+	finder, err := BuildIndex(cities)
 	assert.NoError(t, err)
 
 	// Test finding each city

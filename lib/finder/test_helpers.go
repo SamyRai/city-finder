@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/SamyRai/cityFinder/lib/city"
-	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/SamyRai/cityFinder/lib/dataLoader"
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
 	"github.com/SamyRai/cityFinder/lib/finder/name"
@@ -90,8 +89,7 @@ func (h *TestHelper) CreateTestFinders(cityCount, postalCount int) (*name.Finder
 	nameFinder := name.BuildIndex(cities)
 
 	// Create coordinate finder
-	cfg := &config.S2{}
-	coordFinder, err := coordinates.BuildIndex(cities, cfg)
+	coordFinder, err := coordinates.BuildIndex(cities)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to create coordinate finder: %w", err)
 	}
