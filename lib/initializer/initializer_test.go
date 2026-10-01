@@ -313,7 +313,7 @@ func TestEnsureFinders_WarmStartSkipsDatasetLoad(t *testing.T) {
 	writeTinyDatasets(t, cfg)
 
 	// Cold start: builds and serializes all three indexes.
-	finder1, err := ensureFinders(cfg)
+	finder1, err := ensureFinders(cfg, "")
 	require.NoError(t, err)
 	require.NotNil(t, finder1)
 	for _, name := range []string{cfg.S2.IndexFile, cfg.NameIndexFile, cfg.PostalCodeIndexFile} {
@@ -327,7 +327,7 @@ func TestEnsureFinders_WarmStartSkipsDatasetLoad(t *testing.T) {
 	require.NoError(t, os.Remove(filepath.Join(dir, cfg.AllCitiesFile)))
 	require.NoError(t, os.Remove(filepath.Join(dir, cfg.PostalCodesFile)))
 
-	finder2, err := ensureFinders(cfg)
+	finder2, err := ensureFinders(cfg, "")
 	require.NoError(t, err, "warm start must skip the dataset load when all indexes exist")
 	require.NotNil(t, finder2)
 	require.NotNil(t, finder2.S2Finder)
@@ -340,7 +340,7 @@ func TestEnsureFinders_ColdStartLoadsDatasets(t *testing.T) {
 	cfg := testConfig(dir)
 	writeTinyDatasets(t, cfg)
 
-	f, err := ensureFinders(cfg)
+	f, err := ensureFinders(cfg, "")
 	require.NoError(t, err)
 	require.NotNil(t, f)
 
