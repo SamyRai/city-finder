@@ -8,6 +8,79 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `GET /metrics` (Prometheus text format, no new dependencies): request
+  counters and latency histograms keyed by route pattern and status code,
+  and a `fuzzy_budget_trips_total` counter scraped from the library's
+  atomic trip counter. `routes.SetupRoutes` keeps its signature (no metrics
+  surface — tests/embedded use); the server wires it via
+  `SetupRoutesWithMetrics`.
+- Boot lock (`.cityfinder-init.lock`) per datasets folder: two cold-booting
+  processes previously wrote the same `<index>.gob.part` paths and truncated
+  each other's in-flight writes; a living lock owner now fails the second
+  boot fast with a clear message, and a lock from a provably dead process is
+  stolen.
+- Admission control on the HTTP surface: concurrent `rank=population`
+  queries pass a CPU-sized semaphore (GOMAXPROCS, capped at 8) — saturation
+  sheds with `503` + `Retry-After: 1` instead of queueing unbounded
+  full-index scans. The `/coordinates` name parameter is capped at 200
+  runes (bounds the quadratic query-gram dedup). fasthttp `Concurrency` is
+  capped at 1024 (default 256k).
+
+### Changed
+
+- Dataset extraction is crash-atomic: the zip entry streams through
+  `<file>.part` and is renamed into place only after a complete copy,
+  mirroring the download path.
+- Warm boots (all three indexes present) skip the dataset ensure entirely;
+  a rebuild that needs the raw files re-ensures them on demand. Archives
+  are deleted after successful extraction (re-downloadable cache pinning
+  ~442 MB per volume; best-effort, never fails the boot).
+- The three index deserializations run concurrently on warm starts — name
+  decode (~14 s at prod) bounds the path instead of summing with S2 (~4 s)
+  and postal (~1 s). Peak RSS rises by the smaller indexes' transient
+  decode buffers (~0.5–1 GB), within the chart's request/limit headroom.
+- `rank=population` escalation uses a top-4096 population table to tighten
+  the anytime bound: cities outside the table are bounded by the 4096th
+  largest population instead of the single global max, and the table's own
+  cities are scored exactly, so mid-ocean queries certify a winner without
+  the terminal full-sphere scan (~10 s CPU, ~300 MB transient slice per
+  query at prod in v1.1). Exactness is unchanged — the brute-force oracle
+  tests still pin the winner, and the terminal unbounded iteration remains
+  the fallback. The table is derived in memory (no on-disk format change).
+- `cmd/build-index` honors `CONFIG_PATH` (same resolution as the server via
+  the new `config.LoadFromEnv()`) and writes its prod outputs to the
+  config's index-file keys through the new `(*Config).IndexFilePaths()` —
+  the same resolution the initializer reads, so pre-built indexes can no
+  longer be silently ignored under a non-default config.
+- The postal CSV loader tolerates rows with a wrong field count
+  (`FieldsPerRecord = -1` + the existing `< 12` skip) and counts them in
+  their own summary line; one malformed row in the ~14M-row file no longer
+  aborts the whole load (and with it server startup). `LazyQuotes` is
+  deliberately not set: it would silently swallow the file tail after an
+  unterminated leading quote, so quote corruption still fails loudly.
+
+### Removed
+
+- Dead `s2` config knobs `min_level`/`max_level`/`max_cells` and the
+  never-read `*config.S2` parameter of `coordinates.BuildIndex` (breaking
+  for library callers; the index was always built with ShapeIndex defaults
+  — golang/geo exposes no such tuning). Configs containing the old keys
+  still load (unknown JSON keys are ignored).
+- `util.FindProjectRoot` — dead since config loading became CWD-relative;
+  the one test consumer moved to an in-tree helper.
+
+### Fixed
+
+- A crash or full disk mid-extraction could leave a truncated dataset at
+  its final path; the next boot accepted it as complete and baked the
+  partial data into all three serialized indexes.
+- The postal loader compared EOF by error string and locked the CSV field
+  count to the first row's 12 fields.
+- `nearest` bounds-checked the winning edge id only against the upper bound
+  (negative ids unreachable today, now guarded like the sibling paths).
+
 ## [1.1.0] - 2026-10-01
 
 ### Added
