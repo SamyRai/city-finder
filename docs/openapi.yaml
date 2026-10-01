@@ -33,6 +33,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      description: >
+        Text exposition (format version 0.0.4): `http_requests_total`
+        counters and `http_request_duration_seconds` histograms keyed by
+        route pattern and status code (label cardinality is bounded —
+        never by user input), plus `fuzzy_budget_trips_total` (fuzzy
+        searches that returned budget-truncated partial results). The
+        scrape does not count itself.
+      operationId: metrics
+      responses:
+        "200":
+          description: Prometheus text exposition.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "http_requests_total{path=\"/nearest\",status=\"200\"} 42"
   /nearest:
     get:
       summary: Find the nearest city to a coordinate pair
@@ -45,8 +64,11 @@ paths:
         the response additionally carries `Population`. With `include=admin`
         the response additionally carries the winning city's administrative
         region (`admin1_code`, `admin1_name`, `admin2_code`). Land queries
-        resolve in microseconds-to-milliseconds; sparse/ocean points may
-        fall back to a wider scan and take seconds.
+        resolve in microseconds-to-milliseconds; sparse/ocean points fall
+        back to a wider scan (a top-4096 population table keeps even those
+        off the full-sphere scan in almost all cases). Concurrent
+        population-ranked queries are gated by a CPU-sized semaphore:
+        saturation returns 503 with Retry-After: 1 instead of queueing.
 
         Admin attribution is the region of the NEAREST (or
         population-ranked) city — not polygon containment: near a boundary
@@ -176,6 +198,22 @@ paths:
               schema:
                 type: string
               example: "internal server error"
+        "503":
+          description: >
+            Population ranking is saturated (too many concurrent
+            rank=population queries). Plain text; carries
+            `Retry-After: 1`.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "population ranking is saturated, retry shortly"
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
+                example: 1
   /coordinates:
     get:
       summary: Find a city by exact or fuzzy name match
@@ -192,10 +230,12 @@ paths:
           required: true
           description: >
             City name (trimmed). Matched exactly, then fuzzily within the
-            country.
+            country. Names longer than 200 runes return 400 (bounds the
+            fuzzy path's query cost; real place names are far shorter).
           schema:
             type: string
             minLength: 1
+            maxLength: 200
           example: Paris
         - name: country-code
           in: query
