@@ -1,0 +1,150 @@
+# Release pipeline: on a pushed v* tag, build and publish the multi-arch
+# server image to GHCR and open the GitHub release with the matching
+# CHANGELOG.md section. On PRs touching the image definition, build (no
+# push) as a cheap regression check.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "deploy/config.json"
+      - "go.mod"
+      - "go.sum"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # PR-only: prove the Dockerfile still builds. Single native platform to
+  # keep it cheap; multi-arch correctness is exercised by the release job.
+  image-build-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          provenance: false
+          cache-from: type=gha
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub release
+      packages: write # push the image to GHCR
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      # Host Go is NOT used by the image build — compilation happens inside
+      # the golang:1.26 builder stage. The step exists for parity with ci.yml
+      # and for any future release step that needs a host toolchain.
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Compute image reference and tags
+        # GHCR only accepts lowercase image names; github.repository_owner can
+        # contain uppercase, so it must be lowercased (bash 4+ ${var,,}).
+        run: |
+          #!/bin/bash
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/city-finder"
+          TAGS="${IMAGE}:${VERSION}"
+          # 'latest' only on plain semver releases, never on prereleases
+          # (v1.2.3-rc.1 etc.).
+          if [[ "${VERSION}" =~ ^[0-9]+(\.[0-9]+){2}$ ]]; then
+            TAGS="${TAGS},${IMAGE}:latest"
+          fi
+          {
+            echo "VERSION=${VERSION}"
+            echo "IMAGE=${IMAGE}"
+            echo "TAGS=${TAGS}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Set up QEMU (arm64 emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          # SLSA provenance attestations on by default for buildx; pinned
+          # here so a future default change cannot silently disable them.
+          provenance: true
+          build-args: |
+            VERSION=${{ env.VERSION }}
+          tags: ${{ env.TAGS }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Extract release notes from CHANGELOG.md
+        # Tolerates a missing file, a missing section for this version, and a
+        # stub section ("TBD at tag time"): all fall back to a pointer at
+        # CHANGELOG.md instead of failing the release.
+        run: |
+          #!/bin/bash
+          set -euo pipefail
+          BODY_FILE="${RUNNER_TEMP}/release_body.md"
+          if [ -f CHANGELOG.md ] && grep -qE "^## \[${VERSION}\]" CHANGELOG.md; then
+            awk -v ver="${VERSION}" '
+              $0 ~ "^## \\[" ver "\\]" { found = 1; next }
+              found && /^## \[/ { exit }
+              found { print }
+            ' CHANGELOG.md > "${BODY_FILE}"
+            if [ ! -s "${BODY_FILE}" ]; then
+              echo "CHANGELOG.md has an empty section for ${VERSION}." > "${BODY_FILE}"
+            fi
+          else
+            echo "Changes for v${VERSION} are documented in [CHANGELOG.md](CHANGELOG.md)." > "${BODY_FILE}"
+          fi
+          echo "RELEASE_BODY_FILE=${BODY_FILE}" >> "${GITHUB_ENV}"
+
+      # Release creation uses softprops/action-gh-release@v2: purpose-built
+      # (body_path, draft/prerelease detection), actively maintained, and
+      # pinned by major tag like every other action in this repo. The
+      # alternatives are worse: actions/create-release@v1 is deprecated and
+      # unmaintained, and a hand-rolled curl against the REST API would
+      # re-implement asset upload, pagination and retry logic for no gain.
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: ${{ env.RELEASE_BODY_FILE }}
+          fail_on_unmatched_files: false
