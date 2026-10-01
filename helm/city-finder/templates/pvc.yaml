@@ -1,0 +1,25 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "city-finder.fullname" . }}-datasets
+  labels:
+    {{- include "city-finder.labels" . | nindent 4 }}
+  annotations:
+    {{- include "city-finder.syncWave" (-2) | nindent 4 }}
+    # Pre-built indexes are expensive (hours of cumulative download/build);
+    # a helm uninstall must not orphan-delete the volume holding them.
+    helm.sh/resource-policy: keep
+    {{- with .Values.persistence.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.accessModes | nindent 4 }}
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+{{- end }}

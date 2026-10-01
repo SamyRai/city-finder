@@ -1,0 +1,165 @@
+# city-finder chart values.
+#
+# Sizing context (v1.0, index format v1): warm RSS ~5.5-9 GB, peak RSS during
+# a cold start (download + index build) ~8.6-9.1 GB. Defaults below are sized
+# generously for that and MUST be re-tuned once the format-v2 lane lands with
+# final numbers (integration-time task, not a values guess).
+#
+# Boot times the probes must tolerate:
+#   - warm start, pre-built .gob indexes on the datasets volume: ~20-65 s
+#   - cold start, empty volume (downloads ~420 MB, builds indexes): ~6-8 min
+#     -> strongly discouraged in-cluster: mount a volume with pre-built
+#        indexes instead (see persistence below and README "Deployment").
+#
+# ArgoCD: manifests carry argocd.argoproj.io/sync-wave annotations
+# (PVC/ServiceAccount -2, Service -1, Deployment 0, Ingress 1) so a sync
+# applies storage before workloads before routes. Auto-sync (prune +
+# self-heal) is an Application-level setting in the cluster's ArgoCD
+# registration; this repo intentionally ships NO Application/ApplicationSet
+# manifest — adopting the chart into Harbor/ArgoCD is an ops handoff
+# documented outside this repo.
+
+replicaCount: 1
+
+image:
+  # GHCR requires lowercase: github.repository_owner must be lowercased
+  # before it is used in an image reference (the release workflow does this).
+  repository: ghcr.io/samyrai/city-finder
+  pullPolicy: IfNotPresent
+  # Defaults to .Chart.AppVersion; set to override (e.g. "1.0.0-rc1").
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # The server talks to no Kubernetes API; create a dedicated service account
+  # only so the pod identity is explicit, with no token automounted.
+  create: true
+  name: ""
+  annotations: {}
+  automountServiceAccountToken: false
+
+server:
+  port: 3000
+  # The image ships /etc/cityfinder/config.json with datasets_folder
+  # /data/datasets. To use a custom config, mount it (extraVolumes /
+  # extraVolumeMounts below) and point this at the mounted path.
+  configPath: /etc/cityfinder/config.json
+  # Additional env vars, e.g.:
+  #   - name: GOMEMLIMIT
+  #     value: "9GiB"
+  extraEnv: []
+
+podAnnotations: {}
+podLabels: {}
+
+# Nonroot uid/gid 65532 = the distroless "nonroot" user.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  # Makes PVC-backed dataset volumes group-writable for the nonroot user.
+  fsGroup: 65532
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+# The listener only opens after the indexes are loaded, so all probes gate on
+# the startupProbe; initialDelay on the others is intentionally minimal.
+probes:
+  startup:
+    enabled: true
+    path: /healthz
+    periodSeconds: 5
+    timeoutSeconds: 3
+    # 5s x 36 = 180 s budget: generous for a ~20-65 s warm start. For a cold
+    # start (~6-8 min, discouraged) raise failureThreshold to 96 (480 s) or,
+    # better, mount pre-built indexes.
+    failureThreshold: 36
+  readiness:
+    enabled: true
+    path: /healthz
+    initialDelaySeconds: 0
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+    successThreshold: 1
+  liveness:
+    enabled: true
+    path: /healthz
+    initialDelaySeconds: 0
+    # 20s x 6 = 120 s of sustained failure before a restart. Restarting this
+    # pod costs minutes (multi-GB index load), so the threshold is
+    # deliberately lenient; /healthz is cheap and never touches the indexes.
+    periodSeconds: 20
+    timeoutSeconds: 3
+    failureThreshold: 6
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 10Gi
+  limits:
+    # No CPU limit (avoids throttling the index build / GC); memory limit
+    # sized above warm RSS with headroom for a rebuild spike. Retune after
+    # the format-v2 lane publishes final numbers.
+    memory: 14Gi
+
+# Datasets storage. Default: emptyDir (ephemeral, fine for tests — every pod
+# start re-downloads and re-builds unless the volume happens to survive).
+# Production: set enabled: true for a PVC (created by the chart unless
+# existingClaim is set) and mount a volume that already contains pre-built
+# *.gob indexes (see README "Deployment" for how to warm it).
+persistence:
+  enabled: false
+  # Use an already-existing claim instead of creating one.
+  existingClaim: ""
+  size: 20Gi
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  annotations: {}
+  emptyDir:
+    # Caps ephemeral storage usage; raw datasets + indexes land well under
+    # this, but a runaway write must evict rather than fill the node.
+    sizeLimit: 12Gi
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: city-finder.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Skip by default: with replicaCount: 1 a PDB only blocks node drains.
+# Enable (with replicaCount >= 2) before relying on voluntary disruptions.
+podDisruptionBudget:
+  enabled: false
+  maxUnavailable: 1
+
+# The server drains in ~10 s; 30 s leaves margin without stretching
+# rollouts.
+terminationGracePeriodSeconds: 30
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+extraVolumes: []
+extraVolumeMounts: []

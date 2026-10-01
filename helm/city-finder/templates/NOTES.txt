@@ -1,0 +1,24 @@
+city-finder {{ .Chart.AppVersion }} is deployed as {{ include "city-finder.fullname" . }}.
+
+1. Wait for the startup probe (the listener opens only after the indexes
+   are loaded):
+
+   kubectl --namespace {{ .Release.Namespace }} rollout status deploy/{{ include "city-finder.fullname" . }} --timeout=10m
+
+2. Query it:
+
+   kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "city-finder.fullname" . }} 3000:{{ .Values.service.port }}
+   curl http://localhost:3000/healthz
+
+{{- if not .Values.persistence.enabled }}
+
+NOTE: datasets are on an emptyDir (persistence.enabled=false). Every pod
+(re)start downloads ~420 MB of GeoNames archives and rebuilds the indexes
+(~6-8 min, multi-GB RAM). For anything beyond a test, enable persistence and
+mount a volume with pre-built *.gob indexes — see README "Deployment".
+{{- else }}
+
+NOTE: datasets are on the PVC {{ include "city-finder.datasetsPVCName" . }}.
+If it is empty, the first start downloads and builds the indexes (~6-8 min);
+with pre-built *.gob indexes the pod is ready in well under a minute.
+{{- end }}
