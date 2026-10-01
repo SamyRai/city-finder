@@ -26,8 +26,17 @@ type City struct {
 // SpatialCity includes AltNames for building process but embeds compact City
 type SpatialCity struct {
 	City
-	AltNames []string // Used during index building, not stored in final City
+	AltNames   []string // Used during index building, not stored in final City
+	Admin1Code string   // GeoNames allCountries field 10 (0-indexed); build-only (see below)
+	Admin2Code string   // GeoNames allCountries field 11 (0-indexed); build-only (see below)
 }
+
+// Admin1Code/Admin2Code carry the per-country administrative-division codes
+// of a row ("CA" for US-CA, "02" for AD-02) from the loader to the S2 index
+// build, exactly like AltNames: attribution lives only where it is served (the
+// S2 index's admin id arrays + code tables), so city.City — and with it the
+// name index and the HTTP wire contract — stays untouched (v1.1 design note).
+// Empty string = the row carries no code; the index build records -1.
 
 // HaversineDistance calculates the distance between two geographical points in kilometers
 func HaversineDistance(lat1, lon1, lat2, lon2 float64) float64 {
