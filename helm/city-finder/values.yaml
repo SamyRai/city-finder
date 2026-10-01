@@ -1,10 +1,14 @@
 # city-finder chart values.
 #
-# Sizing context (v1.0, index format v2): name index 559 MB, warm start
-# 20.5 s, heap 5.5 GB post-GC. Peak RSS is ≈9 GB warm-only, up to ~12 GB
-# with the fuzzy index built and ocean population scans. The defaults
-# below (memory 10Gi request / 14Gi limit, 600 s startup-probe budget)
-# are sized for these figures.
+# Sizing context (v1.2): name index 559 MB on disk, warm start ~15-20 s
+# (three decodes run concurrently since v1.2), heap ~4.2-4.3 GB post-GC
+# after the in-memory name-index flattening (was 5.5 GB in v1.0/v1.1; the
+# flattening removed ~1.4 GB of nested-map overhead). Peak RSS is ≈9-10 GB
+# warm (parallel decode adds ~0.5-1 GB transient over the v1.0 figure), up
+# to ~11 GB with the fuzzy index built; population-rank scans are bounded
+# by a CPU-sized query gate since v1.2. The defaults below (memory 10Gi
+# request / 14Gi limit, 600 s startup-probe budget) still cover this with
+# headroom — the two knobs to re-check on any future index-format change.
 #
 # Boot times the probes must tolerate:
 #   - warm start, pre-built .gob indexes on the datasets volume: ~20 s (v2 indexes)

@@ -72,3 +72,35 @@ attempt was measured under heavy concurrent load and is not representative).
 Population-mode latencies are ocean-mixed uniform-band samples; per-class
 land numbers (urban 1.9 ms / suburban 40 ms / rural 302 µs; ocean ~10 s)
 remain those measured by the v1.0 WEIGHTED lane and re-confirmed by ADMIN-V3.
+
+## v1.2 validation (2026-10-01, rebuilt v3/v2 indexes, same method, quiet machine)
+
+| Metric | v1.2 | v1.1 (reference) |
+|---|---|---|
+| Cold rebuild (datasets present, no download) | 2 m 26 s; peak RSS 9.25 GB | ~3 min; ≈12.6 GB peak |
+| Index files | 531 MB name (v2) / 279 MB s2 (v3) / 26 MB postal (v3) | 559 / 280–293 / 26–28 MB |
+| Warm start (decode-only boot) | 23.3 s | 19.4–20.9 s |
+| Heap after warm start (post-GC) | 4.49 GB | 5.7 GB |
+| Fuzzy n-gram build | 29.3 s, background at boot (`WarmFuzzy`) | ~30–90 s, in-request on first typo query |
+| Nearest rank=distance (10k random) | p50 11.9 µs / p99 103 µs / max 7.9 ms | p50 10 µs / p99 ~76–95 µs |
+| rank=population, random global (n=120, ocean-heavy, noisy run) | p50 4.0 s / p90 11.4 s / max 16.6 s | ocean worst case ~10 s (documented) |
+| rank=population, ocean points (n=5) | 8.5–14.3 s | ~10 s |
+| Name exact, real keys (1k, warm passes) | p50 ~3 µs / max ~13 µs / 1000 hits | p50 0.33 µs / p99 1.8 µs |
+| Name fuzzy, real-name typos (1k) | p50 5.1 ms / p99 101 ms / max 614 ms / 1000 resolved | p50 7–21 ms, 1000/1000 |
+| Autocomplete PrefixNames (1k 3-char prefixes) | p50 10.5 µs / p99 94 µs | n/a |
+| Postal, real keys (n=141) | p50 0.79 µs / p99 9.3 ns-class tail | p50 0.4 µs |
+
+Notes from this pass: the warm start pays ~3 s over v1.1 for the flatten
+sort at deserialize (each country's names sorted once while decoding) and
+the heap drops 5.7 → 4.49 GB; the cold rebuild peak drops ~3.4 GB. The
+boot-time fuzzy build means no user request ever pays the in-request
+build. The population tail is now bounded in MEMORY and CONCURRENCY (top-K
+bound removes the terminal full-sphere scan and its ~300 MB slice; the
+HTTP gate caps simultaneous scans) but its LATENCY at prod remains
+multi-second for far-from-land points — dominated by the wide escalation
+discs themselves; a second, noisier run measured p50 4 s / max 16.6 s
+over 120 random global points. Exact-name GC settling inflated first-pass
+timings ~10–40×; the numbers above are from converged warm passes (the
+one-off harness and probe live outside the repo). Boot on the noisy second
+run was 45.9 s vs 23.3 s quiet — cite the quiet figure with variance in
+mind.
