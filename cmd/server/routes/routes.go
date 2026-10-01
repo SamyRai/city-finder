@@ -2,7 +2,11 @@
 package routes
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"runtime"
@@ -117,6 +121,146 @@ func populationGateConcurrency() int {
 	return n
 }
 
+// nearestOutcome enumerates the ways a /nearest lookup can end. Each
+// transport — the GET handler and the batch handler — maps the outcomes to
+// its own wire form while executing exactly one query core.
+type nearestOutcome int
+
+const (
+	nearestOK        nearestOutcome = iota // city found, response built
+	nearestNotFound                        // finder returned no city (GET's 404)
+	nearestSaturated                       // populationGate full (503 + Retry-After)
+	nearestError                           // internal finder error (500)
+)
+
+// executeNearest is the query core shared by GET /nearest and POST
+// /nearest/batch: population-gate admission, finder dispatch, and response
+// construction. The two finder paths share everything but the attribution
+// read; default requests keep calling FindNearestCity so their bodies — and
+// latency profile — stay byte-identical to v1.0. A population-gate slot is
+// held only for the duration of one lookup and released before returning, so
+// a batch calling this per point observes the same discipline as GET.
+func executeNearest(f *finder.Finder, lat, lon float64, rank coordinates.Rank, includeAdmin bool) (nearestCityResponse, nearestOutcome) {
+	if rank == coordinates.RankPopulation {
+		select {
+		case populationGate <- struct{}{}:
+			defer func() { <-populationGate }()
+		default:
+			return nearestCityResponse{}, nearestSaturated
+		}
+	}
+
+	var nearest *city.City
+	var distanceKm float64
+	var admin coordinates.AdminAttribution
+	var err error
+	if includeAdmin {
+		nearest, distanceKm, admin, err = f.S2Finder.NearestPlaceWithAdmin(lat, lon, rank)
+	} else {
+		nearest, distanceKm, err = f.FindNearestCity(lat, lon, rank)
+	}
+	if err != nil {
+		log.Printf("Error finding city for lat=%f lon=%f: %v", lat, lon, err)
+		return nearestCityResponse{}, nearestError
+	}
+	if nearest == nil {
+		return nearestCityResponse{}, nearestNotFound
+	}
+	response := nearestCityResponse{
+		City:       *nearest,
+		DistanceKm: math.Round(distanceKm*100) / 100,
+	}
+	if rank == coordinates.RankPopulation {
+		population := nearest.Population
+		response.Population = &population
+	}
+	if includeAdmin {
+		response.Admin1Code = admin.Admin1Code
+		response.Admin1Name = admin.Admin1Name // "" (omitted) in codes-only mode
+		response.Admin2Code = admin.Admin2Code // "" (omitted) when the city has none
+	}
+	return response, nearestOK
+}
+
+// maxBatchPoints caps a POST /nearest/batch request. The batch exists so a
+// client pays one round trip instead of N; past ~100 points the sequential
+// population-gated lookups would hold a connection far longer than the
+// equivalent parallel GETs, so larger batches are a 400, not a slowdown.
+const maxBatchPoints = 100
+
+// batchRequest is the POST /nearest/batch body: one point per lookup.
+type batchRequest struct {
+	Points []batchPoint `json:"points"`
+}
+
+// batchPoint is one entry of a POST /nearest/batch request, carrying the GET
+// endpoint's parameters. lat/lon are pointers so an absent field is
+// distinguishable from a legitimate 0 coordinate; rank/include are pointers
+// so absence (the per-point default) differs from any explicit value.
+type batchPoint struct {
+	Lat     *float64 `json:"lat"`
+	Lon     *float64 `json:"lon"`
+	Rank    *string  `json:"rank"`
+	Include *string  `json:"include"`
+}
+
+// batchResponse is the POST /nearest/batch reply: a results array parallel
+// to the request's points. A not-found point is a nil entry, which marshals
+// as JSON null — the batch form of the GET handler's 404.
+type batchResponse struct {
+	Results []*nearestCityResponse `json:"results"`
+}
+
+// validatedPoint is one batch point after validation, in the shape
+// executeNearest consumes.
+type validatedPoint struct {
+	lat          float64
+	lon          float64
+	rank         coordinates.Rank
+	includeAdmin bool
+}
+
+// orEmpty treats an absent JSON string field exactly like the GET handler
+// treats an absent query parameter: the empty value that selects the default.
+func orEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// validateBatchPoint applies the /nearest parameter rules to one batch point
+// in the GET handler's validation order — lat, lon, lat range, lon range,
+// rank, include — and returns the parsed point plus the first failure's
+// plain-text reason ("" when the point is valid), so the caller can report
+// "points[i]: <reason>" with the GET error texts.
+func validateBatchPoint(p batchPoint) (validatedPoint, string) {
+	var v validatedPoint
+	if p.Lat == nil || math.IsNaN(*p.Lat) || math.IsInf(*p.Lat, 0) {
+		return v, "Invalid latitude"
+	}
+	if p.Lon == nil || math.IsNaN(*p.Lon) || math.IsInf(*p.Lon, 0) {
+		return v, "Invalid longitude"
+	}
+	v.lat, v.lon = *p.Lat, *p.Lon
+	if v.lat < -90 || v.lat > 90 {
+		return v, "Latitude must be between -90 and 90"
+	}
+	if v.lon < -180 || v.lon > 180 {
+		return v, "Longitude must be between -180 and 180"
+	}
+	rank, ok := parseRank(orEmpty(p.Rank))
+	if !ok {
+		return v, "Invalid rank"
+	}
+	v.rank = rank
+	v.includeAdmin, ok = parseInclude(orEmpty(p.Include))
+	if !ok {
+		return v, "Invalid include"
+	}
+	return v, ""
+}
+
 // SetupRoutes registers the data routes without a metrics registry (tests
 // and embedded use); the metrics middleware and endpoint are skipped.
 func SetupRoutes(app *fiber.App, mainFinder *finder.Finder) {
@@ -194,50 +338,97 @@ func SetupRoutesWithMetrics(app *fiber.App, mainFinder *finder.Finder, reg *metr
 			return c.Status(fiber.StatusBadRequest).SendString("Invalid include")
 		}
 
-		if rank == coordinates.RankPopulation {
-			select {
-			case populationGate <- struct{}{}:
-				defer func() { <-populationGate }()
-			default:
+		// The lookup itself (gate, finder dispatch, response construction) is
+		// the shared core behind both /nearest transports.
+		response, outcome := executeNearest(mainFinder, lat, lon, rank, includeAdmin)
+		switch outcome {
+		case nearestSaturated:
+			c.Set(fiber.HeaderRetryAfter, "1")
+			return c.Status(fiber.StatusServiceUnavailable).
+				SendString("population ranking is saturated, retry shortly")
+		case nearestError:
+			return c.Status(fiber.StatusInternalServerError).SendString("internal server error")
+		case nearestNotFound:
+			return c.Status(fiber.StatusNotFound).SendString(fmt.Sprintf("City not found for lat: %f, lon: %f", lat, lon))
+		}
+		return c.JSON(response)
+	})
+
+	// POST /nearest/batch: one round trip for many /nearest lookups. Each
+	// point carries the GET endpoint's parameters (lat/lon required,
+	// rank/include optional with the same whitelist); the reply is a
+	// parallel results array — the object GET would return for that point,
+	// or null where GET would 404. Points execute sequentially through the
+	// same query core (population gate included), so a batch observes the
+	// same per-point semantics as the GETs it replaces.
+	app.Post("/nearest/batch", func(c *fiber.Ctx) error {
+		if c.Get(fiber.HeaderContentType) != "application/json" {
+			return c.Status(fiber.StatusBadRequest).
+				SendString("Content-Type must be application/json")
+		}
+
+		// Strict decode: unknown fields are named in the 400 (this handler
+		// ignores nothing, like it is case-sensitive everywhere else); a
+		// second Decode must then hit EOF, so trailing garbage is malformed
+		// too. Schema type mismatches (e.g. a string for lat) share the
+		// "invalid JSON body" fate: the body is not a valid request document.
+		dec := json.NewDecoder(bytes.NewReader(c.Body()))
+		dec.DisallowUnknownFields()
+		var req batchRequest
+		if err := dec.Decode(&req); err != nil {
+			var typeErr *json.UnmarshalTypeError
+			if errors.As(err, &typeErr) ||
+				!strings.HasPrefix(err.Error(), "json: unknown field ") {
+				return c.Status(fiber.StatusBadRequest).SendString("invalid JSON body")
+			}
+			return c.Status(fiber.StatusBadRequest).SendString(err.Error())
+		}
+		var trailing any
+		if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+			return c.Status(fiber.StatusBadRequest).SendString("invalid JSON body")
+		}
+
+		if len(req.Points) == 0 {
+			return c.Status(fiber.StatusBadRequest).
+				SendString("points must contain at least one entry")
+		}
+		if len(req.Points) > maxBatchPoints {
+			return c.Status(fiber.StatusBadRequest).
+				SendString(fmt.Sprintf("points must contain at most %d entries", maxBatchPoints))
+		}
+
+		// Validate every point before executing any, in request order; the
+		// first failure wins and names the offending index.
+		queries := make([]validatedPoint, 0, len(req.Points))
+		for i, point := range req.Points {
+			query, reason := validateBatchPoint(point)
+			if reason != "" {
+				return c.Status(fiber.StatusBadRequest).
+					SendString(fmt.Sprintf("points[%d]: %s", i, reason))
+			}
+			queries = append(queries, query)
+		}
+
+		results := make([]*nearestCityResponse, 0, len(queries))
+		for _, query := range queries {
+			response, outcome := executeNearest(mainFinder, query.lat, query.lon, query.rank, query.includeAdmin)
+			switch outcome {
+			case nearestSaturated:
+				// A saturated gate mid-batch fails the whole request. Slots
+				// are released inside executeNearest before it returns, so
+				// this request holds none on the way out.
 				c.Set(fiber.HeaderRetryAfter, "1")
 				return c.Status(fiber.StatusServiceUnavailable).
 					SendString("population ranking is saturated, retry shortly")
+			case nearestError:
+				return c.Status(fiber.StatusInternalServerError).SendString("internal server error")
+			case nearestNotFound:
+				results = append(results, nil) // the batch form of GET's 404
+			default: // nearestOK
+				results = append(results, &response)
 			}
 		}
-
-		// The two paths share the query core; only the attribution read
-		// differs. Default requests keep calling FindNearestCity so their
-		// bodies — and latency profile — stay byte-identical to v1.0.
-		var nearest *city.City
-		var distanceKm float64
-		var admin coordinates.AdminAttribution
-		var err error
-		if includeAdmin {
-			nearest, distanceKm, admin, err = mainFinder.S2Finder.NearestPlaceWithAdmin(lat, lon, rank)
-		} else {
-			nearest, distanceKm, err = mainFinder.FindNearestCity(lat, lon, rank)
-		}
-		if err != nil {
-			log.Printf("Error finding city for lat=%f lon=%f: %v", lat, lon, err)
-			return c.Status(fiber.StatusInternalServerError).SendString("internal server error")
-		}
-		if nearest == nil {
-			return c.Status(fiber.StatusNotFound).SendString(fmt.Sprintf("City not found for lat: %f, lon: %f", lat, lon))
-		}
-		response := nearestCityResponse{
-			City:       *nearest,
-			DistanceKm: math.Round(distanceKm*100) / 100,
-		}
-		if rank == coordinates.RankPopulation {
-			population := nearest.Population
-			response.Population = &population
-		}
-		if includeAdmin {
-			response.Admin1Code = admin.Admin1Code
-			response.Admin1Name = admin.Admin1Name // "" (omitted) in codes-only mode
-			response.Admin2Code = admin.Admin2Code // "" (omitted) when the city has none
-		}
-		return c.JSON(response)
+		return c.JSON(batchResponse{Results: results})
 	})
 
 	app.Get("/coordinates", func(c *fiber.Ctx) error {
