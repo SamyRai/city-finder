@@ -181,6 +181,12 @@ func downloadFile(dst string, url string) error {
 // into dest under newFileName. GeoNames archives contain exactly one dataset
 // file; archives with a different layout are rejected instead of silently
 // overwriting the output with the last entry.
+//
+// The entry streams through outPath+".part" and is renamed into place only
+// after a complete copy, mirroring downloadFile: a crash or a full disk
+// mid-extract must never leave a truncated file at the final path, because
+// the next boot's skip-if-exists check (downloadAndExtractDataset) only stats
+// the path and would otherwise bake the partial dataset into the indexes.
 func unzipAndRename(src string, dest string, newFileName string) (err error) {
 	r, err := zip.OpenReader(src)
 	if err != nil {
@@ -210,28 +216,43 @@ func unzipAndRename(src string, dest string, newFileName string) (err error) {
 	}
 
 	outPath := filepath.Join(dest, newFileName)
-	outFile, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+	partPath := outPath + ".part"
+	if err := extractEntryTo(f, partPath); err != nil {
+		_ = os.Remove(partPath) // never leave a partial extraction behind
+		return fmt.Errorf("failed to extract from %s: %w", src, err)
+	}
+	if err := os.Rename(partPath, outPath); err != nil {
+		_ = os.Remove(partPath)
+		return fmt.Errorf("failed to move %s to %s: %w", partPath, outPath, err)
+	}
+	return nil
+}
+
+// extractEntryTo streams one archive entry into partPath. The caller owns
+// cleanup of partPath on any failure.
+func extractEntryTo(f *zip.File, partPath string) (err error) {
+	outFile, err := os.OpenFile(partPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
 	if err != nil {
-		return fmt.Errorf("failed to create %s: %w", outPath, err)
+		return fmt.Errorf("failed to create %s: %w", partPath, err)
 	}
 	defer func() {
 		if closeErr := outFile.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("failed to close %s: %w", outPath, closeErr)
+			err = fmt.Errorf("failed to close %s: %w", partPath, closeErr)
 		}
 	}()
 
 	rc, err := f.Open()
 	if err != nil {
-		return fmt.Errorf("failed to open entry %q in %s: %w", f.Name, src, err)
+		return fmt.Errorf("failed to open entry %q: %w", f.Name, err)
 	}
 	defer func() {
 		if closeErr := rc.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("failed to close entry %q in %s: %w", f.Name, src, closeErr)
+			err = fmt.Errorf("failed to close entry %q: %w", f.Name, closeErr)
 		}
 	}()
 
 	if _, err := io.Copy(outFile, rc); err != nil {
-		return fmt.Errorf("failed to extract %q from %s: %w", f.Name, src, err)
+		return fmt.Errorf("failed to extract %q: %w", f.Name, err)
 	}
 	return nil
 }
