@@ -1,0 +1,42 @@
+# Build-context hygiene: the context is streamed to the build daemon (local or
+# remote), so everything not needed to compile the server is excluded here —
+# including multi-GB data and anything machine-local.
+
+# VCS and CI metadata
+.git
+.gitignore
+.github
+.gitea
+.tool-versions
+
+# Datasets, test fixtures, generated indexes (multi-GB; never bake into the
+# image — they belong in a mounted volume)
+datasets
+testdata
+*.gob
+
+# Lane worktrees and scratch output
+worktrees
+cf-lane-*
+out
+
+# Docs, benchmarks, article drafts, logs and profiles (not needed to compile)
+docs
+benchmarks
+article.md
+*.log
+*.pprof
+*.prof
+cpu.prof
+
+# Deployment-only trees not consumed by the builder stage. NOTE: deploy/ IS
+# needed (the runtime stage COPYs deploy/config.json) — do not ignore it.
+helm
+README.md
+CHANGELOG.md
+LICENSE
+Makefile
+
+# Editor / OS noise
+.idea
+.DS_Store

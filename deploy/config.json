@@ -1,0 +1,17 @@
+{
+  "datasets_folder": "/data/datasets",
+  "all_cities_url": "https://download.geonames.org/export/dump/allCountries.zip",
+  "postal_codes_url": "https://download.geonames.org/export/zip/allCountries.zip",
+  "all_cities_file": "allCountries_dump.txt",
+  "postal_codes_file": "allCountries_zip.txt",
+  "all_cities_zip": "allCountries.zip",
+  "postal_codes_zip": "zipCodes.zip",
+  "postal_code_index_file": "postal_code_index.gob",
+  "name_index_file": "name_index.gob",
+  "s2": {
+    "min_level": 10,
+    "max_level": 15,
+    "max_cells": 8,
+    "index_file": "s2index.gob"
+  }
+}
