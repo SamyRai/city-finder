@@ -8,6 +8,8 @@
   "postal_codes_zip": "zipCodes.zip",
   "postal_code_index_file": "postal_code_index.gob",
   "name_index_file": "name_index.gob",
+  "admin1_codes_file": "admin1CodesASCII.txt",
+  "admin1_codes_url": "https://download.geonames.org/export/dump/admin1CodesASCII.txt",
   "s2": {
     "min_level": 10,
     "max_level": 15,

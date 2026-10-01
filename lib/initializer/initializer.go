@@ -25,9 +25,33 @@ func Initialize(cfg *config.Config) (*finder.Finder, error) {
 	if err := ensureDatasets(cfg); err != nil {
 		return nil, err
 	}
-	// The optional admin1-names dataset is disabled until the config keys
-	// land (config-lane coordination); see the wiring commit.
-	return ensureFinders(cfg, "")
+	return ensureFinders(cfg, ensureAdmin1NamesPath(cfg))
+}
+
+// ensureAdmin1NamesPath resolves the OPTIONAL admin1-names dataset path
+// (config key admin1_codes_file; relative values resolve against the
+// datasets folder like every other dataset file) and cold-downloads it from
+// admin1_codes_url when configured and missing. Empty file key = names not
+// configured = disabled. Every failure degrades to codes-only mode inside
+// ensureAdmin1Names — the dataset is enhancement data, never a startup
+// requirement.
+func ensureAdmin1NamesPath(cfg *config.Config) string {
+	if cfg.Admin1CodesFile == "" {
+		return ""
+	}
+	path := cfg.Admin1CodesFile
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(cfg.DatasetsFolder, path)
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) && cfg.Admin1CodesURL != "" {
+		log.Printf("Downloading %s...", cfg.Admin1CodesURL)
+		if err := downloadFile(path, cfg.Admin1CodesURL); err != nil {
+			// Logged and degradated, not fatal: ensureAdmin1Names sees the
+			// missing file and serves codes-only.
+			log.Printf("admin1 names download failed: %v", err)
+		}
+	}
+	return path
 }
 
 // ensureDatasets ensures that the datasets are downloaded and extracted

@@ -2,10 +2,13 @@ package initializer
 
 import (
 	"encoding/gob"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
 	"github.com/SamyRai/cityFinder/lib/finder/postalCode"
 	"github.com/stretchr/testify/assert"
@@ -223,4 +226,68 @@ func TestEnsureAdmin1Names(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("US.CA\tCalifornia\tCalifornia\t5332921\n"), 0o600))
 	names := ensureAdmin1Names(path)
 	assert.Equal(t, map[string]string{"US.CA": "California"}, names)
+}
+
+// TestEnsureAdmin1NamesPath covers the config wiring: relative file keys
+// resolve against the datasets folder; a missing file with a configured URL
+// is cold-downloaded once; a missing file with no URL stays missing
+// (codes-only); an unconfigured file key disables names.
+func TestEnsureAdmin1NamesPath(t *testing.T) {
+	dir := t.TempDir()
+
+	// Unconfigured: disabled.
+	assert.Equal(t, "", ensureAdmin1NamesPath(&config.Config{DatasetsFolder: dir}))
+
+	// Configured, present: resolved path is returned verbatim.
+	present := filepath.Join(dir, "admin1CodesASCII.txt")
+	require.NoError(t, os.WriteFile(present, []byte("US.CA\tCalifornia\tCalifornia\t5332921\n"), 0o600))
+	assert.Equal(t, present, ensureAdmin1NamesPath(&config.Config{
+		DatasetsFolder:  dir,
+		Admin1CodesFile: "admin1CodesASCII.txt",
+	}))
+
+	// Configured, missing, no URL: path is returned but nothing downloads.
+	missing := ensureAdmin1NamesPath(&config.Config{
+		DatasetsFolder:  dir,
+		Admin1CodesFile: "absent_names.txt",
+	})
+	assert.Equal(t, filepath.Join(dir, "absent_names.txt"), missing)
+	_, statErr := os.Stat(missing)
+	assert.True(t, os.IsNotExist(statErr), "no URL configured: no download attempt")
+
+	// Configured, missing, URL set: downloaded to the resolved path.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("US.NV\tNevada\tNevada\t5509842\n"))
+	}))
+	defer srv.Close()
+
+	downloaded := ensureAdmin1NamesPath(&config.Config{
+		DatasetsFolder:  dir,
+		Admin1CodesFile: "dl_names.txt",
+		Admin1CodesURL:  srv.URL,
+	})
+	assert.Equal(t, filepath.Join(dir, "dl_names.txt"), downloaded)
+	got, err := os.ReadFile(downloaded)
+	require.NoError(t, err)
+	assert.Equal(t, "US.NV\tNevada\tNevada\t5509842\n", string(got))
+}
+
+// TestInitialize_Admin1NamesEndToEnd runs the public entry point with the
+// config keys set (cold download + attach) against a test server.
+func TestInitialize_Admin1NamesEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	writeTinyDatasets(t, cfg)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("AD.07\tAndorra la Vella\tAndorra la Vella\t3041563\n"))
+	}))
+	defer srv.Close()
+
+	cfg.Admin1CodesFile = "admin1CodesASCII.txt"
+	cfg.Admin1CodesURL = srv.URL
+
+	f, err := Initialize(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, f.S2Finder.Admin1Names, "the downloaded names file must be attached")
+	assert.Equal(t, "Andorra la Vella", f.S2Finder.Admin1Names["AD.07"])
 }

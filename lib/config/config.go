@@ -17,6 +17,8 @@ type Config struct {
 	PostalCodesZip      string `json:"postal_codes_zip"`
 	NameIndexFile       string `json:"name_index_file"`
 	PostalCodeIndexFile string `json:"postal_code_index_file"`
+	Admin1CodesFile     string `json:"admin1_codes_file"`
+	Admin1CodesURL      string `json:"admin1_codes_url"`
 	S2                  S2     `json:"s2"`
 }
 
