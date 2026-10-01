@@ -19,7 +19,19 @@ type Config struct {
 	PostalCodeIndexFile string `json:"postal_code_index_file"`
 	Admin1CodesFile     string `json:"admin1_codes_file"`
 	Admin1CodesURL      string `json:"admin1_codes_url"`
-	S2                  S2     `json:"s2"`
+	// ExcludeAdminDivisions drops GeoNames feature class A rows — countries
+	// (PCLI), states/provinces (ADM1/ADM2), districts (ADM3/ADM4) — at dataset
+	// LOAD time. Those rows carry huge synthetic populations and otherwise win
+	// mid-ocean rank=population queries, returning a whole country as the
+	// "nearest city". The filter applies only when an index is (re)built from
+	// the raw dump: warm boots that deserialize existing index files are
+	// unaffected until the operator deletes an index file to force a rebuild.
+	// When enabled, admin-division names (e.g. "California" as an ADM1 row)
+	// also disappear from name lookups and /coordinates results — that is the
+	// point of the knob. Default false (or key absent) keeps the historical
+	// load exactly as-is.
+	ExcludeAdminDivisions bool `json:"exclude_admin_divisions"`
+	S2                    S2   `json:"s2"`
 }
 
 // S2 names the serialized S2 index file. The v1.1 min_level / max_level /

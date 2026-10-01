@@ -8,6 +8,7 @@
   "postal_codes_zip": "zipCodes.zip",
   "postal_code_index_file": "postal_code_index.gob",
   "name_index_file": "name_index.gob",
+  "exclude_admin_divisions": false,
   "s2": {
     "index_file": "s2index.gob"
   }

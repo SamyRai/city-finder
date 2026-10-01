@@ -10,6 +10,7 @@
   "name_index_file": "name_index.gob",
   "admin1_codes_file": "admin1CodesASCII.txt",
   "admin1_codes_url": "https://download.geonames.org/export/dump/admin1CodesASCII.txt",
+  "exclude_admin_divisions": false,
   "s2": {
     "index_file": "s2index.gob"
   }

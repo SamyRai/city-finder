@@ -288,6 +288,40 @@ func TestLoadConfigIgnoresRemovedS2Keys(t *testing.T) {
 		"the surviving s2.index_file key must still decode")
 }
 
+// TestLoadConfigExcludeAdminDivisions pins the exclude_admin_divisions knob's
+// JSON decoding: the key is snake_case like every other key, an absent key
+// decodes false (the historical load — existing config files are unaffected),
+// and explicit values decode verbatim.
+func TestLoadConfigExcludeAdminDivisions(t *testing.T) {
+	t.Run("absent key decodes false", func(t *testing.T) {
+		// validConfigJSON carries no exclude_admin_divisions key.
+		path := writeConfig(t, t.TempDir(), "config.json", validConfigJSON)
+
+		cfg, err := LoadConfig(path)
+		require.NoError(t, err)
+		assert.False(t, cfg.ExcludeAdminDivisions,
+			"a config file written before the knob existed must decode as off")
+	})
+
+	t.Run("explicit false decodes false", func(t *testing.T) {
+		path := writeConfig(t, t.TempDir(), "config.json",
+			`{"datasets_folder": "datasets", "exclude_admin_divisions": false}`)
+
+		cfg, err := LoadConfig(path)
+		require.NoError(t, err)
+		assert.False(t, cfg.ExcludeAdminDivisions)
+	})
+
+	t.Run("explicit true decodes true", func(t *testing.T) {
+		path := writeConfig(t, t.TempDir(), "config.json",
+			`{"datasets_folder": "datasets", "exclude_admin_divisions": true}`)
+
+		cfg, err := LoadConfig(path)
+		require.NoError(t, err)
+		assert.True(t, cfg.ExcludeAdminDivisions)
+	})
+}
+
 // TestLoadFromEnvHonorsConfigPath pins the binary config resolution: with
 // CONFIG_PATH set, LoadFromEnv loads exactly that file — the same resolution
 // cmd/server/main.go performs inline.
