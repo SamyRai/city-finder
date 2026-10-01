@@ -10,6 +10,7 @@ import (
 
 	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/SamyRai/cityFinder/lib/finder"
+	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -28,13 +29,33 @@ func parseCoordinate(raw, name string) (float64, bool) {
 	return value, true
 }
 
+// parseRank validates the optional rank query parameter of /nearest. Absent
+// or empty selects the default distance ranking (backward compatible); the
+// only accepted values are the exact lowercase "distance" and "population"
+// (case-sensitive, like every other parameter on this handler).
+func parseRank(raw string) (coordinates.Rank, bool) {
+	switch raw {
+	case "", "distance":
+		return coordinates.RankDistance, true
+	case "population":
+		return coordinates.RankPopulation, true
+	default:
+		return 0, false
+	}
+}
+
 // nearestCityResponse is the /nearest payload: the matched city plus its
 // distance from the query point. city.City has no json tags, so its four
 // fields marshal capitalized; embedding it keeps that serialization exactly
 // as before and only appends distance_km (rounded to 2 decimal places).
+// Population is set only for population-ranked requests: the nil pointer is
+// omitted from the JSON, so distance-ranked bodies stay byte-identical to the
+// pre-ranking API (the embedded City.Population itself stays json:"-"). When
+// present it carries the winning city's actual Population int32.
 type nearestCityResponse struct {
 	city.City
 	DistanceKm float64 `json:"distance_km"`
+	Population *int32  `json:"Population,omitempty"`
 }
 
 func SetupRoutes(app *fiber.App, mainFinder *finder.Finder) {
@@ -63,7 +84,12 @@ func SetupRoutes(app *fiber.App, mainFinder *finder.Finder) {
 			return c.Status(fiber.StatusBadRequest).SendString("Longitude must be between -180 and 180")
 		}
 
-		nearest, distanceKm, err := mainFinder.FindNearestCity(lat, lon)
+		rank, ok := parseRank(c.Query("rank"))
+		if !ok {
+			return c.Status(fiber.StatusBadRequest).SendString("Invalid rank")
+		}
+
+		nearest, distanceKm, err := mainFinder.FindNearestCity(lat, lon, rank)
 		if err != nil {
 			log.Printf("Error finding city for lat=%f lon=%f: %v", lat, lon, err)
 			return c.Status(fiber.StatusInternalServerError).SendString("internal server error")
@@ -71,10 +97,15 @@ func SetupRoutes(app *fiber.App, mainFinder *finder.Finder) {
 		if nearest == nil {
 			return c.Status(fiber.StatusNotFound).SendString(fmt.Sprintf("City not found for lat: %f, lon: %f", lat, lon))
 		}
-		return c.JSON(nearestCityResponse{
+		response := nearestCityResponse{
 			City:       *nearest,
 			DistanceKm: math.Round(distanceKm*100) / 100,
-		})
+		}
+		if rank == coordinates.RankPopulation {
+			population := nearest.Population
+			response.Population = &population
+		}
+		return c.JSON(response)
 	})
 
 	app.Get("/coordinates", func(c *fiber.Ctx) error {
