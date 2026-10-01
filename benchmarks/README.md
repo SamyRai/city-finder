@@ -2,6 +2,8 @@
 
 A benchmarking and profiling suite for the CityFinder project that measures performance, memory usage, and provides analysis of index building operations.
 
+> **Scope caveat:** this suite loads only the 10-row `testdata/allCountries.txt` fixture; the configured dataset sizes are caps over that same fixture, not real 1K–250K datasets. Real scaling measurements live in `lib/finder/coordinates/s2_bench_test.go` and the `lib/finder/name` benchmarks.
+
 ## Features
 
 - Multiple output formats: console, JSON, CSV, HTML
@@ -28,7 +30,6 @@ A benchmarking and profiling suite for the CityFinder project that measures perf
 ### System Information
 - **Go Version**: Runtime version information
 - **CPU Cores**: Available processing cores
-- **System Memory**: Total system memory
 - **OS Information**: Operating system details
 
 ## 🛠️ Quick Start
@@ -61,18 +62,19 @@ go run benchmarks/run_benchmarks.go comprehensive
 | `scaling` | Scaling analysis across multiple sizes | `go run benchmarks/run_benchmarks.go scaling` |
 | `profile` | CPU/memory profiling for specific dataset size | `go run benchmarks/run_benchmarks.go profile 50000` |
 | `comprehensive` | Full suite with multiple iterations and all output formats | `go run benchmarks/run_benchmarks.go comprehensive` |
+| `query` | Placeholder — prints instructions only, runs no benchmark | `go run benchmarks/run_benchmarks.go query` |
+| `greentea` | Comprehensive run with the experimental Green Tea GC (`GOEXPERIMENT=greenteagc`, Go 1.25+) | `go run benchmarks/run_benchmarks.go greentea` |
 | `compare` | Compare current results with baseline | `go run benchmarks/run_benchmarks.go compare baseline.json` |
 
 ## 🎯 Advanced Usage
 
 ### Custom Dataset Sizes
 ```bash
-# Run with specific sizes
+# Run with specific sizes (plain integers, comma-separated)
 go run benchmarks/cmd/main.go -sizes "1000,5000,25000,100000" -name "custom-test"
-
-# Use size multipliers
-go run benchmarks/cmd/main.go -sizes "1k,10k,50k,100k"
 ```
+
+Sizes are parsed with `strconv.Atoi`; anything that is not a plain integer (e.g. `1k`) fails to parse and is silently dropped, falling back to the default sizes if nothing parses.
 
 ### Multiple Iterations
 ```bash
@@ -212,33 +214,9 @@ benchmarks/
 
 ### Environment Variables
 ```bash
-# Set benchmark output formats globally
-export BENCHMARK_FORMATS="json,csv,html"
-
-# Configure default dataset path
-export BENCHMARK_DATA_PATH="/path/to/data"
-```
-
-### Configuration File
-```json
-{
-  "name": "custom-benchmark",
-  "dataset_sizes": [1000, 5000, 25000],
-  "iterations": 3,
-  "warmup_runs": 1,
-  "enable_cpu_prof": true,
-  "enable_mem_prof": true,
-  "output_formats": ["console", "json", "html"],
-  "skip_components": {
-    "s2": false,
-    "name": false,
-    "postal": true
-  },
-  "tags": {
-    "environment": "production",
-    "version": "1.2.0"
-  }
-}
+# Add JSON output on top of the console reporter (only "json" is
+# honored; other format names in this variable are ignored)
+export BENCHMARK_FORMATS="json"
 ```
 
 ## 🐛 Troubleshooting
@@ -289,7 +267,6 @@ export BENCHMARK_DATA_PATH="/path/to/data"
 ## Integration
 
 The benchmark suite integrates with:
-- Existing benchmark scripts (`run_subset_benchmarks.sh`)
 - Go testing framework (standard `go test` benchmarks)
 - CI/CD pipelines (JSON output for automated analysis)
 - Performance monitoring (metrics collection)
