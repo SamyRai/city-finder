@@ -8,6 +8,65 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-01
+
+### Added
+
+- Administrative-region attribution: `/nearest?...&include=admin` adds
+  `admin1_code`, `admin1_name` (when the optional `admin1CodesASCII.txt`
+  dataset is loaded — auto-downloaded on cold start; codes-only otherwise),
+  and `admin2_code` (when present) to the response. Attribution follows the
+  winning city (nearest or population-ranked); near boundaries it is the
+  city's region, not polygon containment. Default responses are unchanged.
+- `name.FuzzyMaxCandidates` (default 4,000,000): caps per-query n-gram
+  posting-list work so degenerate short queries cannot walk unbounded lists;
+  capped queries return verified-so-far matches (best-effort, never cached as
+  complete) and `name.FuzzyBudgetTrips()` counts trips. The default keeps
+  completeness on real typo queries (0/1000 truncated at prod scale in two
+  samples); see `docs/design/index-format-v2.md` for the measured budget
+  frontier.
+
+### Changed
+
+- **Index format v3 for the S2 and postal indexes** (name stays v2): both
+  payloads are now zstd-framed and the S2 index carries per-city admin1/admin2
+  id arrays plus code tables. On-disk: S2 521 MB → ~280–293 MB (−46%), postal
+  98 MB → ~26–28 MB (−73%); total index footprint 1.18 GB → ~0.87 GB. v1.0's
+  v2-format files are rejected on first boot and rebuilt automatically.
+- Config loading is project-root-independent: an absolute `CONFIG_PATH` no
+  longer requires a `go.mod` walk-up (the container image drops its marker
+  file); relative config paths resolve against the CWD and relative
+  `datasets_folder` against the config file's directory (default repo layout
+  unchanged).
+- `cmd/build-index prod` resolves dataset filenames and S2 settings from
+  `config.json` (same source as the initializer) instead of hardcoded names
+  that did not match the initializer's output; logged fallback to the legacy
+  literals when no config is found.
+- Warm start: 19.4–20.9 s total (v1.0: 20.5 s) — s2 v3 decode is faster
+  (read+decompress+gob ≈ 3.9 s vs ~6 s) while postal pays decompression
+  (~0.5 s → ~1.2 s) and the admin arrays add ~108 MB decoded; heap after
+  warm start 5.7 GB (v1.0: 5.5 GB).
+
+### Fixed
+
+- N-gram index integer bounds are now guarded: names ≥ 65,536 runes are
+  length-capped (unfindable-by-fuzzy either way; exact lookups unaffected)
+  and CSR posting totals beyond int32 fail the build with a descriptive
+  error instead of silently corrupting the index.
+- Documentation actualization pass: 16 drift findings corrected across
+  README (compiling usage example, dataset filenames, 600 s startup-probe
+  budget), benchmarks/README (fixture-bound scope, non-existent env vars and
+  config-file loader removed), Helm values comments, article.md, and
+  `.tool-versions`.
+
+### Removed
+
+- Dependencies: `cheggaaa/pb/v3` (progress bar → stdlib milestone logging in
+  the S2 build) and `agnivade/levenshtein` (overflow scan and test reference
+  now use the in-house banded checker and a brute-force DP test reference).
+  Direct dependencies 6 → 4; go.sum 51 → 39 lines. Stale v1-era tracked
+  artifacts (18 MB benchmark log, empty pprof) untracked and ignored.
+
 ## [1.0.0] - 2026-10-01
 
 First tagged release. Performance numbers below are measured on the full

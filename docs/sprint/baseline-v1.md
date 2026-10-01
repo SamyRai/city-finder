@@ -52,3 +52,23 @@ total; heap_sys transient 23.7 GB during build. Peak process RSS in the
 measurement run (12.6 GB) includes the lazily built fuzzy index (+1.18 GB)
 and transient allocations from ocean population scans; warm start alone
 peaks ≈9 GB.
+
+## v1.1 validation (2026-10-01, integrated tree, same harness, quiet machine)
+
+| Metric | v1.1 | v1.0 (Day-9) |
+|---|---|---|
+| Warm start (two runs) | 19.41 / 20.94 s | 20.49 s |
+| Heap after settle | 5,702 MB | 5,548 MB (+154 MB admin arrays, as designed) |
+| Index files | 559 MB name (v2) / 279 MB s2 (v3) / 26 MB postal (v3) | 559 / 521 / 98 MB |
+| nearest distance p50/p99 | 10.3–10.5 µs / 66–112 µs | 10.5 / 94.5 µs |
+| name exact p50 | 333 ns | 334 ns |
+| fuzzy mixed-typo p50/p99 | 3.0–4.7 ms / 278–342 ms, 1000/1000 | 7.4 ms / 365 ms |
+| postal p50 | 375–458 ns | 375 ns |
+| include=admin overhead | ~0 (lane-measured 10.0 µs p50 vs 10.5 base) | n/a |
+| Peak RSS (whole run incl. fuzzy build + ocean scans) | 12.3–13.0 GB | 12.6 GB |
+
+Cold build with zstd encode: ~3 min quiet (the 371 s figure in the first
+attempt was measured under heavy concurrent load and is not representative).
+Population-mode latencies are ocean-mixed uniform-band samples; per-class
+land numbers (urban 1.9 ms / suburban 40 ms / rural 302 µs; ocean ~10 s)
+remain those measured by the v1.0 WEIGHTED lane and re-confirmed by ADMIN-V3.
