@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,7 +24,7 @@ type fileHeader struct {
 
 const (
 	testIndexMagic   = "CFPOSTIDX"
-	testIndexVersion = uint32(2)
+	testIndexVersion = uint32(3)
 )
 
 // readFileHeader decodes only the leading header value from path.
@@ -39,6 +40,9 @@ func readFileHeader(t *testing.T, path string) fileHeader {
 
 // writeHeaderAndPayload writes a hand-crafted index file: header first, then
 // an optional payload, so wrong-magic/version/count files can be simulated.
+// The payload is written RAW (no zstd frame): exactly the shape a pre-v3
+// writer or a foreign tool would leave behind, which the payload decoder must
+// reject. Tests that need a decodable v3 payload use writeFramedIndex.
 func writeHeaderAndPayload(t *testing.T, path string, h fileHeader, payload any) {
 	t.Helper()
 	f, err := os.Create(path)
@@ -48,6 +52,23 @@ func writeHeaderAndPayload(t *testing.T, path string, h fileHeader, payload any)
 	if payload != nil {
 		require.NoError(t, enc.Encode(payload))
 	}
+	require.NoError(t, f.Close())
+}
+
+// writeFramedIndex writes a structurally valid v3 file: raw gob header
+// followed by one zstd frame (SpeedFastest, CRC) holding the gob payload.
+// Count validation tests need a payload that survives decompression so the
+// count check is what rejects the file.
+func writeFramedIndex(t *testing.T, path string, h fileHeader, payload *Finder) {
+	t.Helper()
+	f, err := os.Create(path)
+	require.NoError(t, err)
+	enc := gob.NewEncoder(f)
+	require.NoError(t, enc.Encode(h))
+	zw, err := zstd.NewWriter(f, zstd.WithEncoderLevel(zstd.SpeedFastest), zstd.WithEncoderCRC(true))
+	require.NoError(t, err)
+	require.NoError(t, gob.NewEncoder(zw).Encode(payload))
+	require.NoError(t, zw.Close())
 	require.NoError(t, f.Close())
 }
 
@@ -139,13 +160,33 @@ func TestDeserializeIndex_WrongVersion(t *testing.T) {
 
 func TestDeserializeIndex_CountMismatch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "postal_code_index.gob")
-	writeHeaderAndPayload(t, path,
+	// A fully decodable v3 frame whose header count disagrees with the
+	// payload: only the count check can reject it.
+	writeFramedIndex(t, path,
 		fileHeader{Magic: testIndexMagic, Version: testIndexVersion, Count: len(testPostalCodeEntries) + 7},
 		buildTestPostalFinder())
 
 	_, err := DeserializeIndex(path)
 	require.Error(t, err, "a payload whose entry count disagrees with the header must be rejected")
+	assert.ErrorIs(t, err, ErrCorruptIndex)
 	assert.Contains(t, err.Error(), "truncated or from an incompatible version")
+}
+
+// A v2 file (the format this lane replaces: raw gob payload, no zstd frame)
+// must fail the version check before any payload decoding could run. The
+// initializer test covers the rebuild half of the contract.
+func TestDeserializeIndex_V2FileRejected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "postal_code_index_v2.gob")
+	// A faithful v2 stream: header with version 2 followed by the raw gob
+	// payload v2 wrote.
+	writeHeaderAndPayload(t, path,
+		fileHeader{Magic: testIndexMagic, Version: 2, Count: len(testPostalCodeEntries)},
+		buildTestPostalFinder())
+
+	_, err := DeserializeIndex(path)
+	require.Error(t, err, "a v2 file must not decode into the v3 format")
+	assert.ErrorIs(t, err, ErrCorruptIndex)
+	assert.Contains(t, err.Error(), "unsupported version 2")
 }
 
 // A file written by the PREVIOUS, header-less format must be rejected by the

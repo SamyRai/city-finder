@@ -98,6 +98,8 @@ func LoadGeoNamesCSVWithLimit(filepath string, limit int) ([]city.SpatialCity, e
 		field5 := findField(lineStr, 4, '\t')   // latitude
 		field6 := findField(lineStr, 5, '\t')   // longitude
 		field9 := findField(lineStr, 8, '\t')   // country code
+		field11 := findField(lineStr, 10, '\t') // admin1 code (GeoNames field 10, 0-indexed)
+		field12 := findField(lineStr, 11, '\t') // admin2 code (GeoNames field 11, 0-indexed)
 		field15 := findField(lineStr, 14, '\t') // population (GeoNames field 14, 0-indexed)
 
 		if field2 == "" || field5 == "" || field6 == "" || field9 == "" {
@@ -140,8 +142,10 @@ func LoadGeoNamesCSVWithLimit(filepath string, limit int) ([]city.SpatialCity, e
 		}
 
 		spatialCity := city.SpatialCity{
-			City:     cityObj,
-			AltNames: altNames, // AltNames stored in SpatialCity for building only
+			City:       cityObj,
+			AltNames:   altNames, // AltNames stored in SpatialCity for building only
+			Admin1Code: field11,  // build-only; empty field means "no admin1 code"
+			Admin2Code: field12,  // build-only; empty field means "no admin2 code"
 		}
 
 		cities = append(cities, spatialCity)
