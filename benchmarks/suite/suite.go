@@ -10,7 +10,6 @@ import (
 	"github.com/SamyRai/cityFinder/benchmarks/reporters"
 	"github.com/SamyRai/cityFinder/benchmarks/types"
 	"github.com/SamyRai/cityFinder/lib/city"
-	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/SamyRai/cityFinder/lib/dataLoader"
 	"github.com/SamyRai/cityFinder/lib/finder"
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
@@ -221,9 +220,7 @@ func (r *BenchmarkRunner) measureDataLoading(size int) (types.OperationResult, [
 func (r *BenchmarkRunner) measureS2IndexBuilding(cities []city.SpatialCity) (types.OperationResult, error) {
 	result, err := r.profiler.MeasureOperation("S2 Index Building", func() error {
 		// Build S2 index from cities
-		s2Config := &config.S2{}
-
-		_, err := coordinates.BuildIndex(cities, s2Config)
+		_, err := coordinates.BuildIndex(cities)
 		if err != nil {
 			return fmt.Errorf("failed to build S2 index: %w", err)
 		}

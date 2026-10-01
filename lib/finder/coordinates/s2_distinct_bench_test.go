@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/city"
-	"github.com/SamyRai/cityFinder/lib/config"
 )
 
 // generateDistinctCities creates count points that are distinct on the sphere
@@ -35,8 +34,7 @@ func generateDistinctCities(count int) []city.SpatialCity {
 // points duplicated ~278x.
 func BenchmarkNearestPlaceDistinctPoints(b *testing.B) {
 	cities := generateDistinctCities(100000)
-	cfg := &config.S2{}
-	finder, _ := BuildIndex(cities, cfg)
+	finder, _ := BuildIndex(cities)
 
 	testPoints := []struct {
 		lat, lon float64

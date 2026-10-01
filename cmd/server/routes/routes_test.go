@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/city"
-	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/SamyRai/cityFinder/lib/finder"
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
 	"github.com/gofiber/fiber/v2"
@@ -33,7 +32,7 @@ var adminRouteNames = map[string]string{
 // the initializer would leave it (BuildIndex + names attached).
 func setupTestApp(t *testing.T, names map[string]string) *fiber.App {
 	t.Helper()
-	s2f, err := coordinates.BuildIndex(adminRouteCities, &config.S2{})
+	s2f, err := coordinates.BuildIndex(adminRouteCities)
 	require.NoError(t, err)
 	s2f.Admin1Names = names
 	app := fiber.New()

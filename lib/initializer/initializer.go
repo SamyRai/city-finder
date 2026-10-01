@@ -590,7 +590,7 @@ func ensureS2Index(s2IndexPath string, cfg *config.Config, data *datasetSource) 
 
 func buildAndSerializeS2Index(s2IndexPath string, cfg *config.Config, data *datasetSource) (*coordinates.S2Finder, error) {
 	log.Printf("Building S2 index at %s", s2IndexPath)
-	s2Finder, err := coordinates.BuildIndex(data.cities, &cfg.S2)
+	s2Finder, err := coordinates.BuildIndex(data.cities)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build S2 index: %v", err)
 	}

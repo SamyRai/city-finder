@@ -147,8 +147,7 @@ func formatNumber(n int64) string {
 }
 
 // buildPaths bundles every filesystem location one build run reads from or
-// writes to. s2Config is handed to coordinates.BuildIndex, which currently
-// accepts but does not read it.
+// writes to.
 type buildPaths struct {
 	dataFile        string
 	postalCodeFile  string
@@ -156,7 +155,6 @@ type buildPaths struct {
 	s2IndexPath     string
 	nameIndexPath   string
 	postalIndexPath string
-	s2Config        *config.S2
 }
 
 // resolvePaths returns the input and output paths for the given mode.
@@ -182,7 +180,6 @@ func resolvePaths(mode string) buildPaths {
 			s2IndexPath:     filepath.Join("testdata", "s2index_test.gob"),
 			nameIndexPath:   filepath.Join("testdata", "name_index_test.gob"),
 			postalIndexPath: filepath.Join("testdata", "postal_code_index_test.gob"),
-			s2Config:        &config.S2{},
 		}
 	}
 
@@ -194,7 +191,6 @@ func resolvePaths(mode string) buildPaths {
 		s2IndexPath:     "datasets/s2index.gob",
 		nameIndexPath:   "datasets/name_index.gob",
 		postalIndexPath: "datasets/postal_code_index.gob",
-		s2Config:        &config.S2{},
 	}
 	cfg, err := config.LoadFromEnv()
 	if err != nil {
@@ -205,7 +201,6 @@ func resolvePaths(mode string) buildPaths {
 	paths.postalCodeFile = filepath.Join(cfg.DatasetsFolder, cfg.PostalCodesFile)
 	paths.outputDir = cfg.DatasetsFolder
 	paths.s2IndexPath, paths.nameIndexPath, paths.postalIndexPath = cfg.IndexFilePaths()
-	paths.s2Config = &cfg.S2
 	return paths
 }
 
@@ -256,7 +251,6 @@ func main() {
 	// fixed testdata literals.
 	paths := resolvePaths(mode)
 	dataFile, postalCodeFile, outputDir := paths.dataFile, paths.postalCodeFile, paths.outputDir
-	s2Config := paths.s2Config
 
 	fmt.Printf("Mode:         %s\n", mode)
 	fmt.Printf("Data Files:\n")
@@ -311,7 +305,7 @@ func main() {
 	var s2Finder *coordinates.S2Finder
 	s2Result := measureOperation("3. Building S2 Spatial Index", len(cities), func() {
 		var err error
-		s2Finder, err = coordinates.BuildIndex(cities, s2Config)
+		s2Finder, err = coordinates.BuildIndex(cities)
 		if err != nil {
 			log.Fatalf("Failed to build S2 index: %v", err)
 		}

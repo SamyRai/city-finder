@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/city"
-	"github.com/SamyRai/cityFinder/lib/config"
 )
 
 // generateTestCities creates a slice of test cities for benchmarking
@@ -36,8 +35,6 @@ func BenchmarkBuildIndex(b *testing.B) {
 		{"1M", 1000000},
 	}
 
-	cfg := &config.S2{}
-
 	for _, size := range sizes {
 		b.Run(size.name, func(b *testing.B) {
 			cities := generateTestCities(size.size)
@@ -45,7 +42,7 @@ func BenchmarkBuildIndex(b *testing.B) {
 			b.ReportAllocs()
 
 			for i := 0; i < b.N; i++ {
-				_, _ = BuildIndex(cities, cfg)
+				_, _ = BuildIndex(cities)
 			}
 		})
 	}
@@ -54,8 +51,7 @@ func BenchmarkBuildIndex(b *testing.B) {
 // BenchmarkNearestPlace benchmarks nearest city lookup
 func BenchmarkNearestPlace(b *testing.B) {
 	cities := generateTestCities(100000)
-	cfg := &config.S2{}
-	finder, _ := BuildIndex(cities, cfg)
+	finder, _ := BuildIndex(cities)
 
 	testPoints := []struct {
 		lat, lon float64
@@ -77,8 +73,7 @@ func BenchmarkNearestPlace(b *testing.B) {
 // BenchmarkSerializeIndex benchmarks index serialization
 func BenchmarkSerializeIndex(b *testing.B) {
 	cities := generateTestCities(100000)
-	cfg := &config.S2{}
-	finder, _ := BuildIndex(cities, cfg)
+	finder, _ := BuildIndex(cities)
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -92,8 +87,7 @@ func BenchmarkSerializeIndex(b *testing.B) {
 // BenchmarkDeserializeIndex benchmarks index deserialization
 func BenchmarkDeserializeIndex(b *testing.B) {
 	cities := generateTestCities(100000)
-	cfg := &config.S2{}
-	finder, _ := BuildIndex(cities, cfg)
+	finder, _ := BuildIndex(cities)
 	tmpfile := b.TempDir() + "/test_s2_index.gob"
 	_ = finder.SerializeIndex(tmpfile)
 
@@ -116,8 +110,6 @@ func BenchmarkMemoryUsage(b *testing.B) {
 		{"1M", 1000000},
 	}
 
-	cfg := &config.S2{}
-
 	for _, size := range sizes {
 		b.Run(size.name, func(b *testing.B) {
 			var m1, m2 runtime.MemStats
@@ -125,7 +117,7 @@ func BenchmarkMemoryUsage(b *testing.B) {
 			runtime.ReadMemStats(&m1)
 
 			cities := generateTestCities(size.size)
-			finder, _ := BuildIndex(cities, cfg)
+			finder, _ := BuildIndex(cities)
 
 			runtime.GC()
 			runtime.ReadMemStats(&m2)

@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/city"
-	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/SamyRai/cityFinder/lib/dataLoader"
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
 	"github.com/SamyRai/cityFinder/lib/finder/name"
@@ -42,8 +41,7 @@ func FuzzCoordinateFinder(f *testing.F) {
 		{City: city.City{Name: "TestCity3", Country: "TC", Latitude: -33.8688, Longitude: 151.2093}},
 	}
 
-	cfg := &config.S2{}
-	finder, err := coordinates.BuildIndex(testCities, cfg)
+	finder, err := coordinates.BuildIndex(testCities)
 	require.NoError(f, err)
 
 	f.Fuzz(func(t *testing.T, lat, lon float64) {
@@ -201,8 +199,7 @@ func TestProperty_CoordinateDetection_RoundTrip(t *testing.T) {
 		{City: city.City{Name: "CityC", Country: "XX", Latitude: 39.0, Longitude: -75.0}},
 	}
 
-	cfg := &config.S2{}
-	finder, err := coordinates.BuildIndex(testCities, cfg)
+	finder, err := coordinates.BuildIndex(testCities)
 	require.NoError(t, err)
 
 	for _, testCity := range testCities {
@@ -222,8 +219,7 @@ func TestProperty_CoordinateDetection_BoundaryConsistency(t *testing.T) {
 		{City: city.City{Name: "West", Country: "XX", Latitude: 0.0, Longitude: -179.0}},
 	}
 
-	cfg := &config.S2{}
-	finder, err := coordinates.BuildIndex(boundaryCities, cfg)
+	finder, err := coordinates.BuildIndex(boundaryCities)
 	require.NoError(t, err)
 
 	// Test slight perturbations near boundaries
@@ -306,8 +302,7 @@ func TestProperty_CoordinateClipping(t *testing.T) {
 		{City: city.City{Name: "TestCity", Country: "XX", Latitude: 40.0, Longitude: -74.0}},
 	}
 
-	cfg := &config.S2{}
-	finder, err := coordinates.BuildIndex(testCities, cfg)
+	finder, err := coordinates.BuildIndex(testCities)
 	require.NoError(t, err)
 
 	// Test various out-of-bounds coordinates
@@ -340,8 +335,7 @@ func TestProperty_FloatPrecisionEdgeCases(t *testing.T) {
 		{City: city.City{Name: "City2", Country: "XX", Latitude: 40.7128, Longitude: -74.0060}},
 	}
 
-	cfg := &config.S2{}
-	finder, err := coordinates.BuildIndex(testCities, cfg)
+	finder, err := coordinates.BuildIndex(testCities)
 	require.NoError(t, err)
 
 	// Test coordinates that differ by very small amounts
@@ -389,8 +383,7 @@ func TestProperty_RandomDataConsistency(t *testing.T) {
 
 	// Build all finders
 	nameFinder := name.BuildIndex(cities)
-	cfg := &config.S2{}
-	coordFinder, err := coordinates.BuildIndex(cities, cfg)
+	coordFinder, err := coordinates.BuildIndex(cities)
 	require.NoError(t, err)
 
 	// Test consistency: cities found by coordinate should be findable by name

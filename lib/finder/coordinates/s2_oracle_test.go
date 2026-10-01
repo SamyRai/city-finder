@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/city"
-	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/golang/geo/s2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -189,14 +188,14 @@ func TestNearestPlaceMatchesBruteForceOracle(t *testing.T) {
 	queries := oracleQueries(cities)
 
 	t.Run("BuildIndex", func(t *testing.T) {
-		finder, err := BuildIndex(cities, &config.S2{})
+		finder, err := BuildIndex(cities)
 		require.NoError(t, err)
 		require.NotNil(t, finder)
 		checkAgainstOracle(t, finder, cities, queries)
 	})
 
 	t.Run("DeserializeIndex", func(t *testing.T) {
-		source, err := BuildIndex(cities, &config.S2{})
+		source, err := BuildIndex(cities)
 		require.NoError(t, err)
 
 		tmpfile, err := os.CreateTemp("", "s2oracle_*.gob")
@@ -407,13 +406,13 @@ func TestNearestPlacePopulationRankMatchesOracle(t *testing.T) {
 	}
 
 	t.Run("BuildIndex", func(t *testing.T) {
-		finder, err := BuildIndex(cities, &config.S2{})
+		finder, err := BuildIndex(cities)
 		require.NoError(t, err)
 		checkAgainstWeightedOracle(t, finder, cities, queries)
 	})
 
 	t.Run("DeserializeIndex", func(t *testing.T) {
-		source, err := BuildIndex(cities, &config.S2{})
+		source, err := BuildIndex(cities)
 		require.NoError(t, err)
 
 		tmpfile, err := os.CreateTemp("", "s2oraclew_*.gob")
@@ -438,7 +437,7 @@ func TestNearestPlacePopulationRankMatchesOracle(t *testing.T) {
 // the brute-force oracle by the suite above.
 func TestNearestPlaceDistanceRankMatchesMaxResultsOne(t *testing.T) {
 	cities := oracleCitySet()
-	finder, err := BuildIndex(cities, &config.S2{})
+	finder, err := BuildIndex(cities)
 	require.NoError(t, err)
 
 	rng := rand.New(rand.NewSource(20261003))

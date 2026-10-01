@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/SamyRai/cityFinder/lib/city"
-	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/SamyRai/cityFinder/lib/dataLoader"
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
 	"github.com/SamyRai/cityFinder/lib/finder/name"
@@ -114,8 +113,7 @@ func TestConcurrentStress_CoordinateFinder(t *testing.T) {
 
 	// Create a large dataset
 	cities := generateStressTestCities(5000) // Smaller for coordinate finder due to S2 complexity
-	cfg := &config.S2{}
-	finder, err := coordinates.BuildIndex(cities, cfg)
+	finder, err := coordinates.BuildIndex(cities)
 	require.NoError(t, err)
 
 	var wg sync.WaitGroup
@@ -272,8 +270,7 @@ func TestMemoryPressure_Concurrent(t *testing.T) {
 
 	// Build finders
 	nameFinder := name.BuildIndex(cities)
-	cfg := &config.S2{}
-	coordFinder, err := coordinates.BuildIndex(cities, cfg)
+	coordFinder, err := coordinates.BuildIndex(cities)
 	require.NoError(t, err)
 	postalFinder := postalCode.BuildIndex(postalCodes)
 
