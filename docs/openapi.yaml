@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: cityFinder API
-  version: 1.0.0
+  version: 1.1.0
   description: |
     HTTP API of the city-finder server (cmd/server/routes/routes.go), which
     serves nearest-city, name, and postal-code lookups over pre-built
@@ -42,9 +42,18 @@ paths:
         great-circle distance. With `rank=population` the winner maximizes
         the gravity score population / (distance_km² + 1) over ALL indexed
         cities (exact: escalating-radius search under an anytime bound) and
-        the response additionally carries `Population`. Land queries resolve
-        in microseconds-to-milliseconds; sparse/ocean points may fall back
-        to a wider scan and take seconds.
+        the response additionally carries `Population`. With `include=admin`
+        the response additionally carries the winning city's administrative
+        region (`admin1_code`, `admin1_name`, `admin2_code`). Land queries
+        resolve in microseconds-to-milliseconds; sparse/ocean points may
+        fall back to a wider scan and take seconds.
+
+        Admin attribution is the region of the NEAREST (or
+        population-ranked) city — not polygon containment: near a boundary
+        the reported region follows the closest city, which may sit across
+        the line. `admin1_name` is served only when the optional
+        admin1CodesASCII dataset was loaded (codes-only deployments omit it);
+        `admin2_code` is omitted when the winning city has none.
 
         Validation order mirrors the handler: `lat` must parse as a finite
         number (NaN and ±Inf are rejected, as is any non-numeric value
@@ -52,7 +61,8 @@ paths:
         then `lon` the same way; then `lat` is range-checked against
         [-90, 90]; then `lon` against [-180, 180]; then `rank` (if present
         and non-empty) must be exactly `distance` or `population`
-        (case-sensitive).
+        (case-sensitive); then `include` (if present and non-empty) must be
+        exactly `admin` (case-sensitive).
       parameters:
         - name: lat
           in: query
@@ -87,28 +97,52 @@ paths:
             enum: [distance, population]
             default: distance
           example: population
+        - name: include
+          in: query
+          required: false
+          description: >
+            Optional response enrichment. `admin` (the only accepted value;
+            absent or empty keeps the plain v1.0 response) appends the
+            winning city's administrative region: `admin1_code`,
+            `admin1_name` (when the optional names dataset is loaded), and
+            `admin2_code` (when the city has one). Attribution follows the
+            nearest city, not polygon containment — near a boundary it may
+            report the region across the line.
+          schema:
+            type: string
+            enum: [admin]
+          example: admin
       responses:
         "200":
           description: >
             The matched city and its distance from the query point. With
             rank=population the body additionally includes `Population`
-            (int32, the winner's GeoNames population; 0 when unknown).
+            (int32, the winner's GeoNames population; 0 when unknown). With
+            include=admin the body additionally includes `admin1_code`
+            (raw per-country code, e.g. "06"), `admin1_name` (present only
+            when the optional names dataset is loaded; omitted in codes-only
+            deployments), and `admin2_code` (omitted when the city has
+            none), in that order after `distance_km`. Requests without these
+            options return the exact v1.0 body.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/NearestCityResponse"
               example:
-                Latitude: 25.0767
-                Longitude: 55.3178
-                Name: Dubai
-                Country: AE
-                Population: 3790000
-                distance_km: 0.87
+                Latitude: 37.7749
+                Longitude: -122.4194
+                Name: San Francisco
+                Country: US
+                Population: 808437
+                distance_km: 0.57
+                admin1_code: "06"
+                admin1_name: California
+                admin2_code: "075"
         "400":
           description: >
-            Malformed or out-of-range coordinates, or an unrecognized rank
-            value. Plain text; the body is exactly one of the strings below,
-            chosen by the validation order.
+            Malformed or out-of-range coordinates, an unrecognized rank
+            value, or an unrecognized include value. Plain text; the body is
+            exactly one of the strings below, chosen by the validation order.
           content:
             text/plain:
               schema:
@@ -124,6 +158,8 @@ paths:
                   value: "Longitude must be between -180 and 180"
                 invalidRank:
                   value: "Invalid rank"
+                invalidInclude:
+                  value: "Invalid include"
         "404":
           description: >
             No city indexed. Plain text; `lat` and `lon` are the parsed query
@@ -303,7 +339,13 @@ components:
         fields are the capitalized `City` fields; only the distance carries a
         snake_case json tag. `Population` (int32) appears ONLY when the
         request used rank=population; distance-ranked responses never
-        include the key.
+        include the key. The admin fields appear ONLY when the request used
+        include=admin: `admin1_code` (raw per-country admin1 code) always,
+        `admin1_name` only when the optional names dataset is loaded
+        (codes-only deployments omit it), and `admin2_code` only when the
+        winning city carries one. Attribution is the nearest city's region,
+        not polygon containment — near a boundary it may report the region
+        across the line.
       allOf:
         - $ref: "#/components/schemas/City"
         - type: object
@@ -319,3 +361,26 @@ components:
             distance_km:
               type: number
               format: double
+            admin1_code:
+              type: string
+              description: >
+                Raw per-country admin1 code of the winning city (e.g. "06"
+                for US-CA; "02" for AD-02). Present only in include=admin
+                responses; omitted when the city carries no admin1 code.
+              example: "06"
+            admin1_name:
+              type: string
+              description: >
+                Display name of the admin1 division (e.g. "California"), from
+                the optional admin1CodesASCII dataset. Present only in
+                include=admin responses AND only when that dataset is loaded;
+                codes-only deployments omit the key.
+              example: California
+            admin2_code:
+              type: string
+              description: >
+                Raw per-country admin2 code of the winning city (e.g. "075",
+                San Francisco County). Present only in include=admin
+                responses; omitted when the city carries no admin2 code
+                (57.7% of GeoNames rows, and all admin2-less countries).
+              example: "075"
