@@ -147,7 +147,7 @@ By default, the server will listen on port 3000; set the `PORT` environment vari
 ### API Endpoints
 
 - **Health Check**: `/healthz` — returns `{"status":"ok"}`; cheap, never touches the indexes.
-- **Find Nearest City**: `/nearest?lat=<latitude>&lon=<longitude>` — lat/lon must be finite and in range (`[-90, 90]` / `[-180, 180]`); anything else returns 400. Returns the city plus `distance_km` (great-circle, 2 decimals).
+- **Find Nearest City**: `/nearest?lat=<latitude>&lon=<longitude>&rank=distance|population>` — lat/lon must be finite and in range (`[-90, 90]` / `[-180, 180]`); anything else returns 400. `rank` is optional (default `distance`; any other value returns 400). `rank=population` applies weighted semantics: the 16 nearest candidates are scored by the gravity model `population / (d² + 1)` (d = great-circle km) and the highest score wins, so a nearby big city can beat the closest village; such responses also carry the winner's `Population`. Returns the city plus `distance_km` (great-circle, 2 decimals).
 - **Find City by Name**: `/coordinates?name=<city_name>&country-code=<country_code>` — both parameters required. The name is matched exactly first, then fuzzily (edit distance ≤ 2), so typos like `Pars` still resolve. Surrounding whitespace is trimmed.
 - **Find City by Postal Code**: `/postalCode?code=<postal_code>&country-code=<country_code>` — both parameters required. Inner spaces in postal codes are significant (GeoNames stores GB codes as `SW1A 1AA`); only surrounding whitespace is trimmed.
 

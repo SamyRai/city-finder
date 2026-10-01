@@ -174,9 +174,22 @@ func jsonKeys(t *testing.T, body string) []string {
 	return keys
 }
 
-// cityKeys are the exact top-level keys city.City marshals to (it has no json
-// tags, so the exported field names appear verbatim).
-var cityKeys = []string{"Country", "Latitude", "Longitude", "Name"}
+var (
+	// cityKeys are the exact top-level keys city.City marshals to (it has no json
+	// tags, so the exported field names appear verbatim).
+	cityKeys = []string{"Country", "Latitude", "Longitude", "Name"}
+
+	// nearestDistanceKeys is the exact key set of a distance-ranked /nearest
+	// body: the city keys plus distance_km, and nothing else — Population
+	// must stay absent so default-rank responses remain byte-compatible with
+	// the pre-ranking API.
+	nearestDistanceKeys = append(append([]string{}, cityKeys...), "distance_km")
+
+	// nearestPopulationKeys is the key set of a population-ranked body: the
+	// distance shape plus the winner's Population (ASCII-sorted, so the
+	// capitalized Population precedes distance_km).
+	nearestPopulationKeys = append(append([]string{}, cityKeys...), "Population", "distance_km")
+)
 
 func (suite *ServerTestSuite) TestHealthz() {
 	resp, body := suite.doGet("/healthz")
@@ -275,6 +288,85 @@ func (suite *ServerTestSuite) TestNearestBadInput() {
 			resp, body := suite.doGet("/nearest?" + query(tc.params))
 			assert.Equal(suite.T(), tc.expectedStatus, resp.StatusCode, body)
 			assert.Equal(suite.T(), tc.expectedBody, body)
+		})
+	}
+}
+
+func (suite *ServerTestSuite) TestNearestRankParam() {
+	fixture := suite.fixtureCity("Xixerella", "AD")
+	base := map[string]string{
+		"lat": strconv.FormatFloat(fixture.Latitude, 'f', -1, 64),
+		"lon": strconv.FormatFloat(fixture.Longitude, 'f', -1, 64),
+	}
+
+	// Valid ranks: absent, explicitly empty, and "distance" all mean the
+	// default distance ranking and must keep the pre-ranking response shape.
+	validRanks := []struct{ name, rank string }{
+		{"absent", ""},
+		{"empty", ""},
+		{"explicit distance", "distance"},
+	}
+	for _, tc := range validRanks {
+		suite.Run("rank "+tc.name, func() {
+			params := map[string]string{}
+			for k, v := range base {
+				params[k] = v
+			}
+			if tc.name != "absent" {
+				params["rank"] = tc.rank
+			}
+			resp, body := suite.doGet("/nearest?" + query(params))
+			assert.Equal(suite.T(), http.StatusOK, resp.StatusCode, body)
+			assert.Equal(suite.T(), nearestDistanceKeys, jsonKeys(suite.T(), body), body)
+
+			var got struct {
+				city.City
+				DistanceKm float64 `json:"distance_km"`
+				Population *int32  `json:"Population"`
+			}
+			require.NoError(suite.T(), json.Unmarshal([]byte(body), &got), body)
+			assert.Nil(suite.T(), got.Population, "distance-ranked body must not carry Population: %s", body)
+			assert.Equal(suite.T(), fixture.Name, got.Name, body)
+		})
+	}
+
+	suite.Run("rank population", func() {
+		params := map[string]string{}
+		for k, v := range base {
+			params[k] = v
+		}
+		params["rank"] = "population"
+		resp, body := suite.doGet("/nearest?" + query(params))
+		assert.Equal(suite.T(), http.StatusOK, resp.StatusCode, body)
+		assert.Equal(suite.T(), nearestPopulationKeys, jsonKeys(suite.T(), body), body)
+
+		var got struct {
+			city.City
+			DistanceKm float64 `json:"distance_km"`
+			Population *int32  `json:"Population"`
+		}
+		require.NoError(suite.T(), json.Unmarshal([]byte(body), &got), body)
+		require.NotNil(suite.T(), got.Population, "population-ranked body must carry Population: %s", body)
+		assert.Equal(suite.T(), fixture.Name, got.Name, body)
+		// The population value must be the winner's actual Population int32.
+		// Every row of the fixture dataset carries population 0 (verified:
+		// no nonzero field 15 exists in testdata/allCountries.txt), so the
+		// winner's actual value here is 0. Weighted selection semantics are
+		// covered by the coordinates package's gravity-oracle suite.
+		assert.EqualValues(suite.T(), int32(0), *got.Population, body)
+	})
+
+	// Invalid ranks: anything but the exact lowercase tokens is rejected.
+	for _, rank := range []string{"foo", "DISTANCE", "Population", " distance", "distance "} {
+		suite.Run("rank invalid "+strconv.Quote(rank), func() {
+			params := map[string]string{}
+			for k, v := range base {
+				params[k] = v
+			}
+			params["rank"] = rank
+			resp, body := suite.doGet("/nearest?" + query(params))
+			assert.Equal(suite.T(), http.StatusBadRequest, resp.StatusCode, body)
+			assert.Equal(suite.T(), "Invalid rank", body)
 		})
 	}
 }
