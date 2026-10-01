@@ -281,3 +281,21 @@ an immutable q-gram inverted index over the distinct names:
   and searches inside target, and the disable path stays for absurd scales.
   It still counts (country,name) keys, not distinct names, so the
   over-approximation comment in the code still applies.
+
+## In-memory flattening (v1.2)
+
+The exact-lookup side now mirrors this payload's shape in memory: per
+country a `nameTable{names []string sorted; starts []int32; ids []int32}`
+(CSR postings into a `cities []*city.City` distinct-pointer table) replaces
+the nested `map[country]map[name][]*city.City`. Measured at full scale
+(13.47M cities / 18.70M keys / 35.07M refs): name-finder heap 5.27 GB →
+3.73 GB (−29%) — the nested-map overhead was the entire avoidable gap; the
+flat structure itself is ~0.48 GB, i.e. payload-scale, matching the
+intuition that motivated this format. The on-disk format is unchanged (the
+table is rebuilt by sorting each country once at deserialize), so v2 index
+files remain valid. Costs accepted: the one-time build pays ~38 s for the
+flatten sort, and exact-tail lookups went 292 → 585 ns p50 (still
+sub-microsecond, zero allocations). Post-construction `AddCity` entries
+live in a small overflow map merged after the sorted-table probe — the same
+overflow posture the fuzzy side uses. Prefix search (`PrefixNames`) rides
+the sorted slice for free: binary search to the prefix range, then a walk.

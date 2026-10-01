@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-01
+
 ### Added
 
 - `GET /autocomplete`: prefix search over the flattened name index —
@@ -53,8 +55,10 @@ and this project adheres to
   (−29%) — the entire avoidable nested-map overhead; the flat structure
   itself is ~0.48 GiB at payload scale. On-disk v2 format unchanged
   (compat proven against an index serialized pre-refactor); pointer-sharing
-  semantics preserved; cold build pays ~38 s for the flatten sort; exact
-  lookup stays sub-µs (p50 292→585 ns) with zero allocations.
+  semantics preserved; cold build pays ~38 s for the flatten sort and the
+  warm start ~3 s (deserialize-time sort); end-to-end exact lookups move
+  from a 0.33 µs hash-map hit to ~3 µs binary search at prod (the measured
+  latency tradeoff; zero allocations, sub-µs at 1M-key microbench scale).
 - The fuzzy (n-gram) index builds in a background goroutine: the first
   fuzzy query no longer runs the ~30–90 s build synchronously in-request —
   it returns the same fast exact-only degradation concurrent queries always
@@ -78,11 +82,15 @@ and this project adheres to
 - `rank=population` escalation uses a top-4096 population table to tighten
   the anytime bound: cities outside the table are bounded by the 4096th
   largest population instead of the single global max, and the table's own
-  cities are scored exactly, so mid-ocean queries certify a winner without
-  the terminal full-sphere scan (~10 s CPU, ~300 MB transient slice per
-  query at prod in v1.1). Exactness is unchanged — the brute-force oracle
-  tests still pin the winner, and the terminal unbounded iteration remains
-  the fallback. The table is derived in memory (no on-disk format change).
+  cities are scored exactly. This removes the terminal full-sphere scan
+  and its ~300 MB transient slice per query; measured at prod, ocean-class
+  queries remain multi-second (8–14 s in the v1.2 baseline — dominated by
+  the wide escalation discs, not the terminal scan), so the operative
+  mitigations are the HTTP concurrency gate above and the
+  `exclude_admin_divisions` data knob. Exactness is unchanged — the
+  brute-force oracle tests still pin the winner, and the terminal unbounded
+  iteration remains the fallback. The table is derived in memory (no
+  on-disk format change).
 - `cmd/build-index` honors `CONFIG_PATH` (same resolution as the server via
   the new `config.LoadFromEnv()`) and writes its prod outputs to the
   config's index-file keys through the new `(*Config).IndexFilePaths()` —
