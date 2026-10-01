@@ -5,11 +5,11 @@ metadata:
   name: {{ include "city-finder.fullname" . }}
   labels:
     {{- include "city-finder.labels" . | nindent 4 }}
+    {{- include "city-finder.commonLabels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
   annotations:
-    {{- include "city-finder.syncWave" 1 | nindent 4 }}
-    {{- with .Values.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
-    {{- end }}
+  {{- end }}
 spec:
   {{- with .Values.ingress.className }}
   ingressClassName: {{ . | quote }}

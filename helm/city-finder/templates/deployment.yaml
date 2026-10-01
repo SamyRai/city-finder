@@ -4,8 +4,13 @@ metadata:
   name: {{ include "city-finder.fullname" . }}
   labels:
     {{- include "city-finder.labels" . | nindent 4 }}
+    {{- include "city-finder.workloadLabels" . | nindent 4 }}
+    {{- include "city-finder.commonLabels" . | nindent 4 }}
+  annotations:
+    {{- include "city-finder.syncWave" 0 | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: 3
   strategy:
     type: RollingUpdate
     # maxUnavailable 0 keeps the old replica serving until the new one is
@@ -21,11 +26,12 @@ spec:
     metadata:
       labels:
         {{- include "city-finder.selectorLabels" . | nindent 8 }}
+        {{- include "city-finder.workloadLabels" . | nindent 8 }}
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+        {{- include "city-finder.commonLabels" . | nindent 8 }}
       annotations:
-        {{- include "city-finder.syncWave" 0 | nindent 8 }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -58,8 +64,10 @@ spec:
           {{- if .Values.probes.startup.enabled }}
           # The server opens its listener only after the indexes are loaded,
           # so connection failures during boot are expected: the startup
-          # probe, not liveness, owns that window. Defaults give a 180 s
-          # budget (see values.yaml for cold-start guidance).
+          # probe, not liveness, owns that window. Defaults give a 600 s
+          # budget so the default emptyDir storage mode's ~6-8 min cold
+          # start boots instead of crash-looping; warm boots pass at the
+          # first probe after the listener opens.
           startupProbe:
             httpGet:
               path: {{ .Values.probes.startup.path }}

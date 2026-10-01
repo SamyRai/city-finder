@@ -4,8 +4,7 @@ metadata:
   name: {{ include "city-finder.fullname" . }}
   labels:
     {{- include "city-finder.labels" . | nindent 4 }}
-  annotations:
-    {{- include "city-finder.syncWave" (-1) | nindent 4 }}
+    {{- include "city-finder.commonLabels" . | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
   ports:

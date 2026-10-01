@@ -5,6 +5,7 @@ metadata:
   name: {{ include "city-finder.fullname" . }}-datasets
   labels:
     {{- include "city-finder.labels" . | nindent 4 }}
+    {{- include "city-finder.commonLabels" . | nindent 4 }}
   annotations:
     {{- include "city-finder.syncWave" (-2) | nindent 4 }}
     # Pre-built indexes are expensive (hours of cumulative download/build);
