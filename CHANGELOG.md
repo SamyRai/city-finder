@@ -10,6 +10,13 @@ and this project adheres to
 
 ### Added
 
+- Optional `exclude_admin_divisions` config key (default `false`,
+  byte-identical behavior when off): drops GeoNames feature-class-A rows
+  (countries/states/provinces and their huge synthetic populations) at
+  dataset load — they otherwise win mid-ocean `rank=population` queries.
+  Applies when an index is (re)built; honored by both the initializer and
+  `cmd/build-index` when a config is loaded. When enabled, admin-division
+  names no longer resolve through `/coordinates`.
 - `GET /metrics` (Prometheus text format, no new dependencies): request
   counters and latency histograms keyed by route pattern and status code,
   and a `fuzzy_budget_trips_total` counter scraped from the library's
