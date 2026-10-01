@@ -1,0 +1,13 @@
+apiVersion: v2
+name: city-finder
+description: |
+  Nearest-city lookup HTTP API over the full GeoNames dataset (S2 geometry).
+  Public, read-only API: no secrets, no service accounts with token mount,
+  no external auth.
+type: application
+# Chart version tracks the deployment packaging; appVersion tracks the server.
+version: 1.0.0
+appVersion: "1.0.0"
+home: https://github.com/SamyRai/cityFinder
+sources:
+  - https://github.com/SamyRai/cityFinder
