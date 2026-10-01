@@ -93,11 +93,12 @@ func LoadGeoNamesCSVWithLimit(filepath string, limit int) ([]city.SpatialCity, e
 		// Convert to string once for field extraction
 		lineStr := string(line)
 		// Use strings.Index for more efficient field extraction to reduce allocations
-		field2 := findField(lineStr, 1, '\t') // name
-		field4 := findField(lineStr, 3, '\t') // alternatenames
-		field5 := findField(lineStr, 4, '\t') // latitude
-		field6 := findField(lineStr, 5, '\t') // longitude
-		field9 := findField(lineStr, 8, '\t') // country code
+		field2 := findField(lineStr, 1, '\t')   // name
+		field4 := findField(lineStr, 3, '\t')   // alternatenames
+		field5 := findField(lineStr, 4, '\t')   // latitude
+		field6 := findField(lineStr, 5, '\t')   // longitude
+		field9 := findField(lineStr, 8, '\t')   // country code
+		field15 := findField(lineStr, 14, '\t') // population (GeoNames field 14, 0-indexed)
 
 		if field2 == "" || field5 == "" || field6 == "" || field9 == "" {
 			continue
@@ -114,6 +115,15 @@ func LoadGeoNamesCSVWithLimit(filepath string, limit int) ([]city.SpatialCity, e
 			continue
 		}
 
+		// Population is enhancement data: an empty or unparsable field loads
+		// as 0 and never drops the row. Values fit int32 (the largest GeoNames
+		// feature populations are < 40M); anything overflowing is treated as
+		// unparsable rather than silently wrapped.
+		var population int32
+		if p, err := strconv.ParseInt(field15, 10, 32); err == nil {
+			population = int32(p)
+		}
+
 		// Parse alternate names more efficiently - avoid allocation if empty
 		var altNames []string
 		if field4 != "" {
@@ -121,10 +131,11 @@ func LoadGeoNamesCSVWithLimit(filepath string, limit int) ([]city.SpatialCity, e
 		}
 
 		cityObj := city.City{
-			Latitude:  lat,
-			Longitude: lon,
-			Name:      field2,
-			Country:   field9,
+			Latitude:   lat,
+			Longitude:  lon,
+			Population: population,
+			Name:       field2,
+			Country:    field9,
 			// AltNames removed from City struct for memory optimization
 		}
 

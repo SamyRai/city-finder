@@ -5,14 +5,22 @@ import (
 )
 
 // City struct optimized for memory alignment (Go 1.22+ best practice)
-// Field ordering: largest types first (float64 = 8 bytes), then pointers/slices (8 bytes), then strings (16 bytes)
-// This reduces padding and improves cache locality
+// Field ordering: largest types first (float64 = 8 bytes), then fixed-width
+// scalars (int32 = 4 bytes), then strings (16 bytes); this keeps padding at
+// one 4-byte hole after Population.
 // AltNames removed from City struct for memory efficiency - processed during building only
+//
+// Population carries `json:"-"` deliberately: phase 1 of the v2 index-format
+// sprint must not change the HTTP API surface (routes embed city.City
+// directly and its field set IS the wire contract). Exposing population in
+// responses is a routing/API decision owned by the WEIGHTED lane /
+// integration, not this format hop.
 type City struct {
-	Latitude  float64 // 8 bytes - aligned to 8-byte boundary
-	Longitude float64 // 8 bytes - aligned to 8-byte boundary
-	Name      string  // 16 bytes (string header: ptr + len) - aligned to 8-byte boundary
-	Country   string  // 16 bytes (string header: ptr + len) - aligned to 8-byte boundary
+	Latitude   float64 // 8 bytes - aligned to 8-byte boundary
+	Longitude  float64 // 8 bytes - aligned to 8-byte boundary
+	Population int32   `json:"-"` // 4 bytes - GeoNames allCountries field 14; 0 when absent
+	Name       string  // 16 bytes (string header: ptr + len) - aligned to 8-byte boundary
+	Country    string  // 16 bytes (string header: ptr + len) - aligned to 8-byte boundary
 }
 
 // SpatialCity includes AltNames for building process but embeds compact City
