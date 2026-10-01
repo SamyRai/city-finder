@@ -40,7 +40,9 @@ func TestFinder_SerializeDeserialize(t *testing.T) {
 	ngrams := deserializedFinder.ngrams
 	deserializedFinder.mutex.RUnlock()
 	assert.Nil(t, ngrams, "no fuzzy structure may survive serialization in v2")
-	got := deserializedFinder.CityByName("Test Citt", "TC") // distance-1 typo: forces the lazy rebuild
+	deserializedFinder.WarmFuzzy()                          // trigger the background rebuild...
+	waitFuzzyBuilt(t, deserializedFinder)                   // ...and wait it out before the fuzzy assertion
+	got := deserializedFinder.CityByName("Test Citt", "TC") // distance-1 typo: resolves via the rebuilt index
 	if assert.NotNil(t, got, "fuzzy lookup must work via lazy rebuild after deserialize") {
 		assert.Equal(t, "Test City", got.Name)
 	}

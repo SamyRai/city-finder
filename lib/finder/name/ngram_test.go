@@ -225,6 +225,8 @@ func TestNGramBuildCapsOverlongNameLengths(t *testing.T) {
 // lookups are served from the fuzzy cache.
 func TestFuzzyTypoRescueEndToEnd(t *testing.T) {
 	finder := BuildIndex(fuzzyFixtureCities())
+	finder.WarmFuzzy()
+	waitFuzzyBuilt(t, finder)
 
 	if got := finder.CityByName("Pars", "FR"); got == nil || got.Name != "Paris" {
 		t.Fatalf("distance-1 typo: got %+v, want Paris", got)
@@ -246,8 +248,8 @@ func TestFuzzyTypoRescueEndToEnd(t *testing.T) {
 // rebuild folds them in and clears the list.
 func TestFuzzyOverflowCoversPostBuildAdds(t *testing.T) {
 	finder := BuildIndex(fuzzyFixtureCities())
-	finder.CityByName("Pars", "FR") // force the build
-	require.Equal(t, int32(fuzzyBuilt), finder.fuzzyState.Load())
+	finder.WarmFuzzy() // force the background build
+	waitFuzzyBuilt(t, finder)
 
 	finder.AddCity(city.SpatialCity{
 		City: city.City{Name: "Berlin", Country: "DE", Latitude: 52.52, Longitude: 13.40},
@@ -264,8 +266,8 @@ func TestFuzzyOverflowCoversPostBuildAdds(t *testing.T) {
 
 	// A fresh build folds the overflow away.
 	finder.fuzzyState.Store(fuzzyNotBuilt)
-	finder.CityByName("Pars", "FR")
-	require.Equal(t, int32(fuzzyBuilt), finder.fuzzyState.Load())
+	finder.WarmFuzzy() // retrigger the background build
+	waitFuzzyBuilt(t, finder)
 	finder.mutex.RLock()
 	over = len(finder.fuzzyOverflow)
 	ngrams := finder.ngrams
@@ -277,21 +279,33 @@ func TestFuzzyOverflowCoversPostBuildAdds(t *testing.T) {
 }
 
 // TestCityByNameConcurrentDuringNGramBuild is the race-safety gate for the
-// lazy build: while one goroutine pays the build, others hammer exact hits,
-// typo lookups, and misses. Run under -race this must stay clean: the
-// immutable-structure swap, the overflow list, and the fuzzy cache are all
-// shared mutable state during the window.
+// lazy build: while the background goroutine pays the build, other goroutines
+// hammer exact hits, typo lookups, and misses. The workers key off the BUILD
+// completing (not the trigger returning — the triggering lookup now returns
+// immediately on the degraded exact-only path). Run under -race this must
+// stay clean: the immutable-structure swap, the overflow list, and the fuzzy
+// cache are all shared mutable state during the window.
 func TestCityByNameConcurrentDuringNGramBuild(t *testing.T) {
 	cities := gateCities(150_000)
 	finder := BuildIndex(cities)
 
-	var wg sync.WaitGroup
-	done := make(chan struct{})
-	wg.Add(1)
+	finder.CityByName("zzz-triggers-the-build", "GC")
+
+	// Watcher: closes when the background build lands (nudging a discarded
+	// build back to life, should AddCity-less racing ever reset it). On its
+	// own deadline it closes anyway; the settle assertion below then fails
+	// the test with a clear message.
+	built := make(chan struct{})
 	go func() {
-		defer wg.Done()
-		finder.CityByName("zzz-triggers-the-build", "GC")
-		close(done)
+		deadline := time.Now().Add(30 * time.Second)
+		for finder.fuzzyState.Load() != fuzzyBuilt {
+			if time.Now().After(deadline) {
+				break
+			}
+			finder.ensureFuzzyBuilt()
+			time.Sleep(time.Millisecond)
+		}
+		close(built)
 	}()
 
 	deadline := time.Now().Add(30 * time.Second)
@@ -302,7 +316,7 @@ func TestCityByNameConcurrentDuringNGramBuild(t *testing.T) {
 			defer wg2.Done()
 			for i := 0; ; i++ {
 				select {
-				case <-done:
+				case <-built:
 					return
 				default:
 				}
@@ -316,7 +330,6 @@ func TestCityByNameConcurrentDuringNGramBuild(t *testing.T) {
 		}(w)
 	}
 	wg2.Wait()
-	wg.Wait()
 
 	// After the build settles, typo lookups resolve through the structure.
 	require.Eventually(t, func() bool {

@@ -15,6 +15,9 @@ import (
 // resolution that rejects candidates indexed under other countries.
 func TestCityByNamePhases(t *testing.T) {
 	finder := BuildIndex(fuzzyFixtureCities()) // Paris/FR, London/GB, Berlin/DE, Tokyo/JP, Madrid/ES
+	// Fuzzy phases need the built index; warm up (background build) first.
+	finder.WarmFuzzy()
+	waitFuzzyBuilt(t, finder)
 
 	wantName := func(s string) *string { return &s }
 	cases := []struct {
@@ -57,6 +60,8 @@ func TestCityByNamePhases(t *testing.T) {
 func TestFuzzyCacheHitMissExpiry(t *testing.T) {
 	finder := NewNameFinder()
 	finder.AddCity(city.SpatialCity{City: city.City{Name: "Paris", Country: "FR", Latitude: 48.85, Longitude: 2.35}})
+	finder.WarmFuzzy()
+	waitFuzzyBuilt(t, finder)
 
 	// Miss: the cold query computes candidates and caches them.
 	got := finder.getCachedFuzzySearch("Pars", 1)
@@ -88,10 +93,20 @@ func TestFuzzyCacheHitMissExpiry(t *testing.T) {
 // TestFuzzyCacheEvictionAtCapOldest drives the cache to its cap with fresh
 // entries and then issues one more distinct query. Nothing has expired at
 // that point, so eviction must fall through to dropping the oldest entry
-// while the cache stays bounded at the cap.
+// while the cache stays bounded at the cap. Every query must MATCH an
+// indexed name: empty results are not cached (a later AddCity must become
+// visible to the same query), so only matching fillers exercise eviction.
 func TestFuzzyCacheEvictionAtCapOldest(t *testing.T) {
-	finder := NewNameFinder()
-	finder.AddCity(city.SpatialCity{City: city.City{Name: "Paris", Country: "FR", Latitude: 48.85, Longitude: 2.35}})
+	cities := make([]city.SpatialCity, 0, maxFuzzyCacheEntries+1)
+	for i := 0; i < maxFuzzyCacheEntries; i++ {
+		cities = append(cities, city.SpatialCity{
+			City: city.City{Name: fmt.Sprintf("fill%05d", i), Country: "FC", Latitude: 1, Longitude: 1},
+		})
+	}
+	cities = append(cities, city.SpatialCity{City: city.City{Name: "overflow", Country: "FC", Latitude: 1, Longitude: 1}})
+	finder := BuildIndex(cities)
+	finder.WarmFuzzy()
+	waitFuzzyBuilt(t, finder)
 
 	for i := 0; i < maxFuzzyCacheEntries; i++ {
 		finder.getCachedFuzzySearch(fmt.Sprintf("fill%05d", i), 1)
