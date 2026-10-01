@@ -444,6 +444,57 @@ func ensureFinders(cfg *config.Config, admin1NamesPath string) (*finder.Finder, 
 	data := &datasetSource{cfg: cfg}
 	if allIndexesPresent(s2IndexPath, nameIndexPath, postalCodeIndexPath) {
 		log.Printf("all indexes present, skipping dataset load")
+
+		// Warm start: the three decodes are independent, so they run
+		// concurrently. Name decode dominates (~14 s of the ~20 s warm
+		// start at prod); overlapping it with S2 (~4 s) and postal (~1 s)
+		// removes the two smaller decodes from the critical path. Peak RSS
+		// rises by the smaller indexes' transient buffers (~0.5–1 GB) —
+		// within the chart's request/limit headroom. Any decode failure
+		// falls through to the sequential ensure path below, which alone
+		// owns rebuilds (datasetSource is not synchronized).
+		type s2Result struct {
+			finder *coordinates.S2Finder
+			err    error
+		}
+		type nameResult struct {
+			finder *name.Finder
+			err    error
+		}
+		type postalResult struct {
+			finder *postalCode.Finder
+			err    error
+		}
+		s2Ch := make(chan s2Result, 1)
+		nameCh := make(chan nameResult, 1)
+		postalCh := make(chan postalResult, 1)
+		go func() {
+			f, err := coordinates.DeserializeIndex(s2IndexPath)
+			s2Ch <- s2Result{f, err}
+		}()
+		go func() {
+			f, err := name.DeserializeIndex(nameIndexPath)
+			nameCh <- nameResult{f, err}
+		}()
+		go func() {
+			f, err := postalCode.DeserializeIndex(postalCodeIndexPath)
+			postalCh <- postalResult{f, err}
+		}()
+		s2Res, nameRes, postalRes := <-s2Ch, <-nameCh, <-postalCh
+		if s2Res.err == nil && nameRes.err == nil && postalRes.err == nil {
+			s2Finder := s2Res.finder
+			// Names are attached on every boot (warm or cold): the map is
+			// ~120 KB and deliberately not serialized with the index, so
+			// updating the names file never invalidates it.
+			s2Finder.Admin1Names = ensureAdmin1Names(admin1NamesPath)
+			return &finder.Finder{
+				S2Finder:         s2Finder,
+				NameFinder:       nameRes.finder,
+				PostalCodeFinder: postalRes.finder,
+			}, nil
+		}
+		log.Printf("warm decode incomplete (s2=%v, name=%v, postal=%v); falling back to sequential ensure",
+			s2Res.err, nameRes.err, postalRes.err)
 	} else if err := data.load(); err != nil {
 		return nil, err
 	}
