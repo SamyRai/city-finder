@@ -127,11 +127,54 @@ func TestLoadPostalCodes_NoSkipLogWhenAllRowsParse(t *testing.T) {
 		buf, restore := captureLoaderLogs(t)
 		defer restore()
 
-		// A standalone stream of short rows: csv.Reader is field-count
-		// consistent, records are rejected by len(record) < 12 and must not
+		// A standalone stream of short rows: records are rejected by
+		// len(record) < 12, counted in their own summary line, and must not
 		// be reported as coordinate skips.
 		_, err := LoadPostalCodes(writePostalFixture(t, "XX\t10006\tToo few fields\n"))
 		require.NoError(t, err)
-		assert.NotContains(t, buf.String(), "skipped")
+		assert.NotContains(t, buf.String(), "unparsable coordinates")
+		assert.Contains(t, buf.String(), "skipped 1 postal rows with fewer than 12 fields")
 	})
+}
+
+// TestLoadPostalCodes_ToleratesMalformedCSVStructure pins the loader's
+// tolerance policy for field-count damage: a row with the wrong number of
+// fields is skipped and counted, never aborts the entire load. Before
+// FieldsPerRecord=-1, one such row returned a csv.ParseError that failed the
+// whole load — and with it server startup — because of one bad line in a
+// ~14M-row hand-curated file.
+func TestLoadPostalCodes_ToleratesMalformedCSVStructure(t *testing.T) {
+	// A short row must be skipped and counted, never abort the load (the
+	// old code failed here with ErrFieldCount once the first row had locked
+	// FieldsPerRecord to 12).
+	content := validUSPostalRow() +
+		"US\t10006\tShort Row\n" +
+		postalRow("US", "10008", "Valid After Bad", "", "", "", "", "", "", "51.5074", "-0.1278", "1")
+	path := writePostalFixture(t, content)
+
+	buf, restore := captureLoaderLogs(t)
+	defer restore()
+
+	codes, err := LoadPostalCodes(path)
+	require.NoError(t, err, "a short row must not abort the load")
+
+	require.Contains(t, codes, "US")
+	assert.Equal(t, "Valid City", codes["US"]["10005"].PlaceName)
+	assert.Equal(t, "Valid After Bad", codes["US"]["10008"].PlaceName)
+	assert.NotContains(t, codes["US"], "10006", "a short row must be skipped")
+	assert.Contains(t, buf.String(), "skipped 1 postal rows with fewer than 12 fields")
+}
+
+// TestLoadPostalCodes_QuoteCorruptionFailsLoudly pins the deliberate
+// counterpart of the tolerance policy: an unterminated leading quote makes
+// the record structure genuinely ambiguous (and with LazyQuotes it would
+// silently swallow every row after it, losing the file tail), so the load
+// fails loudly instead of producing a quietly partial index.
+func TestLoadPostalCodes_QuoteCorruptionFailsLoudly(t *testing.T) {
+	content := validUSPostalRow() +
+		postalRow("US", "10007", `"Quoted Start`, "", "", "", "", "", "", "40.7128", "-74.0060", "1") +
+		postalRow("US", "10008", "Never Reached", "", "", "", "", "", "", "51.5074", "-0.1278", "1")
+
+	_, err := LoadPostalCodes(writePostalFixture(t, content))
+	require.Error(t, err, "structurally ambiguous quoting must fail the load, not lose the file tail")
 }
