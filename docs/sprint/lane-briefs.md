@@ -43,8 +43,8 @@ Owner: go-engineer. Branch: `lane/quality-tail`. Parallel with NAME-V2;
 disjoint files.
 Files owned: `lib/dataLoader/zipCodes.go` + `lib/dataLoader/*_test.go` (new
 tests file only — do not touch `cityCoordinate.go` or its tests),
-`LICENSE` (MIT, copyright SamyRai/cityFinder contributors — match README's
-claim), `CHANGELOG.md` (Keep a Changelog format, v1.0.0 entry),
+`LICENSE` (MIT, copyright "Damir Mukimov" per git author identity — README
+already claims MIT), `CHANGELOG.md` (Keep a Changelog format, v1.0.0 entry),
 `docs/openapi.yaml` (OpenAPI 3, four endpoints: /healthz, /nearest,
 /coordinates, /postalCode — mirror `cmd/server/routes/routes.go` semantics
 exactly, including 400/404 shapes).
