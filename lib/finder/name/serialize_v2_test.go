@@ -186,12 +186,12 @@ func TestSerializeV2CountValidation(t *testing.T) {
 
 // TestSerializeV2FileDoesNotContainRuntimeState verifies the dropped trailer:
 // the decompressed v2 stream must decode header + payload and then END. Any
-// trailing value (e.g. a serialized BK-tree, as v1 wrote) means the file was
-// not written by this format.
+// trailing value means the file was not written by this format — the guard
+// that keeps lazy-build runtime state (fuzzy structure, overflow) out of the
+// file.
 func TestSerializeV2FileDoesNotContainRuntimeState(t *testing.T) {
 	original, _ := sharedCityFixture()
-	original.isBKTreeBuilt = true
-	original.allNames = []string{"Paris", "London"}
+	original.ensureFuzzyBuilt() // runtime fuzzy state must not leak into the file
 	path := serializeToTemp(t, original)
 
 	_, payloadBytes := readV2File(t, path)

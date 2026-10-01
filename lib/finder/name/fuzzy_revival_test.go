@@ -140,10 +140,11 @@ func TestFuzzyCacheIsBounded(t *testing.T) {
 	assert.LessOrEqual(t, size, intendedCap, "fuzzyCache must be bounded, got %d entries", size)
 }
 
-// TestSerializeDeserializeFuzzyRoundTrip round-trips an index whose BK-tree
-// was built before serialization and requires fuzzy search to survive. v2
-// does not persist the tree, so "survive" means the lazy rebuild on the first
-// post-deserialize typo lookup produces a working fuzzy index.
+// TestSerializeDeserializeFuzzyRoundTrip round-trips an index whose fuzzy
+// structure was built before serialization and requires fuzzy search to
+// survive. v2 does not persist the structure, so "survive" means the lazy
+// rebuild on the first post-deserialize typo lookup produces a working
+// n-gram index.
 func TestSerializeDeserializeFuzzyRoundTrip(t *testing.T) {
 	finder := BuildIndex(fuzzyFixtureCities())
 
@@ -167,16 +168,11 @@ func TestSerializeDeserializeFuzzyRoundTrip(t *testing.T) {
 	}
 }
 
-// TestDeserializeRevivesEmptyBuiltTree is the v2 successor of the v1
-// "persisted lie" test: v2 never writes isBKTreeBuilt, so no deserialized
-// finder can carry a dead built-tree state. The test pins that contract —
-// whatever runtime state the serializing finder had, the deserialized one
-// starts fuzzy-fresh and the first typo lookup lazily builds a working tree.
-func TestDeserializeRevivesEmptyBuiltTree(t *testing.T) {
+// TestDeserializeRevivesFuzzy pins the post-v2 contract: no fuzzy state is
+// serialized, so a deserialized finder starts fuzzy-fresh (notBuilt, no
+// structure) and the first typo lookup lazily builds a working n-gram index.
+func TestDeserializeRevivesFuzzy(t *testing.T) {
 	finder := BuildIndex(fuzzyFixtureCities())
-	finder.mutex.Lock()
-	finder.isBKTreeBuilt = true // runtime-only flag; v2 must not persist it
-	finder.mutex.Unlock()
 
 	tmpfile, err := os.CreateTemp("", "name_revive_*.gob")
 	assert.NoError(t, err)
@@ -187,16 +183,16 @@ func TestDeserializeRevivesEmptyBuiltTree(t *testing.T) {
 	restored, err := DeserializeIndex(tmpfile.Name())
 	assert.NoError(t, err)
 	restored.mutex.RLock()
-	built := restored.isBKTreeBuilt
-	root := restored.BKTree.Root
+	ngrams := restored.ngrams
 	restored.mutex.RUnlock()
-	assert.False(t, built, "v2 must not restore isBKTreeBuilt")
-	assert.Nil(t, root, "v2 must deserialize an empty BK-tree")
+	assert.Nil(t, ngrams, "v2 must deserialize without a fuzzy structure")
+	assert.Equal(t, int32(fuzzyNotBuilt), restored.fuzzyState.Load(), "fuzzy state must start notBuilt")
 
 	got := restored.CityByName("Pars", "FR")
 	if got == nil || got.Name != "Paris" {
-		t.Fatalf("fuzzy lookup after deserializing an empty built tree: %+v, want Paris", got)
+		t.Fatalf("fuzzy lookup after deserializing: %+v, want Paris", got)
 	}
+	assert.Equal(t, int32(fuzzyBuilt), restored.fuzzyState.Load(), "the typo lookup must have built the index")
 }
 
 // TestDeserializeGarbageTailReturnsError checks that a decode error in the
