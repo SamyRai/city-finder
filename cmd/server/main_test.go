@@ -27,12 +27,29 @@ import (
 	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/SamyRai/cityFinder/lib/finder"
 	"github.com/SamyRai/cityFinder/lib/initializer"
-	"github.com/SamyRai/cityFinder/util"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
+
+// findRepoRoot locates the repository root by walking up from the test's
+// working directory (the package dir) to the go.mod marker. The suite needs
+// it for repo-root fixtures (testdata/) and to build the server binary.
+func findRepoRoot(t require.TestingT) string {
+	dir, err := os.Getwd()
+	require.NoError(t, err)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			require.FailNow(t, "go.mod not found walking up from "+dir)
+		}
+		dir = parent
+	}
+}
 
 type ServerTestSuite struct {
 	suite.Suite
@@ -44,8 +61,7 @@ type ServerTestSuite struct {
 // overwriting the committed testdata/*.gob files. Only the source .txt
 // datasets are read from testdata/; every index write lands in the temp dir.
 func (suite *ServerTestSuite) SetupSuite() {
-	rootDir, err := util.FindProjectRoot()
-	require.NoError(suite.T(), err)
+	rootDir := findRepoRoot(suite.T())
 
 	// Relative to the package directory (the go test working directory):
 	// config.LoadConfig resolves relative paths against the CWD.
@@ -90,8 +106,7 @@ func copyFile(src, dst string) error {
 // fixtureCity loads a city from testdata/allCountries.txt by exact name and
 // country. A missing fixture is a test bug and fails the suite.
 func (suite *ServerTestSuite) fixtureCity(name, countryCode string) city.City {
-	rootDir, err := util.FindProjectRoot()
-	require.NoError(suite.T(), err)
+	rootDir := findRepoRoot(suite.T())
 
 	data, err := os.ReadFile(filepath.Join(rootDir, "testdata", "allCountries.txt"))
 	require.NoError(suite.T(), err)
@@ -114,8 +129,7 @@ func (suite *ServerTestSuite) fixtureCity(name, countryCode string) city.City {
 // fixturePostal loads a postal code record from testdata/zipCodes.txt by exact
 // country and code. A missing fixture is a test bug and fails the suite.
 func (suite *ServerTestSuite) fixturePostal(countryCode, code string) (placeName string, lat, lon float64) {
-	rootDir, err := util.FindProjectRoot()
-	require.NoError(suite.T(), err)
+	rootDir := findRepoRoot(suite.T())
 
 	file, err := os.Open(filepath.Join(rootDir, "testdata", "zipCodes.txt"))
 	require.NoError(suite.T(), err)
@@ -537,8 +551,7 @@ func TestServerGracefulShutdownSignal(t *testing.T) {
 		t.Skip("process-level signal test skipped in short mode")
 	}
 
-	rootDir, err := util.FindProjectRoot()
-	require.NoError(t, err)
+	rootDir := findRepoRoot(t)
 
 	binDir := t.TempDir()
 	binPath := filepath.Join(binDir, "cityfinder-server")
