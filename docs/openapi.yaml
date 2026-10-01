@@ -1,0 +1,290 @@
+openapi: 3.0.3
+info:
+  title: cityFinder API
+  version: 1.0.0
+  description: |
+    HTTP API of the city-finder server (cmd/server/routes/routes.go), which
+    serves nearest-city, name, and postal-code lookups over pre-built
+    GeoNames indexes.
+
+    This spec mirrors the handler code exactly. Error responses (400/404/500)
+    are plain text strings, not JSON, because the handlers use Fiber's
+    `SendString`; the exact response body is given in each example.
+
+    The server listens on port 3000 by default (`PORT` overrides it), enforces
+    read/write/idle timeouts (15s/15s/60s), a 1 MB body limit, recovers from
+    handler panics, and shuts down gracefully on SIGINT/SIGTERM.
+servers:
+  - url: http://localhost:3000
+    description: Local server (default port)
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe
+      description: >
+        Returns `{"status":"ok"}`. Registered before the data routes and never
+        touches the indexes, so it stays cheap and answers even when data
+        loading is slow or the indexes are degraded.
+      operationId: healthz
+      responses:
+        "200":
+          description: Server is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /nearest:
+    # PENDING (WEIGHTED lane): once population-weighted nearest lands, the 200
+    # body additionally includes `Population` (integer) and this endpoint
+    # accepts a `rank` query parameter (enum distance|population, default
+    # distance; invalid values -> 400). Deliberately not specced yet.
+    get:
+      summary: Find the nearest city to a coordinate pair
+      operationId: nearest
+      description: |
+        Returns the indexed city closest to the query point plus the
+        great-circle distance.
+
+        Validation order mirrors the handler: `lat` must parse as a finite
+        number (NaN and ±Inf are rejected, as is any non-numeric value
+        including a missing parameter, which arrives as an empty string);
+        then `lon` the same way; then `lat` is range-checked against
+        [-90, 90]; then `lon` against [-180, 180].
+      parameters:
+        - name: lat
+          in: query
+          required: true
+          description: Latitude in degrees. Must be a finite number.
+          schema:
+            type: number
+            format: float
+            minimum: -90
+            maximum: 90
+          example: 40.7128
+        - name: lon
+          in: query
+          required: true
+          description: Longitude in degrees. Must be a finite number.
+          schema:
+            type: number
+            format: float
+            minimum: -180
+            maximum: 180
+          example: -74.006
+      responses:
+        "200":
+          description: The nearest city and its distance from the query point.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NearestCityResponse"
+              example:
+                Latitude: 40.7127
+                Longitude: -74.0059
+                Name: New York City
+                Country: US
+                distance_km: 0.02
+        "400":
+          description: >
+            Malformed or out-of-range coordinates. Plain text; the body is
+            exactly one of the strings below, chosen by the validation order.
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                invalidLat:
+                  value: "Invalid latitude"
+                invalidLon:
+                  value: "Invalid longitude"
+                latOutOfRange:
+                  value: "Latitude must be between -90 and 90"
+                lonOutOfRange:
+                  value: "Longitude must be between -180 and 180"
+        "404":
+          description: >
+            No city indexed. Plain text; `lat` and `lon` are the parsed query
+            values formatted with %f (always six decimal places).
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "City not found for lat: 0.000000, lon: 0.000000"
+        "500":
+          description: Finder error. Plain text.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "internal server error"
+  /coordinates:
+    get:
+      summary: Find a city by exact or fuzzy name match
+      operationId: coordinates
+      description: |
+        Looks up a city by name within one country. The name is matched
+        exactly first, then fuzzily (edit distance <= 2), so typos still
+        resolve. `name` and `country-code` are trimmed of surrounding
+        whitespace; `country-code` is additionally uppercased. Both are
+        required: `name` is validated first, then `country-code`.
+      parameters:
+        - name: name
+          in: query
+          required: true
+          description: >
+            City name (trimmed). Matched exactly, then fuzzily within the
+            country.
+          schema:
+            type: string
+            minLength: 1
+          example: Paris
+        - name: country-code
+          in: query
+          required: true
+          description: ISO 3166-1 alpha-2 country code (trimmed, uppercased).
+          schema:
+            type: string
+            minLength: 1
+          example: FR
+      responses:
+        "200":
+          description: The matched city.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/City"
+              example:
+                Latitude: 48.8566
+                Longitude: 2.3522
+                Name: Paris
+                Country: FR
+        "400":
+          description: >
+            Missing parameter. Plain text; `name` is validated first, then
+            `country-code`.
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                nameRequired:
+                  value: "Name is required"
+                countryCodeRequired:
+                  value: "Country code is required"
+        "404":
+          description: No city matched. Plain text.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "City not found"
+  /postalCode:
+    get:
+      summary: Find a city by postal code
+      operationId: postalCode
+      description: |
+        Looks up the place indexed for a postal code within a country.
+        Inner spaces in the postal code are significant (GeoNames stores GB
+        codes as `SW1A 1AA`); only surrounding whitespace is trimmed, and the
+        country code is trimmed and uppercased. `code` is validated first,
+        then `country-code`.
+      parameters:
+        - name: code
+          in: query
+          required: true
+          description: >
+            Postal code (surrounding whitespace trimmed; inner spaces
+            significant).
+          schema:
+            type: string
+            minLength: 1
+          example: SW1A 1AA
+        - name: country-code
+          in: query
+          required: true
+          description: ISO 3166-1 alpha-2 country code (trimmed, uppercased).
+          schema:
+            type: string
+            minLength: 1
+          example: GB
+      responses:
+        "200":
+          description: The place indexed for the postal code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/City"
+              example:
+                Latitude: 51.5074
+                Longitude: -0.1278
+                Name: London
+                Country: GB
+        "400":
+          description: >
+            Missing parameter. Plain text; `code` is validated first, then
+            `country-code`.
+          content:
+            text/plain:
+              schema:
+                type: string
+              examples:
+                codeRequired:
+                  value: "Postal code is required"
+                countryCodeRequired:
+                  value: "Country code is required"
+        "404":
+          description: No place matched. Plain text.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "City not found"
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+    City:
+      type: object
+      description: >
+        A city as marshaled by encoding/json from lib/city.City, which has no
+        json tags — the four field names are therefore capitalized exactly as
+        below.
+      required:
+        - Latitude
+        - Longitude
+        - Name
+        - Country
+      properties:
+        Latitude:
+          type: number
+          format: double
+        Longitude:
+          type: number
+          format: double
+        Name:
+          type: string
+        Country:
+          type: string
+    NearestCityResponse:
+      type: object
+      description: >
+        The matched city plus `distance_km` (great-circle distance to the
+        query point in kilometers, rounded to 2 decimal places). The city
+        fields are the capitalized `City` fields; only the distance carries a
+        snake_case json tag.
+      allOf:
+        - $ref: "#/components/schemas/City"
+        - type: object
+          required:
+            - distance_km
+          properties:
+            distance_km:
+              type: number
+              format: double
