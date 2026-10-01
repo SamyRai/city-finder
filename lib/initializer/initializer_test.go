@@ -342,6 +342,85 @@ func TestDownloadAndExtract_SkipsWhenFinalFileExists(t *testing.T) {
 
 // --- warm-start path resolution predicate ---
 
+// --- dataset retention ---
+
+func TestDownloadAndExtract_DeletesArchiveAfterSuccess(t *testing.T) {
+	zipBytes := validZipBytes(t, "allCountries.txt", "payload\n")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(zipBytes)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	cfg := &config.Config{DatasetsFolder: dir}
+	require.NoError(t, downloadAndExtractDataset(srv.URL, "allCountries.zip", "allCountries_dump.txt", cfg))
+
+	got, err := os.ReadFile(filepath.Join(dir, "allCountries_dump.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "payload\n", string(got))
+	_, statErr := os.Stat(filepath.Join(dir, "allCountries.zip"))
+	assert.True(t, os.IsNotExist(statErr), "the archive must be removed after a successful extraction")
+}
+
+// A warm boot (all indexes present) must not touch the dataset URLs at all:
+// the extracted files may be gone from the volume, and re-downloading
+// ~442 MB before even looking at the indexes wastes the boot budget.
+func TestInitialize_WarmStartDoesNotTouchDatasets(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	writeTinyDatasets(t, cfg)
+
+	// Build and serialize all three indexes once.
+	_, err := ensureFinders(cfg, "")
+	require.NoError(t, err)
+	// Raw datasets gone, URLs deliberately unroutable: any dataset ensure
+	// would fail the boot loudly.
+	require.NoError(t, os.Remove(filepath.Join(dir, cfg.AllCitiesFile)))
+	require.NoError(t, os.Remove(filepath.Join(dir, cfg.PostalCodesFile)))
+	cfg.AllCitiesURL = "http://127.0.0.1:0/unused"
+	cfg.PostalCodesURL = "http://127.0.0.1:0/unused"
+
+	f, err := Initialize(cfg)
+	require.NoError(t, err, "a warm boot must succeed without any dataset access")
+	require.NotNil(t, f.S2Finder)
+	require.NotNil(t, f.NameFinder)
+	require.NotNil(t, f.PostalCodeFinder)
+}
+
+// datasetSource.load must fetch missing datasets on demand: a warm boot
+// skipped ensureDatasets, and a corrupt/legacy index then forces a rebuild.
+func TestDatasetSource_LoadReEnsuresMissingDatasets(t *testing.T) {
+	citiesContent := "2994701\tRoc Meler\tRoc Meler\tRoc Mele\t42.58765\t1.7418\tT\tPK\tAD\tAD,FR\t02\t\t\t\t0\t2811\t2348\tEurope/Andorra\t2023-10-03\n"
+	postalContent := "AD\tAD100\tCanillo\tCanillo\t02\t\t\t\t\t42.5833\t1.6667\t6\n"
+	citiesZip := validZipBytes(t, "allCountries.txt", citiesContent)
+	postalZip := validZipBytes(t, "zipCodes.txt", postalContent)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/allCountries.zip":
+			_, _ = w.Write(citiesZip)
+		case "/zipCodes.zip":
+			_, _ = w.Write(postalZip)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.AllCitiesURL = srv.URL + "/allCountries.zip"
+	cfg.AllCitiesZip = "allCountries.zip"
+	cfg.PostalCodesURL = srv.URL + "/zipCodes.zip"
+	cfg.PostalCodesZip = "zipCodes.zip"
+
+	data := &datasetSource{cfg: cfg}
+	require.NoError(t, data.load(), "load must re-ensure and fetch the missing datasets on demand")
+	assert.NotEmpty(t, data.cities)
+	assert.NotEmpty(t, data.postalCodes)
+	_, statErr := os.Stat(filepath.Join(dir, cfg.AllCitiesFile))
+	assert.NoError(t, statErr, "the cities dataset must be present after the on-demand fetch")
+}
+
 func TestIndexPaths_Resolution(t *testing.T) {
 	cfg := &config.Config{
 		DatasetsFolder:      string(filepath.Separator) + filepath.Join("data", "datasets"),
