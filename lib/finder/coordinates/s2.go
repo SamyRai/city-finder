@@ -444,7 +444,7 @@ func (f *S2Finder) nearest(lat, lon float64, rank Rank) (*city.City, int, float6
 		return nil, 0, 0, fmt.Errorf("invalid rank %d", int(rank))
 	}
 	cityIndex := winner.EdgeID()
-	if int(cityIndex) >= len(f.Cities) {
+	if cityIndex < 0 || cityIndex >= len(f.Cities) {
 		return nil, 0, 0, fmt.Errorf("invalid city index %d found (total cities: %d)", cityIndex, len(f.Cities))
 	}
 	nearestCity := f.Cities[cityIndex]
