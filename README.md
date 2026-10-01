@@ -70,7 +70,7 @@ make build-prod
 go run cmd/build-index/main.go prod
 ```
 
-**Note**: Production mode processes ~13.5 million cities and may take several minutes to complete.
+**Note**: Production mode processes ~13.5 million cities and may take several minutes to complete. The prod path currently expects the literal files `datasets/allCountries.txt` and `datasets/zipCodes.txt`, so symlink the initializer's `allCountries_dump.txt`/`allCountries_zip.txt` to those names first (a config-driven fix is landing separately).
 
 ## Usage
 
@@ -86,6 +86,7 @@ import (
     "log"
 
     "github.com/SamyRai/cityFinder/lib/finder"
+    "github.com/SamyRai/cityFinder/lib/finder/coordinates"
     "github.com/SamyRai/cityFinder/lib/config"
     "github.com/SamyRai/cityFinder/lib/initializer"
 )
@@ -102,7 +103,7 @@ func main() {
     }
 	
     // Find the nearest city
-    nearestCity, distance, err := cityFinder.FindNearestCity(40.7128, -74.0060) // New York coordinates
+    nearestCity, distance, err := cityFinder.FindNearestCity(40.7128, -74.0060, coordinates.RankDistance) // New York coordinates
     if err != nil {
         log.Fatalf("Failed to find nearest city: %v", err)
     }
@@ -168,9 +169,9 @@ The S2 finder includes a brute-force oracle test, the initializer/download layer
 
 ## Initialization and Datasets
 
-This project requires datasets from the [GeoNames](http://www.geonames.org/) database. Specifically, you need the `allCountries.txt` for city data and `allCountries.zip` for postal code data. These files should be placed in the `datasets` folder.
+This project requires datasets from the [GeoNames](http://www.geonames.org/) database. Specifically, you need `allCountries_dump.txt` for city data (extracted from the downloaded `allCountries.zip` archive) and `allCountries_zip.txt` for postal code data (extracted from `zipCodes.zip`). These files should be placed in the `datasets` folder.
 
-During initialization, the application checks if these datasets and the S2 index are available. If they are not, it downloads and extracts the required datasets and builds the S2 index. Downloads are verified (HTTP status checked, streamed to a temporary file and renamed atomically), and a pre-existing archive that fails to extract is re-downloaded once instead of blocking every later startup. When all three pre-built indexes are present, the raw datasets are not parsed at all, which makes warm starts fast.
+During initialization, the application checks if these datasets and the three pre-built indexes are available. If they are not, it downloads and extracts the required datasets and builds the S2 index. Downloads are verified (HTTP status checked, streamed to a temporary file and renamed atomically), and a pre-existing archive that fails to extract is re-downloaded once instead of blocking every later startup. When all three pre-built indexes are present, the raw datasets are not parsed at all, which makes warm starts fast.
 
 ### Using the Server
 
@@ -252,7 +253,7 @@ helm install city-finder ./helm/city-finder \
   --set persistence.enabled=true
 ```
 
-Defaults are sized for the v1.0 memory profile (memory request `10Gi`, limit `14Gi`, startup-probe budget 180 s). A single replica rolls without an outage window (`maxUnavailable: 0`, `maxSurge: 1`); scale to two or more replicas before enabling the (default-off) PodDisruptionBudget. Memory and startup-probe values are the two knobs to re-check whenever the index format changes. Validate any local customization with `helm lint` and `helm template ... | kubeconform -strict -summary`.
+Defaults are sized for the v1.0 memory profile (memory request `10Gi`, limit `14Gi`, startup-probe budget 600 s). A single replica rolls without an outage window (`maxUnavailable: 0`, `maxSurge: 1`); scale to two or more replicas before enabling the (default-off) PodDisruptionBudget. Memory and startup-probe values are the two knobs to re-check whenever the index format changes. Validate any local customization with `helm lint` and `helm template ... | kubeconform -strict -summary`.
 
 ### Cluster adoption (Harbor / ArgoCD)
 
