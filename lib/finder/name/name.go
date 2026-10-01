@@ -594,6 +594,14 @@ func (nf *Finder) buildFuzzyIndex(names []string, totalKeys int) {
 	}
 }
 
+// FuzzyBuildState reports the fuzzy index state for operators: 0 = not
+// built, 1 = building, 2 = built, 3 = disabled (corpus over FuzzyMaxNames,
+// or the n-gram build refused the corpus). Intended for health/metrics
+// surfaces; the numeric values mirror the unexported state constants.
+func (nf *Finder) FuzzyBuildState() int32 {
+	return nf.fuzzyState.Load()
+}
+
 // WarmFuzzy triggers the lazy fuzzy (n-gram) index build in the background
 // without blocking the caller. It is idempotent and safe to call from any
 // state: with the index already built, building, or disabled it is a no-op

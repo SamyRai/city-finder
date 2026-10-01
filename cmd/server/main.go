@@ -25,6 +25,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("Initialization failed: %v", err)
 	}
+	// Build the fuzzy (n-gram) index in the background so no user query
+	// pays the in-request build: until it lands, typo lookups get exact-only
+	// results (~94 s and +~1.2 GiB resident at prod scale — see
+	// name.Finder.WarmFuzzy). Non-blocking; serving starts immediately.
+	mainFinder.WarmFuzzy()
 
 	app := fiber.New(fiber.Config{
 		ReadTimeout:  15 * time.Second,

@@ -92,6 +92,9 @@ func TestMetricsEndpoint(t *testing.T) {
 	assert.Contains(t, out, `http_request_duration_seconds_count{path="/nearest"} 1`)
 	// The scrape must not count itself.
 	assert.NotContains(t, out, `path="/metrics"`)
+	// The fuzzy build-state gauge is always present on the metrics surface
+	// (0 = not built here; the fixture never triggers a fuzzy build).
+	assert.Contains(t, out, "# TYPE fuzzy_build_state gauge\nfuzzy_build_state 0")
 
 	// SetupRoutes with a nil registry keeps serving without the metrics
 	// surface (tests and embedded use).
