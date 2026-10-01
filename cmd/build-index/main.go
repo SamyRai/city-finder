@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -183,16 +184,28 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Set data file paths and output directory based on mode
+	// Set data file paths and output directory based on mode. Prod resolves
+	// the dataset filenames from the same config the initializer uses
+	// (config.json / CONFIG_PATH), so the two never disagree about names; the
+	// literals below are only a fallback for a missing config file.
 	var dataFile, postalCodeFile, outputDir string
+	s2Config := &config.S2{MinLevel: 10, MaxLevel: 16, MaxCells: 8}
 	if mode == "test" {
 		dataFile = "testdata/allCountries.txt"
 		postalCodeFile = "testdata/zipCodes.txt"
 		outputDir = "testdata"
 	} else { // mode == "prod"
+		outputDir = "datasets"
 		dataFile = "datasets/allCountries.txt"
 		postalCodeFile = "datasets/zipCodes.txt"
-		outputDir = "datasets"
+		if cfg, err := config.LoadConfig("config.json"); err != nil {
+			log.Printf("Warning: could not load config (%v); falling back to legacy literal dataset names %s / %s — symlink them if the initializer produced different names", err, dataFile, postalCodeFile)
+		} else {
+			dataFile = filepath.Join(cfg.DatasetsFolder, cfg.AllCitiesFile)
+			postalCodeFile = filepath.Join(cfg.DatasetsFolder, cfg.PostalCodesFile)
+			outputDir = cfg.DatasetsFolder
+			s2Config = &cfg.S2
+		}
 	}
 
 	fmt.Printf("Mode:         %s\n", mode)
@@ -245,11 +258,6 @@ func main() {
 	printResult(postalLoadResult)
 
 	// Step 3: Build S2 Index
-	s2Config := &config.S2{
-		MinLevel: 10,
-		MaxLevel: 16,
-		MaxCells: 8,
-	}
 	var s2Finder *coordinates.S2Finder
 	s2Result := measureOperation("3. Building S2 Spatial Index", len(cities), func() {
 		var err error
