@@ -34,22 +34,25 @@ paths:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
   /nearest:
-    # PENDING (WEIGHTED lane): once population-weighted nearest lands, the 200
-    # body additionally includes `Population` (integer) and this endpoint
-    # accepts a `rank` query parameter (enum distance|population, default
-    # distance; invalid values -> 400). Deliberately not specced yet.
     get:
       summary: Find the nearest city to a coordinate pair
       operationId: nearest
       description: |
         Returns the indexed city closest to the query point plus the
-        great-circle distance.
+        great-circle distance. With `rank=population` the winner maximizes
+        the gravity score population / (distance_km² + 1) over ALL indexed
+        cities (exact: escalating-radius search under an anytime bound) and
+        the response additionally carries `Population`. Land queries resolve
+        in microseconds-to-milliseconds; sparse/ocean points may fall back
+        to a wider scan and take seconds.
 
         Validation order mirrors the handler: `lat` must parse as a finite
         number (NaN and ±Inf are rejected, as is any non-numeric value
         including a missing parameter, which arrives as an empty string);
         then `lon` the same way; then `lat` is range-checked against
-        [-90, 90]; then `lon` against [-180, 180].
+        [-90, 90]; then `lon` against [-180, 180]; then `rank` (if present
+        and non-empty) must be exactly `distance` or `population`
+        (case-sensitive).
       parameters:
         - name: lat
           in: query
@@ -71,23 +74,41 @@ paths:
             minimum: -180
             maximum: 180
           example: -74.006
+        - name: rank
+          in: query
+          required: false
+          description: >
+            Ranking mode. `distance` (default; also when the parameter is
+            absent or empty) returns the closest city and omits `Population`.
+            `population` returns the gravity-score winner
+            (population / (distance_km² + 1)) and includes `Population`.
+          schema:
+            type: string
+            enum: [distance, population]
+            default: distance
+          example: population
       responses:
         "200":
-          description: The nearest city and its distance from the query point.
+          description: >
+            The matched city and its distance from the query point. With
+            rank=population the body additionally includes `Population`
+            (int32, the winner's GeoNames population; 0 when unknown).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/NearestCityResponse"
               example:
-                Latitude: 40.7127
-                Longitude: -74.0059
-                Name: New York City
-                Country: US
-                distance_km: 0.02
+                Latitude: 25.0767
+                Longitude: 55.3178
+                Name: Dubai
+                Country: AE
+                Population: 3790000
+                distance_km: 0.87
         "400":
           description: >
-            Malformed or out-of-range coordinates. Plain text; the body is
-            exactly one of the strings below, chosen by the validation order.
+            Malformed or out-of-range coordinates, or an unrecognized rank
+            value. Plain text; the body is exactly one of the strings below,
+            chosen by the validation order.
           content:
             text/plain:
               schema:
@@ -101,6 +122,8 @@ paths:
                   value: "Latitude must be between -90 and 90"
                 lonOutOfRange:
                   value: "Longitude must be between -180 and 180"
+                invalidRank:
+                  value: "Invalid rank"
         "404":
           description: >
             No city indexed. Plain text; `lat` and `lon` are the parsed query
@@ -278,13 +301,21 @@ components:
         The matched city plus `distance_km` (great-circle distance to the
         query point in kilometers, rounded to 2 decimal places). The city
         fields are the capitalized `City` fields; only the distance carries a
-        snake_case json tag.
+        snake_case json tag. `Population` (int32) appears ONLY when the
+        request used rank=population; distance-ranked responses never
+        include the key.
       allOf:
         - $ref: "#/components/schemas/City"
         - type: object
           required:
             - distance_km
           properties:
+            Population:
+              type: integer
+              format: int32
+              description: >
+                Winner's GeoNames population (field 14; 0 when the source
+                row had none). Present only in rank=population responses.
             distance_km:
               type: number
               format: double
