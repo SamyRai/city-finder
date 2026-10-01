@@ -177,6 +177,50 @@ func TestUnzipAndRename_CorruptArchive(t *testing.T) {
 	require.Error(t, err)
 }
 
+// A copy that fails mid-stream (corrupted entry payload) must leave neither
+// the final file nor a .part behind, and must not clobber a pre-existing
+// final file. Before the .part+rename extraction, a crash or disk-full here
+// left a truncated dataset at the final path that the next boot accepted as
+// complete and baked into the indexes.
+func TestUnzipAndRename_FailedCopyLeavesNoFinalOrPartFile(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "dataset.zip")
+	entry := "allCountries.txt"
+	buildZip(t, src, map[string]string{entry: strings.Repeat("payload line\n", 64)})
+
+	// Corrupt the entry's compressed payload (the first local file header
+	// occupies 30 bytes + filename) so the copy fails with a flate/CRC error.
+	raw, err := os.ReadFile(src)
+	require.NoError(t, err)
+	raw[30+len(entry)+2] ^= 0xFF
+	require.NoError(t, os.WriteFile(src, raw, 0o600))
+
+	dest := t.TempDir()
+	outPath := filepath.Join(dest, "renamed.txt")
+	require.NoError(t, os.WriteFile(outPath, []byte("previous"), 0o600))
+
+	err = unzipAndRename(src, dest, "renamed.txt")
+	require.Error(t, err, "a corrupted entry payload must fail the extraction")
+
+	got, readErr := os.ReadFile(outPath)
+	require.NoError(t, readErr)
+	assert.Equal(t, "previous", string(got), "a pre-existing final file must survive a failed extraction")
+	_, statErr := os.Stat(outPath + ".part")
+	assert.True(t, os.IsNotExist(statErr), "no .part file may be left behind after a failed extraction")
+}
+
+func TestUnzipAndRename_SuccessLeavesNoPartFile(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "dataset.zip")
+	buildZip(t, src, map[string]string{"allCountries.txt": "line1\nline2\n"})
+
+	dest := t.TempDir()
+	require.NoError(t, unzipAndRename(src, dest, "renamed.txt"))
+
+	_, statErr := os.Stat(filepath.Join(dest, "renamed.txt.part"))
+	assert.True(t, os.IsNotExist(statErr), "no .part file may remain after a successful extraction")
+}
+
 // --- downloadAndExtractDataset ---
 
 // validZipBytes builds a single-entry zip in memory and returns its bytes.
