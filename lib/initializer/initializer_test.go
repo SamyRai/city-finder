@@ -221,6 +221,59 @@ func TestUnzipAndRename_SuccessLeavesNoPartFile(t *testing.T) {
 	assert.True(t, os.IsNotExist(statErr), "no .part file may remain after a successful extraction")
 }
 
+// --- init lock ---
+
+func TestAcquireInitLock_ExclusiveWhileHeld(t *testing.T) {
+	dir := t.TempDir()
+
+	release, err := acquireInitLock(dir)
+	require.NoError(t, err)
+
+	// A second initializer (here: same process, which the pid check also
+	// reports as alive) must fail fast instead of racing the holder.
+	_, err = acquireInitLock(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "another initializer")
+
+	release()
+
+	release2, err := acquireInitLock(dir)
+	require.NoError(t, err, "the lock must be acquirable again after release")
+	release2()
+}
+
+func TestAcquireInitLock_StealsStaleLockFromDeadPid(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, initLockName)
+	// A pid far beyond any pid_max cannot be alive on any supported platform.
+	require.NoError(t, os.WriteFile(lockPath, []byte("999999999\n"), 0o600))
+
+	release, err := acquireInitLock(dir)
+	require.NoError(t, err, "a lock whose owner is provably dead must be stolen")
+	release()
+}
+
+func TestAcquireInitLock_RefusesLockFromLivingForeignPid(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, initLockName)
+	// pid 1 (launchd/systemd) is alive on both darwin and linux.
+	require.NoError(t, os.WriteFile(lockPath, []byte("1\n"), 0o600))
+
+	_, err := acquireInitLock(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "another initializer")
+}
+
+func TestAcquireInitLock_GarbageLockIsStale(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, initLockName)
+	require.NoError(t, os.WriteFile(lockPath, []byte("not a pid"), 0o600))
+
+	release, err := acquireInitLock(dir)
+	require.NoError(t, err, "an unparseable lock cannot prove a live owner and must be treated as stale")
+	release()
+}
+
 // --- downloadAndExtractDataset ---
 
 // validZipBytes builds a single-entry zip in memory and returns its bytes.

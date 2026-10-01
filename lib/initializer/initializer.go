@@ -16,16 +16,113 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
 // Initialize ensures datasets are downloaded and extracted, and the indexes are built
 func Initialize(cfg *config.Config) (*finder.Finder, error) {
+	if err := ensureDatasetsFolder(cfg); err != nil {
+		return nil, err
+	}
+	release, err := acquireInitLock(cfg.DatasetsFolder)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	if err := ensureDatasets(cfg); err != nil {
 		return nil, err
 	}
 	return ensureFinders(cfg, ensureAdmin1NamesPath(cfg))
+}
+
+// ensureDatasetsFolder creates the datasets folder when missing. MkdirAll so
+// nested paths (config datasets_folder: "data/datasets") work.
+func ensureDatasetsFolder(cfg *config.Config) error {
+	if _, err := os.Stat(cfg.DatasetsFolder); os.IsNotExist(err) {
+		if err := os.MkdirAll(cfg.DatasetsFolder, os.ModePerm); err != nil {
+			return fmt.Errorf("failed to create datasets folder: %v", err)
+		}
+	}
+	return nil
+}
+
+// initLockName is the lock file serializing initializers per datasets folder.
+const initLockName = ".cityfinder-init.lock"
+
+// acquireInitLock guards a datasets folder against concurrent boots. Two
+// cold-booting processes otherwise write the same fixed "<index>.gob.part"
+// paths: the second os.Create truncates the first's in-flight part file and
+// both rename, leaving interleaved garbage that only self-heals via the
+// corrupt-index rebuild after thrashing both boots (a real scenario under a
+// rolling update with maxSurge, where two pods share one PVC). The lock is an
+// O_EXCL-created file holding the owning pid; a lock whose owner is provably
+// dead (crashed process) is stolen. Living owner → fail fast: the caller
+// exits and the orchestrator restarts it once the first boot finishes.
+func acquireInitLock(datasetsFolder string) (release func(), err error) {
+	lockPath := filepath.Join(datasetsFolder, initLockName)
+	for attempt := 0; ; attempt++ {
+		f, createErr := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if createErr == nil {
+			_, writeErr := fmt.Fprintf(f, "%d\n", os.Getpid())
+			closeErr := f.Close()
+			if writeErr != nil || closeErr != nil {
+				_ = os.Remove(lockPath)
+				return nil, fmt.Errorf("failed to write init lock %s: %v", lockPath, errors.Join(writeErr, closeErr))
+			}
+			return func() { _ = os.Remove(lockPath) }, nil
+		}
+		if !os.IsExist(createErr) {
+			return nil, fmt.Errorf("failed to create init lock %s: %w", lockPath, createErr)
+		}
+
+		pid, _ := readLockPID(lockPath)
+		if pid > 0 && processAlive(pid) {
+			return nil, fmt.Errorf("another initializer (pid %d) is running against datasets folder %s; refusing to race it (delete %s if this is stale)", pid, datasetsFolder, lockPath)
+		}
+		if attempt >= 1 {
+			// The stale lock could not be stolen on the first try (another
+			// process raced us to it) — surface instead of spinning.
+			return nil, fmt.Errorf("cannot acquire init lock %s: acquire raced after stale-lock removal", lockPath)
+		}
+		log.Printf("removing stale init lock %s (pid %d is not running)", lockPath, pid)
+		if rmErr := os.Remove(lockPath); rmErr != nil {
+			return nil, fmt.Errorf("failed to remove stale init lock %s: %w", lockPath, rmErr)
+		}
+	}
+}
+
+// readLockPID parses the pid stored in the lock file; any read/parse error
+// yields pid 0, which acquireInitLock treats as not-alive (stale).
+func readLockPID(lockPath string) (int, error) {
+	data, err := os.ReadFile(lockPath)
+	if err != nil {
+		return 0, err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0, err
+	}
+	return pid, nil
+}
+
+// processAlive reports whether pid names a running process. Signal 0 checks
+// existence without delivering anything; EPERM means the process exists but
+// belongs to another user. (Unix semantics — the server targets Linux
+// containers and darwin development.)
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	sigErr := proc.Signal(syscall.Signal(0))
+	return sigErr == nil || errors.Is(sigErr, syscall.EPERM)
 }
 
 // ensureAdmin1NamesPath resolves the OPTIONAL admin1-names dataset path
@@ -57,12 +154,6 @@ func ensureAdmin1NamesPath(cfg *config.Config) string {
 // ensureDatasets ensures that the datasets are downloaded and extracted
 func ensureDatasets(cfg *config.Config) error {
 	log.Printf("Ensuring datasets are downloaded and extracted in %s", cfg.DatasetsFolder)
-	if _, err := os.Stat(cfg.DatasetsFolder); os.IsNotExist(err) {
-		err := os.Mkdir(cfg.DatasetsFolder, os.ModePerm)
-		if err != nil {
-			return fmt.Errorf("failed to create datasets folder: %v", err)
-		}
-	}
 
 	if err := downloadAndExtractDataset(cfg.AllCitiesURL, cfg.AllCitiesZip, cfg.AllCitiesFile, cfg); err != nil {
 		return err
