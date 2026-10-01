@@ -395,11 +395,14 @@ func TestNearestPlacePopulationRankMatchesOracle(t *testing.T) {
 }
 
 // TestNearestPlaceDistanceRankMatchesMaxResultsOne pins the equivalence the
-// distance path relies on: since the candidate pool grew from 1 to
-// rankCandidatePool, results[0] must still be the same city, at the same
-// distance, that the historical MaxResults(1) query returned. The randomized
-// points are checked both against the pre-change query issued verbatim here
-// and (via the oracle suite above) against the brute-force oracle.
+// distance path owes the API: whatever mechanism NearestPlace uses for
+// RankDistance, its city and distance must be exactly what the historical
+// MaxResults(1) query issued verbatim here returns. (An earlier
+// implementation shared a rankCandidatePool fetch between both modes and
+// relied on results[0] — provably equivalent, but it inherited the full-scan
+// cost of multi-result queries in this golang/geo version; this test guards
+// whichever mechanism ships.) The randomized points are also checked against
+// the brute-force oracle by the suite above.
 func TestNearestPlaceDistanceRankMatchesMaxResultsOne(t *testing.T) {
 	cities := oracleCitySet()
 	finder, err := BuildIndex(cities, &config.S2{})

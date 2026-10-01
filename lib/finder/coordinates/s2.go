@@ -29,14 +29,15 @@ const (
 	RankPopulation
 )
 
-// rankCandidatePool is how many nearest candidates NearestPlace fetches
-// before applying the ranking mode. The distance mode needs only the closest
-// result; the population mode scores the pool with a gravity model that
-// decays with squared distance, so its winner always comes from the query
-// point's immediate neighborhood — 16 keeps the pool comfortably larger than
-// any realistic winner neighborhood while staying far from the unpruned
-// default (one result per indexed point). It is a structural constant for
-// decay-based ranking, not a tuning knob.
+// rankCandidatePool is how many nearest candidates the population ranking
+// fetches and scores. The gravity model decays with squared distance, so the
+// weighted winner always comes from the query point's immediate neighborhood
+// — 16 keeps the pool comfortably larger than any realistic winner
+// neighborhood. It is a structural constant for decay-based ranking, not a
+// tuning knob. (In this golang/geo version a multi-result query cannot prune
+// the search — see NearestPlace — so the pool size does not change the cost
+// of a population-ranked query at prod scale; it only defines which
+// candidates can win.)
 const rankCandidatePool = 16
 
 // S2Finder uses a ShapeIndex for efficient nearest neighbor searches.
@@ -138,15 +139,20 @@ func BuildIndex(cities []city.SpatialCity, config *config.S2) (*S2Finder, error)
 }
 
 // NearestPlace finds the city nearest to the given latitude and longitude,
-// ordered by the requested ranking mode over a shared candidate pool of the
-// rankCandidatePool closest indexed points.
+// ordered by the requested ranking mode.
 //
 // rank == RankDistance (the default, and the behavior of every pre-ranking
-// release): returns the closest city. ClosestEdgeQuery.FindEdges returns its
-// results sorted by distance, so results[0] is the same city the historical
-// MaxResults(1) query returned.
+// release): issues the historical MaxResults(1) query verbatim and returns
+// its single closest result, so both the returned city and the latency
+// profile are exactly the pre-change path's. (A shared rankCandidatePool
+// fetch whose results[0] is provably the same city was tried first — the
+// equivalence is real and test-pinned — but this golang/geo version never
+// tightens the search limit for maxResults > 1, turning every multi-result
+// query into a full 13.47M-edge scan (~10 s per query at prod scale,
+// measured); see the PR summary.)
 //
-// rank == RankPopulation: ranks the same candidate pool with a gravity model,
+// rank == RankPopulation: fetches the rankCandidatePool closest candidates
+// and ranks them with a gravity model,
 //
 //	score = population / (d*d + 1)
 //
@@ -156,15 +162,24 @@ func BuildIndex(cities []city.SpatialCity, config *config.S2) (*S2Finder, error)
 // population. Ties on score are broken by the smaller distance, then stably
 // by candidate index: candidates arrive sorted by distance, so scanning in
 // order and keeping a strictly greater score yields both tie-breaks for free.
+// Note the same library caveat: the pool fetch is a full index scan at prod
+// scale in this golang/geo version, so weighted queries are ~seconds each;
+// correctness is unaffected (results are sorted, then truncated to the pool).
 func (f *S2Finder) NearestPlace(lat, lon float64, rank Rank) (*city.City, float64, error) {
 	if f.Index == nil {
 		return nil, 0, fmt.Errorf("s2 index is not initialized")
 	}
 	targetPoint := s2.PointFromLatLng(s2.LatLngFromDegrees(lat, lon))
-	// Fetch a fixed candidate pool instead of a single result. Pruning the
-	// query (vs the MaxInt32 default) still avoids collecting and sorting a
-	// result for every indexed point on each query.
-	query := s2.NewClosestEdgeQuery(f.Index, s2.NewClosestEdgeQueryOptions().MaxResults(rankCandidatePool))
+	// Pruning the query (vs the MaxInt32 default) avoids collecting and
+	// sorting a result for every indexed point on each query — but the
+	// pruning only bites at maxResults == 1 in this golang/geo version, so
+	// the distance path asks for exactly one result and only the population
+	// path pays for the candidate pool.
+	poolSize := 1
+	if rank == RankPopulation {
+		poolSize = rankCandidatePool
+	}
+	query := s2.NewClosestEdgeQuery(f.Index, s2.NewClosestEdgeQueryOptions().MaxResults(poolSize))
 	target := s2.NewMinDistanceToPointTarget(targetPoint)
 	results := query.FindEdges(target)
 
