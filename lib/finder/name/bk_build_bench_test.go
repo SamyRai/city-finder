@@ -37,6 +37,11 @@ func BenchmarkEnsureBKTreeBuilt(b *testing.B) {
 		finder.BKTree = util.NewBKTree()
 		finder.isBKTreeBuilt = false
 		finder.mutex.Unlock()
+		// The runtime gate is a separate state machine from isBKTreeBuilt;
+		// without this reset every iteration after the first would fast-path
+		// out of ensureBKTreeBuilt (state already fuzzyBuilt) and measure
+		// nothing.
+		finder.fuzzyState.Store(fuzzyNotBuilt)
 		finder.ensureBKTreeBuilt()
 	}
 }

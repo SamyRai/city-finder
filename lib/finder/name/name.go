@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unique"
 
@@ -40,6 +42,38 @@ const (
 	maxFuzzyCacheEntries = 10000
 )
 
+// FuzzyMaxNames is the maximum number of (country, name) keys an index may
+// contain before lazy BK-tree construction is refused. Over it, fuzzy
+// matching is disabled for that Finder's lifetime and lookups degrade to
+// exact-only: at production scale (17.7M names) the sequential build takes
+// minutes while stalling every concurrent lookup (Go's RWMutex blocks new
+// readers behind a pending writer), and steady-state fuzzy searches cost
+// 0.6-2.2s each — worse than the typos they would rescue.
+//
+// The gate counts total (country, name) keys — sum of the per-country map
+// lengths — not unique names. That over-approximates the tree size (a name
+// indexed in N countries counts N times), which is intentional: the count is
+// O(#countries) with zero allocations, and fuzzy matching is a best-effort
+// enhancement, never a correctness requirement.
+//
+// Override it BEFORE the first fuzzy lookup on any Finder: the decision is
+// evaluated once per index and is terminal, and the variable is read without
+// synchronization.
+var FuzzyMaxNames = 2_000_000
+
+// fuzzyState values track the lazy fuzzy index. The state moves not-built ->
+// building -> built, or not-built -> disabled once the FuzzyMaxNames gate
+// trips. Both terminal states are sticky for the Finder's lifetime, with one
+// exception mirroring isBKTreeBuilt: a build over an empty index yields no
+// tree and returns to not-built so later AddCity growth can trigger a fresh
+// build.
+const (
+	fuzzyNotBuilt int32 = iota // zero value: no build has run yet
+	fuzzyBuilding              // one goroutine is building the tree lock-free
+	fuzzyBuilt                 // tree is built and searchable
+	fuzzyDisabled              // index over FuzzyMaxNames; exact-only for life
+)
+
 // Finder is a struct that contains the data for city name lookups
 // Struct field ordering optimized for memory alignment (Go 1.22+ best practice):
 // - Pointers and maps first (8 bytes on 64-bit)
@@ -51,7 +85,8 @@ type Finder struct {
 	allNames      []string                           // All unique names for lazy BK-tree building
 	cacheMutex    sync.RWMutex                       // Mutex for fuzzy search cache
 	mutex         sync.RWMutex                       // Mutex for thread-safe operations
-	isBKTreeBuilt bool                               // Flag to track if BK-tree has been built
+	isBKTreeBuilt bool                               // Flag to track if BK-tree has been built (serialized)
+	fuzzyState    atomic.Int32                       // Lazy fuzzy-index state (fuzzyNotBuilt*, above); runtime-only, not serialized
 }
 
 // Memory pools removed - they were causing excessive memory usage
@@ -398,54 +433,99 @@ func (nf *Finder) namesFromIndex() []string {
 	return names
 }
 
-// ensureBKTreeBuilt lazily builds the BK-tree only when needed. The fast path
-// only takes the read lock; the build itself runs under the write lock.
-func (nf *Finder) ensureBKTreeBuilt() {
-	nf.mutex.RLock()
-	built := nf.isBKTreeBuilt
-	nf.mutex.RUnlock()
-	if built {
-		return
+// totalIndexKeys returns the total number of (country, name) keys across the
+// inverted index — the gate metric for FuzzyMaxNames. O(#countries) map-len
+// additions, no allocations. The caller must hold nf.mutex (read or write):
+// AddCity and the concurrent batch merger mutate the inner maps under the
+// write lock.
+func (nf *Finder) totalIndexKeys() int {
+	total := 0
+	for _, countryMap := range nf.InvertedIndex {
+		total += len(countryMap)
 	}
-
-	nf.mutex.Lock()
-	defer nf.mutex.Unlock()
-
-	if nf.isBKTreeBuilt {
-		return
-	}
-
-	nf.buildBKTreeSequential()
-
-	// Mark built only when the tree actually holds names. An empty index
-	// legitimately stays unbuilt so later AddCity growth can trigger a build.
-	if nf.BKTree.Root != nil {
-		nf.isBKTreeBuilt = true
-	}
+	return total
 }
 
-// buildBKTreeSequential rebuilds the shared BK-tree from the complete name
-// set derived from the inverted index. It must be called with nf.mutex held
-// for writing (ensureBKTreeBuilt guarantees that).
+// ensureBKTreeBuilt lazily brings the fuzzy index to a terminal state: built,
+// or disabled when the index exceeds FuzzyMaxNames. It is safe to call from
+// any lookup path — the common case is one atomic load — and a build already
+// in progress is neither waited on nor duplicated: concurrent callers simply
+// observe a not-ready index for that one request.
 //
-// The previous "parallel" shape spawned workers that each built a throwaway
-// local tree and then mutated the shared tree from inside their goroutines —
-// unsynchronized concurrent map writes that crash at scale while doing twice
-// the Add work. BK-tree insertion is inherently serial (each insert walks the
-// shared tree), so a parallel shape that only touched the shared tree after
-// wg.Wait() would reduce to exactly this sequential loop.
-func (nf *Finder) buildBKTreeSequential() {
-	names := nf.namesFromIndex()
+// The build itself deliberately holds NO lock. The previous shape ran the
+// whole sequential build under the write lock (measured: minutes at 17.7M
+// names), and Go's writer-fair RWMutex then blocks every exact lookup —
+// including phase-1 hits that only need RLock — for the entire build. Now
+// only the name snapshot (RLock) and the final pointer swap (Lock,
+// microseconds) take the mutex.
+func (nf *Finder) ensureBKTreeBuilt() {
+	switch nf.fuzzyState.Load() {
+	case fuzzyBuilt, fuzzyDisabled:
+		return
+	case fuzzyBuilding:
+		// Another goroutine is mid-build. Waiting is what stalled lookups
+		// before; duplicating the work doubles it. Report not-ready instead.
+		return
+	}
 
-	// Rebuild from scratch: names that AddCity already added to the tree
-	// incrementally are re-added from the index, which avoids distance-0
-	// duplicate nodes from double insertion.
+	// Snapshot under the read lock: the key total gates the build, the name
+	// list seeds it, and both must come from one consistent view of the index.
+	nf.mutex.RLock()
+	totalKeys := nf.totalIndexKeys()
+	if totalKeys > FuzzyMaxNames {
+		nf.mutex.RUnlock()
+		// Terminal, logged exactly once by the goroutine that flips the state.
+		if nf.fuzzyState.CompareAndSwap(fuzzyNotBuilt, fuzzyDisabled) {
+			log.Printf("name index has %d keys over fuzzy threshold %d; fuzzy matching disabled (exact-only) — set name.FuzzyMaxNames to override",
+				totalKeys, FuzzyMaxNames)
+		}
+		return
+	}
+	names := nf.namesFromIndex()
+	nf.mutex.RUnlock()
+
+	if !nf.fuzzyState.CompareAndSwap(fuzzyNotBuilt, fuzzyBuilding) {
+		return // lost the race to another builder; it publishes the tree
+	}
+
+	// BK-tree insertion is inherently serial (each insert walks the tree from
+	// the root), so this is a plain sequential loop — but into a LOCAL tree
+	// with no lock held. A worker-pool shape would reduce to exactly this
+	// loop anyway: parallel inserts into one tree are unsynchronized map
+	// writes, so the parallelism buys nothing.
 	tree := util.NewBKTree()
 	for _, name := range names {
 		tree.Add(name)
 	}
-	nf.BKTree = tree
-	nf.allNames = names
+
+	// Commit under the write lock. The index only ever grows — every insertion
+	// path appends under this same lock, nothing removes — so an unchanged key
+	// total since the snapshot means the name list is still complete and the
+	// swap cannot drop a concurrently added name. If AddCity did land
+	// mid-build, discard this tree and reset: the old tree (which AddCity also
+	// inserted into) stays in place and the next fuzzy attempt rebuilds from
+	// the now-larger index.
+	nf.mutex.Lock()
+	committed := nf.totalIndexKeys() == totalKeys
+	if committed {
+		nf.BKTree = tree
+		nf.allNames = names
+		// Mark built only when the tree actually holds names. An empty index
+		// legitimately stays unbuilt so later AddCity growth can trigger a
+		// build.
+		if tree.Root != nil {
+			nf.isBKTreeBuilt = true
+		}
+	}
+	nf.mutex.Unlock()
+
+	if committed && tree.Root != nil {
+		nf.fuzzyState.Store(fuzzyBuilt)
+	} else {
+		// Uncommitted (AddCity raced the snapshot) or empty index: the next
+		// fuzzy attempt retries with fresher data.
+		nf.fuzzyState.Store(fuzzyNotBuilt)
+	}
 }
 
 // getCachedFuzzySearch performs fuzzy search with caching
@@ -462,8 +542,15 @@ func (nf *Finder) getCachedFuzzySearch(query string, maxDistance int) []string {
 	}
 	nf.cacheMutex.RUnlock()
 
-	// Ensure BK-tree is built before searching
+	// Ensure BK-tree is built before searching. While a build is in flight
+	// (or matching is disabled over the FuzzyMaxNames threshold) there is no
+	// tree to search: return no candidates for this one request and do NOT
+	// cache the empty result — the 1h TTL would pin it long past the build
+	// completing.
 	nf.ensureBKTreeBuilt()
+	if nf.fuzzyState.Load() != fuzzyBuilt {
+		return nil
+	}
 
 	// Search under the read lock: AddCity mutates the tree under the write
 	// lock, so an unlocked search would race with concurrent additions.
@@ -523,37 +610,44 @@ func (nf *Finder) CityByName(name string, countryCode string) *city.City {
 	}
 	nf.mutex.RUnlock()
 
-	// Phase 2: Try fast approximate matching as pre-filter
+	// Phases 2/3: approximate matching as a pre-filter, then full fuzzy. Both
+	// are cheap no-ops unless the fuzzy index is actually built: over the
+	// FuzzyMaxNames threshold matching is disabled (exact-only) for this
+	// Finder's lifetime, and while another goroutine is still building the
+	// tree this lookup reports not-ready rather than waiting. Either way no
+	// fuzzy work runs and no empty result pollutes the cache.
 	nf.ensureBKTreeBuilt()
-	fastCandidates := nf.getCachedFuzzySearch(name, 1) // Use tighter threshold for speed
+	if nf.fuzzyState.Load() == fuzzyBuilt {
+		fastCandidates := nf.getCachedFuzzySearch(name, 1) // Use tighter threshold for speed
 
-	// Every read lock is scoped tightly around the map lookups only: holding
-	// one across getCachedFuzzySearch deadlocks, because a cold cache takes
-	// the write lock inside ensureBKTreeBuilt while this goroutine still
-	// holds the read lock (RWMutex self-deadlock).
-	if len(fastCandidates) > 0 {
-		nf.mutex.RLock()
-		for _, candidate := range fastCandidates {
-			if cities, exists := nf.InvertedIndex[countryCode][candidate]; exists && len(cities) > 0 {
-				nf.mutex.RUnlock()
-				return cities[0]
+		// Every read lock is scoped tightly around the map lookups only: holding
+		// one across getCachedFuzzySearch deadlocks, because a cold cache takes
+		// the write lock inside ensureBKTreeBuilt while this goroutine still
+		// holds the read lock (RWMutex self-deadlock).
+		if len(fastCandidates) > 0 {
+			nf.mutex.RLock()
+			for _, candidate := range fastCandidates {
+				if cities, exists := nf.InvertedIndex[countryCode][candidate]; exists && len(cities) > 0 {
+					nf.mutex.RUnlock()
+					return cities[0]
+				}
 			}
+			nf.mutex.RUnlock()
 		}
-		nf.mutex.RUnlock()
-	}
 
-	// Phase 3: Fall back to full fuzzy search with distance 2
-	fullCandidates := nf.getCachedFuzzySearch(name, 2)
+		// Phase 3: Fall back to full fuzzy search with distance 2
+		fullCandidates := nf.getCachedFuzzySearch(name, 2)
 
-	if len(fullCandidates) > 0 {
-		nf.mutex.RLock()
-		for _, candidate := range fullCandidates {
-			if cities, exists := nf.InvertedIndex[countryCode][candidate]; exists && len(cities) > 0 {
-				nf.mutex.RUnlock()
-				return cities[0]
+		if len(fullCandidates) > 0 {
+			nf.mutex.RLock()
+			for _, candidate := range fullCandidates {
+				if cities, exists := nf.InvertedIndex[countryCode][candidate]; exists && len(cities) > 0 {
+					nf.mutex.RUnlock()
+					return cities[0]
+				}
 			}
+			nf.mutex.RUnlock()
 		}
-		nf.mutex.RUnlock()
 	}
 
 	return nil
@@ -691,8 +785,13 @@ func DeserializeIndex(filepath string) (*Finder, error) {
 	// - a "built" flag over an empty tree (persisted by builds whose fuzzy
 	//   path never ran) must be cleared or fuzzy search stays dead forever;
 	//   the lazy build now derives the name set from the inverted index.
+	// The runtime fuzzyState follows the same decision: seeded to built over a
+	// populated tree, left not-built otherwise so the first fuzzy lookup
+	// re-evaluates it — including the FuzzyMaxNames gate, which disables
+	// matching on an over-threshold warm start without ever building.
 	if finder.BKTree.Root != nil {
 		finder.isBKTreeBuilt = true
+		finder.fuzzyState.Store(fuzzyBuilt)
 	} else if finder.isBKTreeBuilt && len(finder.InvertedIndex) > 0 {
 		finder.isBKTreeBuilt = false
 	}
