@@ -1,8 +1,11 @@
 package name
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/gob"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -39,8 +42,9 @@ func internFixtureCities(scale int) []city.SpatialCity {
 	return cities
 }
 
-// decodeUninterned replicates DeserializeIndex's v2 decode sequence without
-// the Country-only intern pass, so the pass can be measured in isolation. It
+// decodeUninterned replicates DeserializeIndex's v2 decode sequence — raw gob
+// header, zstd-framed payload, pointer-table rehydration — without the
+// Country-only intern pass, so the pass can be measured in isolation. It
 // returns the rehydrated finder plus the decoded distinct-city slice its
 // references point into (interning that slice's Country fields after the fact
 // is exactly what the production pre-rehydration pass does, minus ordering).
@@ -53,14 +57,19 @@ func decodeUninterned(t *testing.T, path string) (*Finder, []city.City) {
 	assert.NoError(t, err)
 	defer func() { _ = file.Close() }()
 
-	decoder := gob.NewDecoder(file)
+	bufFile := bufio.NewReader(file)
 	var header indexHeader
-	assert.NoError(t, decoder.Decode(&header))
+	assert.NoError(t, gob.NewDecoder(bufFile).Decode(&header))
 	assert.Equal(t, nameIndexMagic, header.Magic)
 	assert.Equal(t, nameIndexVersion, header.Version)
 
+	compressed, err := io.ReadAll(bufFile)
+	assert.NoError(t, err)
+	payloadBytes, err := decodeZstdFrame(compressed)
+	assert.NoError(t, err)
+
 	var payload nameIndexPayloadV2
-	assert.NoError(t, decoder.Decode(&payload))
+	assert.NoError(t, gob.NewDecoder(bytes.NewReader(payloadBytes)).Decode(&payload))
 
 	ptrs := make([]*city.City, len(payload.Cities))
 	for i := range payload.Cities {

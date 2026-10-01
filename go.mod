@@ -7,6 +7,7 @@ require (
 	github.com/cheggaaa/pb/v3 v3.1.7
 	github.com/gofiber/fiber/v2 v2.52.15
 	github.com/golang/geo v0.0.0-20260526120156-e21b7802b0ee
+	github.com/klauspost/compress v1.18.7
 	github.com/stretchr/testify v1.11.1
 )
 
@@ -17,7 +18,6 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/klauspost/compress v1.18.7 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.19 // indirect

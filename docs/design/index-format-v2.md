@@ -1,6 +1,8 @@
 # Index format v2 — design note
 
-Status: accepted for sprint v1.0 (Day 1). Owner: NAME-V2 lane.
+Status: accepted for sprint v1.0 (Day 1); amended in-lane after phase-1
+measurement (zstd framing, corrected arithmetic — see "Amendments" at the
+end). Owner: NAME-V2 lane.
 Scope: `lib/finder/name`, `lib/finder/coordinates`, `lib/finder/postalCode`,
 `lib/city`, `lib/dataLoader/cityCoordinate.go`.
 
@@ -65,9 +67,20 @@ pre-Population payload has no correct answer.
 ### Name payload v2
 
 ```
-gob(indexHeader{Magic: "CFNAMEIDX", Version: 2, Count: len(Countries)})
-gob(nameIndexPayloadV2)
+gob(indexHeader{Magic: "CFNAMEIDX", Version: 2, Count: len(Countries)})   // raw
+zstd-frame(gob(nameIndexPayloadV2))                                      // compressed
 ```
+
+The header stays uncompressed so version checks — including v1 rejection —
+run before any decompression. The payload is one zstd frame at
+`SpeedFastest` with the frame CRC enabled (corruption inside a structurally
+valid frame is then detected deterministically by the decoder). A truncated
+or undecodable frame, or a non-zstd payload behind a v2 header, is
+`ErrCorruptIndex` exactly like a malformed raw stream was; the initializer
+rebuilds. (In-lane amendment: the original sketch was a raw gob payload; the
+measured 971.9 MiB missed the 800 MB gate, and zstd framing closes it at
+558.8 MiB measured in the shipped path. SpeedDefault would save ~55 MB more
+but taxes every warm start; rejected.)
 
 ```go
 type nameIndexPayloadV2 struct {
@@ -90,20 +103,48 @@ type nameIndexPayloadV2 struct {
 - Interning: no longer needed for correctness (each City decodes once).
   Country strings still decode as one backing per city (~13.47M copies of
   ~250 values): run a cheap Country-only intern pass over `Cities`
-  (13.47M calls vs. v1's 70M). Interning `Name` is optional — measure at prod
-  scale and keep only if the heap delta is real.
+  (13.47M calls vs. v1's 70M). Interning `Name` was evaluated and SKIPPED:
+  primary names are mostly distinct values, and the v1 key-interning
+  experiment already measured that interning near-unique strings grows the
+  unique-package table more than it frees duplicates.
 
 ### S2 payload v2
 
-`SerializableS2Finder` stays `[]city.City`; only `indexVersion` changes. The
-file grows by 13.47M × 4 B ≈ 54 MB (Population field), heap by +323 MB
-(struct 48 → 72 B) — the cost Population buys.
+`SerializableS2Finder` stays `[]city.City`; only `indexVersion` changes.
+Corrected arithmetic (measured): the struct grows 48 → 56 B (one int32 plus
+4 B padding, not 48 → 72 B), and the FILE grows only ~2.3 MB — gob omits
+zero-valued fields, and only 655,559 of 13.47M GeoNames features carry a
+non-zero population. The bump still forces a coordinated regenerate so no
+v1 S2 file can be interpreted with zero-filled populations. S2 and postal
+payloads stay UNCOMPRESSED: their gates are met, and fleet-wide
+compression is v1.1 material, not this format hop.
 
 ### Loader
 
 `LoadGeoNamesCSVWithLimit` parses field 14 as `int32` (values fit: largest
 GeoNames feature populations are < 40M). Empty or unparsable field → 0 +
 continue (population is enhancement data; rows are never dropped for it).
+`City.Population` carries `json:"-"`: routes embed `city.City` directly and
+its field set IS the wire contract, so exposing population in HTTP responses
+is a routing/API decision (WEIGHTED lane / integration), not this format hop.
+
+## Amendments after phase-1 measurement
+
+- **zstd framing** (above): raw payload measured 1,019,093,855 B = 546 MB
+  city table (53.6%, 40.6 B/city) + 318 MB reference keys (31.2%, 17.0 B/key
+  over 18.70M (country,name) keys — the component the original estimate
+  omitted) + 155 MB ids (15.2%, 4.41 B/ref). zstd SpeedFastest + CRC at prod
+  scale: 586,411,260 B (558.8 MiB, 69.9% of the 800 MB gate).
+- **Decode split** (v2 + zstd, prod, measured in-init): frame read 470 ms,
+  zstd decompress 586 MB → 1,019 MB in 2.85 s, gob decode 6.61 s; the split
+  is logged by `DeserializeIndex` on every warm start.
+- **Decoder lifecycle**: the zstd decoder is created per call and closed
+  immediately after `DecodeAll`. A shared package-level decoder was measured
+  to retain ~900 MB of internal window/worker buffers after the prod-scale
+  frame (warm heap 7.2 GB vs 5.5 GB); warm start is once-per-boot, so setup
+  cost is irrelevant and the retention is pure waste.
+- Corrected S2 growth, Name-interning skip, and the `json:"-"` note are
+  folded into the sections above.
 
 ## Gates
 
