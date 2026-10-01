@@ -1,13 +1,13 @@
 # city-finder chart values.
 #
-# Sizing context (v1.0, index format v1): warm RSS ~5.5-9 GB, peak RSS during
-# a cold start (download + index build) ~8.6-9.1 GB. Defaults below are sized
-# generously for that and MUST be re-tuned once the index format v2 numbers
-# are confirmed at integration (index files changed size, not the boot
-# sequence) — integration-time task, not a values guess.
+# Sizing context (v1.0, index format v2): name index 559 MB, warm start
+# 20.5 s, heap 5.5 GB post-GC. Peak RSS is ≈9 GB warm-only, up to ~12 GB
+# with the fuzzy index built and ocean population scans. The defaults
+# below (memory 10Gi request / 14Gi limit, 600 s startup-probe budget)
+# are sized for these figures.
 #
 # Boot times the probes must tolerate:
-#   - warm start, pre-built .gob indexes on the datasets volume: ~20-65 s
+#   - warm start, pre-built .gob indexes on the datasets volume: ~20 s (v2 indexes)
 #   - cold start, empty volume (downloads ~420 MB, builds indexes): ~6-8 min
 #     The default probe budget covers BOTH (see probes.startup below); a
 #     cold start is still discouraged in-cluster — mount a volume with
@@ -92,7 +92,7 @@ probes:
     # 5s x 120 = 600 s budget. That is NOT sized to the warm start: the
     # default storage mode (emptyDir) guarantees a ~6-8 min COLD start on an
     # empty volume, and a budget below that makes a default install
-    # crash-loop. Healthy warm boots (~20-65 s) still pass quickly: the
+    # crash-loop. Healthy warm boots (~20 s, v2 indexes) still pass quickly: the
     # startup probe stops at the first success and only then hand over to
     # readiness/liveness.
     failureThreshold: 120
@@ -121,8 +121,7 @@ resources:
     memory: 10Gi
   limits:
     # No CPU limit (avoids throttling the index build / GC); memory limit
-    # sized above warm RSS with headroom for a rebuild spike. Retune after
-    # the format-v2 numbers are confirmed.
+    # sized above warm RSS with headroom for a rebuild spike.
     memory: 14Gi
 
 # Datasets storage. Default: emptyDir (ephemeral, fine for tests — every pod
