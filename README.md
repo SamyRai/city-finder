@@ -20,14 +20,22 @@ Nearest neighbor searches are performed using `s2.NewClosestEdgeQuery`, which le
 
 ## Performance
 
-Nearest-neighbor queries are bounded by `s2.ClosestEdgeQuery` with `MaxResults(1)`, which prunes the search instead of collecting a result for every indexed point. Measured on an Apple-silicon laptop (8 cores), 100,000 distinct points:
+Nearest-neighbor queries are bounded by `s2.ClosestEdgeQuery` with `MaxResults(1)`, which prunes the search instead of collecting a result for every indexed point. Results are validated against a brute-force great-circle oracle in `s2_oracle_test.go`, and the ShapeIndex is built eagerly at startup so the first query after boot pays no construction cost.
 
-| Metric | Per query |
+**Production scale** — measured on the full GeoNames dump (13.47M cities, 17.7M unique names; Apple M2, 8 cores, 24 GB RAM):
+
+| Metric | Result |
 |---|---|
-| Latency | ~5 µs |
-| Allocations | ~1.6 KB / 60 allocs |
+| Cold start (download → indexes built) | 5m48s, peak RSS 8.6 GB |
+| Warm start (indexes on disk, datasets not re-parsed) | 65s, peak RSS 9.1 GB |
+| `FindNearestCity` | p50 20 µs, p99 177 µs (10k queries) |
+| `CityByName` exact | p50 9 µs, p99 124 µs (1k queries) |
+| `CityByPostalCode` | p50 0.5 µs, p99 1.1 µs (1k queries) |
+| Index files | 519 MB (S2) / 1.6 GB (name) / 98 MB (postal) |
 
-The ShapeIndex is built eagerly at startup, so the first query after boot does not pay the construction cost. Results are validated against a brute-force great-circle oracle in `s2_oracle_test.go`.
+Micro-benchmark context (100k distinct synthetic points): ~3–5 µs per nearest query, ~1.6 KB / 60 allocs — query cost grows with index size, so the production numbers above are the authoritative ones.
+
+Fuzzy name matching (edit distance ≤ 2) is practical on small and medium indexes but its cost grows near-linearly with the number of distinct names, so on very large indexes it is disabled by a threshold (see `name.FuzzyMaxNames`) and lookups fall back to exact matching.
 
 ## Installation
 
