@@ -187,3 +187,68 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 - The [S2 Geometry Library](https://github.com/golang/geo) for providing the efficient spatial indexing and search capabilities.
 - [GeoNames](http://www.geonames.org/) for providing the geographical data used in this project.
+
+## Deployment
+
+The service ships as a container image built from the repo-root `Dockerfile` (multi-stage: `golang:1.26` builder → `gcr.io/distroless/static-debian12:nonroot` runtime; static binary, non-root user, no shell, no package manager). Pushed `v*` tags publish it to `ghcr.io/<owner>/city-finder` (lowercase owner) for `linux/amd64` and `linux/arm64` — see `.github/workflows/release.yml`.
+
+### Running the container
+
+```bash
+docker build -t city-finder .
+docker volume create city-finder-data
+
+docker run -d --name city-finder \
+  -p 3000:3000 \
+  -v city-finder-data:/data \
+  --memory 14g \
+  city-finder
+
+curl http://localhost:3000/healthz
+```
+
+The memory floor matters: a cold start on an empty volume peaks around 9 GB RSS while building indexes, and the server runs at ~5.5-9 GB when warm.
+
+### Image environment variables
+
+| Variable | Default in image | Purpose |
+|---|---|---|
+| `PORT` | `3000` | HTTP listen port. |
+| `CONFIG_PATH` | `/etc/cityfinder/config.json` | Config file to load. Use an absolute path: the loader resolves relative paths against a detected project root (a `go.mod` walk-up), which containers do not have. |
+
+To run with your own config, mount it and point `CONFIG_PATH` at it (`docker run -v "$PWD/my-config.json:/etc/cityfinder/config.json:ro" ...`). The shipped default config keeps all GeoNames URLs and file names from the repo-root `config.json` but pins `datasets_folder` to `/data/datasets`.
+
+### Datasets storage (`/data`)
+
+Everything the server downloads and builds lives under `/data` — mount a volume there. Three options, in increasing order of boot speed:
+
+1. **Empty volume, download on boot.** First start downloads ~420 MB of GeoNames archives and builds all indexes: ~6 minutes and a multi-GB RAM spike. Fine for a trial, slow for every restart.
+2. **Raw datasets mounted.** Pre-place the extracted GeoNames dump files in the volume's `datasets/` folder; boot skips the download but still builds the indexes.
+3. **Pre-built indexes mounted (recommended).** Place `s2index.gob`, `name_index.gob` and `postal_code_index.gob` in the volume's `datasets/` folder; boot warm-starts in well under a minute.
+
+Seed a named volume with pre-built indexes from a local `datasets/` directory:
+
+```bash
+docker run --rm \
+  -v city-finder-data:/data \
+  -v "$PWD/datasets:/seed:ro" \
+  alpine sh -c 'mkdir -p /data/datasets && cp /seed/*.gob /data/datasets/'
+```
+
+### Helm chart
+
+`helm/city-finder` deploys the service (Deployment with rolling updates, Service, optional PVC and Ingress, probes on `GET /healthz`):
+
+```bash
+helm install city-finder ./helm/city-finder \
+  --namespace city-finder --create-namespace \
+  --set image.repository=ghcr.io/<owner>/city-finder \
+  --set image.tag=1.0.0 \
+  --set persistence.enabled=true
+```
+
+Defaults are sized for the v1.0 memory profile (memory request `10Gi`, limit `14Gi`, startup-probe budget 180 s). A single replica rolls without an outage window (`maxUnavailable: 0`, `maxSurge: 1`); scale to two or more replicas before enabling the (default-off) PodDisruptionBudget. Memory and startup-probe values are the two knobs to re-check whenever the index format changes. Validate any local customization with `helm lint` and `helm template ... | kubeconform -strict -summary`.
+
+### Cluster adoption (Harbor / ArgoCD)
+
+Registering the image in Harbor and creating the ArgoCD `Application` (auto-sync policy; the chart's manifests already carry `argocd.argoproj.io/sync-wave` annotations) is an operations handoff documented outside this repo. This repository ships the image and the chart, and intentionally contains nothing that talks to a cluster.
