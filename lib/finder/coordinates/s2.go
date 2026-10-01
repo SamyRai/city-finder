@@ -10,12 +10,12 @@ import (
 	"log"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/SamyRai/cityFinder/lib/config"
-	"github.com/cheggaaa/pb/v3"
 	"github.com/golang/geo/s1"
 	"github.com/golang/geo/s2"
 	"github.com/klauspost/compress/zstd"
@@ -195,6 +195,23 @@ func adminCodeID(country, code string, table map[string]int32, codes *[]string) 
 	return id
 }
 
+// commaFormat formats a non-negative count with thousands separators
+// ("4,000,000"), the console progress format of BuildIndex.
+func commaFormat(n int) string {
+	digits := strconv.Itoa(n)
+	if len(digits) <= 3 {
+		return digits
+	}
+	var b strings.Builder
+	for i := 0; i < len(digits); i++ {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteByte(digits[i])
+	}
+	return b.String()
+}
+
 // BuildIndex creates an S2 spatial index from raw city data.
 func BuildIndex(cities []city.SpatialCity, config *config.S2) (*S2Finder, error) {
 	points := make(s2.PointVector, len(cities))
@@ -205,24 +222,23 @@ func BuildIndex(cities []city.SpatialCity, config *config.S2) (*S2Finder, error)
 	admin1Index := make(map[string]int32, 8192)
 	admin2Index := make(map[string]int32, 8192)
 
-	// Use progress bar with infrequent updates to reduce overhead
-	bar := pb.Full.Start(len(cities))
-	bar.SetRefreshRate(time.Second) // Update every second instead of every item
-
-	// Process cities in batches to minimize progress bar overhead
-	batchSize := 100000 // Update progress every 100k items
+	// Progress reporting is a deterministic log line every ~2M cities plus a
+	// completion line (replacing the former pb progress bar): server consoles
+	// get readable milestones with no TTY control characters, and the only
+	// per-iteration cost is the modulo check. At prod scale (13.47M cities)
+	// this prints six milestone lines and one completion line.
+	const progressInterval = 2_000_000
 	for i, spatialCity := range cities {
 		points[i] = s2.PointFromLatLng(s2.LatLngFromDegrees(spatialCity.Latitude, spatialCity.Longitude))
 		cityData[i] = spatialCity.City
 		admin1IDs[i] = adminCodeID(spatialCity.Country, spatialCity.Admin1Code, admin1Index, &admin1Codes)
 		admin2IDs[i] = adminCodeID(spatialCity.Country, spatialCity.Admin2Code, admin2Index, &admin2Codes)
 
-		// Only update progress bar every batchSize items to reduce overhead
-		if (i+1)%batchSize == 0 || i == len(cities)-1 {
-			bar.SetCurrent(int64(i + 1))
+		if done := i + 1; done%progressInterval == 0 && done < len(cities) {
+			log.Printf("s2 index: %s / %s cities", commaFormat(done), commaFormat(len(cities)))
 		}
 	}
-	bar.Finish()
+	log.Printf("s2 index: %s / %s cities", commaFormat(len(cities)), commaFormat(len(cities)))
 
 	index := s2.NewShapeIndex()
 	index.Add(&points)
