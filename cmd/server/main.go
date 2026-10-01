@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/SamyRai/cityFinder/cmd/server/metrics"
 	"github.com/SamyRai/cityFinder/cmd/server/routes"
 	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/SamyRai/cityFinder/lib/initializer"
@@ -16,12 +17,7 @@ import (
 )
 
 func main() {
-	configPath, exists := os.LookupEnv("CONFIG_PATH")
-	if !exists {
-		configPath = "config.json"
-	}
-
-	cfg, err := config.LoadConfig(configPath)
+	cfg, err := config.LoadFromEnv()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
@@ -36,13 +32,20 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 		BodyLimit:    1 << 20, // 1MB; the API is GET-only
 		ETag:         true,
+		// fasthttp's default admission control (256k) is effectively
+		// unbounded: each accepted connection costs a goroutine plus
+		// buffers, so a flood ties up memory the 5.7 GB index heap cannot
+		// spare. 1024 concurrent connections is far above any legitimate
+		// load for this API and caps the per-connection overhead.
+		Concurrency: 1024,
 	})
 	// fasthttp performs no panic recovery of its own: without this middleware
 	// any handler panic terminates the process. It must be registered before
 	// all other middleware so it wraps the full handler chain.
 	app.Use(recover.New())
 	app.Use(Logger())
-	routes.SetupRoutes(app, mainFinder)
+	registry := metrics.NewRegistry()
+	routes.SetupRoutesWithMetrics(app, mainFinder, registry)
 
 	port := os.Getenv("PORT")
 	if port == "" {
