@@ -9,9 +9,6 @@
   "postal_code_index_file": "postal_code_index_test.gob",
   "name_index_file": "name_index_test.gob",
   "s2": {
-    "min_level": 10,
-    "max_level": 15,
-    "max_cells": 8,
     "index_file": "s2index_test.gob"
   }
 }

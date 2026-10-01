@@ -377,11 +377,10 @@ func extractEntryTo(f *zip.File, partPath string) (err error) {
 
 // indexFilePaths resolves the on-disk locations of the three serialized
 // indexes. The ensure*Index functions receive these precomputed paths so the
-// resolution lives in exactly one place.
+// resolution lives in exactly one place; the method itself is the same one
+// cmd/build-index writes to, so the two binaries cannot drift apart.
 func indexFilePaths(cfg *config.Config) (s2Path, namePath, postalCodePath string) {
-	return filepath.Join(cfg.DatasetsFolder, cfg.S2.IndexFile),
-		filepath.Join(cfg.DatasetsFolder, cfg.NameIndexFile),
-		filepath.Join(cfg.DatasetsFolder, cfg.PostalCodeIndexFile)
+	return cfg.IndexFilePaths()
 }
 
 // allIndexesPresent reports whether every given file exists. Any stat error
