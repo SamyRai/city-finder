@@ -212,11 +212,15 @@ func TestNearestPlaceMatchesBruteForceOracle(t *testing.T) {
 }
 
 // weightedCitySet is the dedicated fixture for population ranking. It pins
-// the two scenarios the ranking exists for: a village sitting right next to a
+// the scenarios the ranking exists for: a village sitting right next to a
 // real city (the city must win under gravity even though the village is
 // closer), and a distant big city that must LOSE to the nearby city because
 // of the squared-distance decay. Zero-population neighbors model the GeoNames
-// norm (most rows carry no population and score 0 everywhere).
+// norm (most rows carry no population and score 0 everywhere). The Crowd
+// Out cluster places 18 tiny places nearer to the query than a populous
+// city: a top-16 candidate-pool implementation returns a tiny place there,
+// while the exact escalating-radius search must reach through them and
+// return the city.
 func weightedCitySet() []city.SpatialCity {
 	fixed := []city.SpatialCity{
 		{City: city.City{Name: "Village", Latitude: 20.0000, Longitude: 20.0000, Population: 200}},
@@ -227,12 +231,34 @@ func weightedCitySet() []city.SpatialCity {
 		{City: city.City{Name: "Far Big", Latitude: -33.0000, Longitude: 151.0000, Population: 5_000_000}},
 	}
 
+	// Crowd Out cluster: 18 populated-but-tiny places sprinkled within ~3 km
+	// of (40.0, 40.0), plus a 5M city 12 km away. From the cluster center
+	// every tiny place outscores nothing, but the city scores
+	// 5e6/(12^2+1) ~= 34,722 versus at most 900 for any tiny place — the
+	// exact winner is the city, and any 16-nearest pool finds only tiny
+	// places. This is the fixture case the retired k=16 pool failed.
+	for i := 0; i < 18; i++ {
+		fixed = append(fixed, city.SpatialCity{City: city.City{
+			Name:       "Crowd Out Hamlet " + itoa3(i),
+			Country:    "RC",
+			Latitude:   40.0 + 0.03*float64(i+1)/18.0,
+			Longitude:  40.0 + 0.02*float64(i)/18.0,
+			Population: int32(100 + i*50), // 100..900
+		}})
+	}
+	fixed = append(fixed, city.SpatialCity{City: city.City{
+		Name:       "Crowd Out City",
+		Country:    "RC",
+		Latitude:   40.08,
+		Longitude:  40.08, // ~12.3 km northeast of the cluster center
+		Population: 5_000_000,
+	}})
+
 	cities := make([]city.SpatialCity, 0, len(fixed)+18)
 	cities = append(cities, fixed...)
 
 	// Worldwide filler with mixed populations (including zeros) so the
-	// candidate pool is crowded and truncation at rankCandidatePool is
-	// exercised, exactly like the prod index.
+	// search neighborhoods look like the prod index.
 	rng := rand.New(rand.NewSource(20261001))
 	for i := 0; i < 18; i++ {
 		population := int32(0)
@@ -252,13 +278,12 @@ func weightedCitySet() []city.SpatialCity {
 	return cities
 }
 
-// bruteForcePopulationRank mirrors NearestPlace's population ranking over the
-// whole fixture: rank the rankCandidatePool nearest cities (ordered by
-// distance, then city index — the order the s2 query visits candidates in)
-// under score = population / (d*d + 1), with d the haversine km to the query
-// point. Ties on score resolve to the earlier pool entry. It returns the
-// winning city name, the winning score, and the runner-up score (math.Inf(-1)
-// when the pool holds a single entry).
+// bruteForcePopulationRank is the exact gravity oracle: every city scores
+// population / (d*d + 1) with d the haversine km to the query point, and the
+// winner is the max score with ties resolved to the smaller distance, then
+// the lower city index (mirroring the finder's scan over distance-sorted
+// results). It returns the winning city name, the winning score, and the
+// runner-up score (math.Inf(-1) for a single-city fixture).
 func bruteForcePopulationRank(cities []city.SpatialCity, lat, lon float64) (string, float64, float64) {
 	type candidate struct {
 		index int
@@ -277,10 +302,9 @@ func bruteForcePopulationRank(cities []city.SpatialCity, lat, lon float64) (stri
 		return all[a].index < all[b].index
 	})
 
-	pool := all[:min(len(all), rankCandidatePool)]
-	best := pool[0]
+	best := all[0]
 	second := math.Inf(-1)
-	for _, cand := range pool[1:] {
+	for _, cand := range all[1:] {
 		if cand.score > best.score {
 			second = best.score
 			best = cand
@@ -349,11 +373,15 @@ func checkAgainstWeightedOracle(t *testing.T, finder *S2Finder, cities []city.Sp
 }
 
 // TestNearestPlacePopulationRankMatchesOracle is the correctness oracle for
-// population-weighted ranking. The fixture guarantees both modes diverge on
-// at least one query (querying between Village and Zero Pop Neighbor: the
-// distance winner is one of the two tiny places while Near City takes the
-// gravity crown from Mega City via the squared-distance decay), so the test
-// cannot pass by accident through an all-zero-population fixture.
+// population-weighted ranking. It checks NearestPlace(RankPopulation)
+// against the exact all-cities gravity oracle, so any truncation or radius
+// bug shows up as a winner mismatch. The fixture guarantees several
+// discriminating queries: the village cluster (the distance winner is a tiny
+// place while a real city takes the gravity crown), the Crowd Out cluster
+// (18 tiny places closer than the winning city — the retired top-16 pool
+// implementation failed this), and exact mega-city coordinates (the decay
+// must beat raw population). A test cannot pass by accident through an
+// all-zero-population fixture.
 func TestNearestPlacePopulationRankMatchesOracle(t *testing.T) {
 	cities := weightedCitySet()
 
@@ -366,6 +394,11 @@ func TestNearestPlacePopulationRankMatchesOracle(t *testing.T) {
 		{20.0600, 20.0600}, // exactly at Near City
 		{21.5000, 21.5000}, // exactly at Mega City
 		{20.7800, 20.7800}, // between Near City and Mega City
+		// Crowd Out cluster: 18 tiny places nearer than the 5M city — the
+		// gravity winner sits beyond any 16-nearest pool.
+		{40.0000, 40.0000}, // cluster center
+		{40.0300, 40.0200}, // inside the cluster, off-center
+		{40.0800, 40.0800}, // exactly at Crowd Out City
 	}
 
 	rng := rand.New(rand.NewSource(20261002))
@@ -398,7 +431,7 @@ func TestNearestPlacePopulationRankMatchesOracle(t *testing.T) {
 // distance path owes the API: whatever mechanism NearestPlace uses for
 // RankDistance, its city and distance must be exactly what the historical
 // MaxResults(1) query issued verbatim here returns. (An earlier
-// implementation shared a rankCandidatePool fetch between both modes and
+// implementation shared a multi-result pool fetch between both modes and
 // relied on results[0] — provably equivalent, but it inherited the full-scan
 // cost of multi-result queries in this golang/geo version; this test guards
 // whichever mechanism ships.) The randomized points are also checked against

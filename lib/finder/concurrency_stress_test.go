@@ -141,7 +141,7 @@ func TestConcurrentStress_CoordinateFinder(t *testing.T) {
 				lat := testCity.Latitude + float64(j%10-5)*0.001
 				lon := testCity.Longitude + float64(j%10-5)*0.001
 
-				// NearestPlace is a microsecond-scale read over its 16-candidate pool,
+				// NearestPlace is a microsecond-scale read in its default MaxResults(1) mode,
 				// so no per-operation timeout is needed: a wall-clock budget
 				// here would count timed-out ops twice (timeout + eventual
 				// completion) and flake under parallel test load.
