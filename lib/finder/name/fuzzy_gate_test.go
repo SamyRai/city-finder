@@ -32,20 +32,13 @@ func gateCities(count int) []city.SpatialCity {
 	return cities
 }
 
-// TestCityByNameBuildDoesNotBlockExactLookups proves the lazy BK-tree build no
+// TestCityByNameBuildDoesNotBlockExactLookups proves the lazy n-gram build no
 // longer holds nf.mutex for writing while it runs. One goroutine triggers the
 // build with a typo lookup (guaranteed miss -> phases 2/3), while the main
 // goroutine hammers exact lookups and records the worst latency.
 //
-// Pre-fix, ensureBKTreeBuilt holds the write lock for the entire sequential
-// build: a pending writer blocks new RLock holders (Go's sync.RWMutex is
-// writer-fair), so every exact lookup stalls for the whole build and the worst
-// observed latency lands at roughly the build-triggering lookup's duration.
-// Post-fix, the build runs without nf.mutex and only the final pointer swap
-// takes the write lock, so exact lookups stay in the microsecond range.
-//
-// The assertion is relative (worst exact < half the triggering lookup's total
-// duration) so it holds on fast and slow machines alike.
+// The assertion is relative (worst exact < half the build-triggering lookup's
+// total duration) so it holds on fast and slow machines alike.
 func TestCityByNameBuildDoesNotBlockExactLookups(t *testing.T) {
 	const nameCount = 200_000
 	finder := BuildIndex(gateCities(nameCount))
@@ -88,9 +81,10 @@ func TestCityByNameBuildDoesNotBlockExactLookups(t *testing.T) {
 }
 
 // TestFuzzyDisabledOverThreshold covers the FuzzyMaxNames gate: an index over
-// the threshold must never build a BK-tree, must log the disable exactly once,
-// must serve typo lookups as fast nils, must keep exact lookups working, and
-// must leave the fuzzy cache empty (no pollution from not-ready results).
+// the threshold must never build the n-gram structure, must log the disable
+// exactly once, must serve typo lookups as fast nils, must keep exact lookups
+// working, and must leave the fuzzy cache empty (no pollution from
+// not-ready results).
 func TestFuzzyDisabledOverThreshold(t *testing.T) {
 	orig := FuzzyMaxNames
 	FuzzyMaxNames = 4 // fuzzyFixtureCities has 5 (country,name) keys
@@ -116,11 +110,10 @@ func TestFuzzyDisabledOverThreshold(t *testing.T) {
 	}
 
 	finder.mutex.RLock()
-	built := finder.isBKTreeBuilt
-	root := finder.BKTree.Root
+	ngrams := finder.ngrams
 	finder.mutex.RUnlock()
-	if built || root != nil {
-		t.Fatalf("no BK-tree build may run over the threshold: isBKTreeBuilt=%v, root=%v", built, root != nil)
+	if ngrams != nil {
+		t.Fatalf("no n-gram build may run over the threshold: structure is %v", ngrams != nil)
 	}
 	if st := finder.fuzzyState.Load(); st != fuzzyDisabled {
 		t.Fatalf("fuzzy state = %d, want fuzzyDisabled (%d)", st, fuzzyDisabled)
@@ -226,12 +219,12 @@ func TestFuzzyMissDuringBuildIsNotCached(t *testing.T) {
 }
 
 // TestAddCityDuringBuildIsNotLost guards the lock-free build's commit check.
-// A name added while a build is in flight must end up searchable in the
-// BK-tree no matter which side of the snapshot/commit it lands on: without
-// the key-count guard at commit time, the snapshot-completed local tree would
-// be swapped in wholesale and silently drop every name AddCity added to the
-// old shared tree after the snapshot — lost to fuzzy search forever, since a
-// committed build is never rebuilt.
+// A name added while a build is in flight must end up fuzzy-searchable no
+// matter which side of the snapshot/commit it lands on: without the
+// key-count guard at commit time, the snapshot-completed structure would be
+// swapped in wholesale and silently drop every name AddCity added after the
+// snapshot — lost to fuzzy search forever, since a committed build is never
+// rebuilt.
 func TestAddCityDuringBuildIsNotLost(t *testing.T) {
 	const nameCount = 100_000
 	finder := BuildIndex(gateCities(nameCount))
@@ -242,9 +235,8 @@ func TestAddCityDuringBuildIsNotLost(t *testing.T) {
 		finder.CityByName("zzz-definitely-not-a-city", "GC") // triggers the build
 	}()
 
-	// Continuously add fresh names while the build runs (~130ms at 100K on
-	// Apple silicon), bounded so the loop terminates even if the build is
-	// instant on future hardware.
+	// Continuously add fresh names while the build runs, bounded so the loop
+	// terminates even if the build is instant on future hardware.
 	var added []string
 	buildDone := false
 	for i := 0; i < 5000 && !buildDone; i++ {
@@ -260,8 +252,7 @@ func TestAddCityDuringBuildIsNotLost(t *testing.T) {
 	<-done
 
 	// Force any discarded build to be retried and settle into the built
-	// state, then verify every concurrently added name is in the tree (a
-	// distance-0 BK-tree search is exact tree membership).
+	// state, then verify every concurrently added name is fuzzy-searchable.
 	finder.CityByName("zzz-also-not-a-city", "GC")
 	if st := finder.fuzzyState.Load(); st != fuzzyBuilt {
 		t.Fatalf("fuzzy state after settling = %d, want fuzzyBuilt (%d)", st, fuzzyBuilt)
@@ -273,15 +264,17 @@ func TestAddCityDuringBuildIsNotLost(t *testing.T) {
 	}
 	nChecked := 0
 	for i := 0; i < len(added); i += step {
-		finder.mutex.RLock()
-		members := finder.BKTree.SearchWithEarlyExit(added[i], 0)
-		finder.mutex.RUnlock()
-		if !containsName(members, added[i]) {
-			t.Fatalf("name %q added during the build window is missing from the BK-tree: the lock-free swap dropped it", added[i])
+		// A distance-1 typo of the added name must resolve to it: names
+		// that made it into the committed build are found via the n-gram
+		// index, names that arrived after the commit via the overflow list.
+		typo := "LateCiti" + added[i][len("LateCitt"):]
+		got := finder.fuzzyCandidates(typo, 1)
+		if !containsName(got, added[i]) {
+			t.Fatalf("name %q added during the build window is not fuzzy-searchable: the lock-free swap or the overflow list dropped it (candidates: %d)", added[i], len(got))
 		}
 		nChecked++
 	}
-	t.Logf("verified %d of %d concurrently added names are in the BK-tree", nChecked, len(added))
+	t.Logf("verified %d of %d concurrently added names are fuzzy-searchable", nChecked, len(added))
 }
 
 // containsName reports whether s is in names.

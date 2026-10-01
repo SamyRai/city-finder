@@ -159,10 +159,68 @@ is a routing/API decision (WEIGHTED lane / integration), not this format hop.
    targets ≤ 800 MB and (with S2+postal unchanged in spirit) total warm start
    ≤ 25 s.
 
-## Fuzzy (forward pointer, Days 6–8)
+## Fuzzy (as built, phase 2)
 
-With v2 landed, the n-gram fuzzy index replaces the BK-tree for search
-(q-gram inverted index + length filter + Levenshtein verify), gated by a
-measured go/no-go at 1M names before the design commits (memory risk). The
-BK-tree serialization path it depends on is already gone in v2. See the lane
-brief in `docs/sprint/lane-briefs.md`.
+The BK-tree is retired as the fuzzy search structure and removed from the
+Finder entirely (v2 had already stopped serializing it). Its replacement is
+an immutable q-gram inverted index over the distinct names:
+
+- **Grams**: rune-level trigrams over each name padded with two `\x00`
+  sentinels per side. Rune-level grams keep the filtering math consistent
+  with the rune-based Levenshtein verifier.
+- **Layout**: CSR — one flattened `[]int32` of name ids grouped by gram plus
+  per-gram offsets and a `map[string]int32` gram dictionary. Immutable after
+  the lock-free build, so concurrent searches take no locks at all.
+- **Search** (`maxDistance d`): the q-gram lemma gives `minCommon =
+  Gd(query) − 3d` shared distinct grams; walking all but the `minCommon − 1`
+  LARGEST posting lists (the rarest-lists trick) enumerates every true match
+  while skipping the millions-long lists of ubiquitous grams. Survivors pass
+  a length filter (`|runes(name) − runes(query)| ≤ d`, which subsumes the
+  name-side gram-count filter) and Levenshtein verification.
+- **Completeness boundary**: names of ≤ 1 rune may be missed at d=1 and ≤ 4
+  runes at d=2 (every one of their grams can be destroyed by the edits).
+  Fuzzy is a best-effort typo-rescue layer; exact phase-1 lookups are
+  unaffected, and the previous prod state (BK-tree over threshold) had NO
+  fuzzy at all.
+- **AddCity after a build**: the CSR cannot take incremental inserts, so
+  post-build names land in a small overflow list that searches scan
+  linearly; the next rebuild (which snapshots the whole index) folds them
+  in. The lock-free build/commit state machine is unchanged from the BK-tree
+  era: snapshot under RLock, build lock-free into a local structure, commit
+  under Lock gated on an unchanged key total (an AddCity that lands mid-build
+  discards the build for a retry).
+- **Measured** (Apple silicon, Oct 2026 GeoNames: 18,698,093 keys,
+  17,727,652 distinct names; typo workload = 1k real names with 1–2 edits,
+  272.4M postings over 2.18M distinct grams at prod):
+
+  | scale | build | structure resident | d1 p50/p99/p99.9 | d2 p50/p99/p99.9 |
+  |---|---|---|---|---|
+  | 100K | 0.32 s | 11.0 MB | 25 µs / 0.38 ms / 0.93 ms | 122 µs / 3.9 ms / 4.4 ms |
+  | 1M | 3.3 s | 82.2 MB | 113 µs / 2.0 ms / 2.5 ms | 0.69 ms / 21.5 ms / 23.9 ms |
+  | 17.73M (prod) | 94 s | 1.18 GiB | 2.6 ms / 42.5 ms / 209 ms | 20.6 ms / 749 ms / 1.07 s |
+
+- **Verification**: Levenshtein is a hand-rolled banded, early-exit,
+  allocation-free checker (query runes decoded once per search, candidate
+  streamed rune-by-rune, DP confined to the ±d diagonal). A prod-scale CPU
+  profile showed the agnivade library's two `[]rune` conversions per
+  candidate cost ~half of all d2 search time; swapping it cut d2 p50 from
+  55.8 ms to 20.6 ms. The checker is cross-validated against the reference
+  implementation over a fixed + pseudo-random pair grid
+  (TestLevenshteinCheckerMatchesReference), and search is verified against
+  brute-force Levenshtein over safe name lengths
+  (TestNGramSearchMatchesBruteForce).
+- **Known tail**: d2 p99/p99.9 (~0.75–1.1 s at prod) comes from short or
+  common-gram queries whose filters degenerate and walk multi-million-entry
+  posting lists. CityByName always tries distance 1 first (p50 2.6 ms), so
+  only two-edit typos that miss at distance 1 pay the tail. A per-query
+  candidate budget would clamp it at the cost of another completeness
+  boundary — deliberately left as a v1.1 lever, not shipped silently.
+- **Go/no-go gate (1M, run before committing)**: structure 82 MB and d2 p50
+  1.05 ms measured (pre-verifier-fix numbers); linear extrapolation to
+  17.73M projected ~1.5 GB (< 3 GB budget) and d2 p50 well under the 100 ms
+  stop line — GO. As-built prod: 1.18 GiB, d2 p50 20.6 ms < 50 ms target.
+- **FuzzyMaxNames**: kept as a bound, raised from 2,000,000 to 25,000,000
+  with the prod numbers above cited in the code — prod (18.70M keys) builds
+  and searches inside target, and the disable path stays for absurd scales.
+  It still counts (country,name) keys, not distinct names, so the
+  over-approximation comment in the code still applies.
