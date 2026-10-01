@@ -16,7 +16,6 @@ import (
 	"unique"
 
 	"github.com/SamyRai/cityFinder/lib/city"
-	"github.com/agnivade/levenshtein"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -555,8 +554,13 @@ func (nf *Finder) fuzzyCandidates(query string, maxDistance int) []string {
 	if len(overflow) == 0 {
 		return candidates
 	}
+	// The overflow scan reuses the same banded, allocation-free checker the
+	// n-gram verify step uses (volumes here are tiny, but one distance
+	// implementation across the package keeps behavior uniform).
+	var check levenshteinChecker
+	check.prepare(query)
 	for _, name := range overflow {
-		if levenshtein.ComputeDistance(query, name) <= maxDistance {
+		if check.atMost(name, maxDistance) {
 			candidates = append(candidates, name)
 		}
 	}

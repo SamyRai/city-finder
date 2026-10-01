@@ -3,7 +3,6 @@ module github.com/SamyRai/cityFinder
 go 1.26.0
 
 require (
-	github.com/agnivade/levenshtein v1.2.1
 	github.com/gofiber/fiber/v2 v2.52.15
 	github.com/golang/geo v0.0.0-20260526120156-e21b7802b0ee
 	github.com/klauspost/compress v1.18.7

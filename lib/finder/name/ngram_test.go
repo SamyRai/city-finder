@@ -10,10 +10,37 @@ import (
 	"unicode/utf8"
 
 	"github.com/SamyRai/cityFinder/lib/city"
-	"github.com/agnivade/levenshtein"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// refLevenshtein is the test-only reference distance: a textbook full-matrix
+// Levenshtein DP over runes, deliberately independent of the banded,
+// allocation-free checker in ngram.go (no band, no early exit, no shared
+// code paths). Cross-validating the production checker against it is what
+// proves the banding and early exits correct. Small strings only — the test
+// grids are tens of runes, so the O(len(a)·len(b)) matrix is irrelevant.
+func refLevenshtein(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+	dp := make([][]int, len(ra)+1)
+	for i := range dp {
+		dp[i] = make([]int, len(rb)+1)
+		dp[i][0] = i
+	}
+	for j := range dp[0] {
+		dp[0][j] = j
+	}
+	for i := 1; i <= len(ra); i++ {
+		for j := 1; j <= len(rb); j++ {
+			cost := 1
+			if ra[i-1] == rb[j-1] {
+				cost = 0
+			}
+			dp[i][j] = min(dp[i-1][j-1]+cost, dp[i-1][j]+1, dp[i][j-1]+1)
+		}
+	}
+	return dp[len(ra)][len(rb)]
+}
 
 // ngramCorpus is a small but shape-diverse corpus: ASCII words of many
 // lengths, repeated-gram names (which exercise duplicate postings), Unicode
@@ -51,7 +78,7 @@ func TestNGramSearchMatchesBruteForce(t *testing.T) {
 	bruteForceMatches := func(query string, maxDistance, minRunes int) []string {
 		var matches []string
 		for _, name := range corpus {
-			if utf8.RuneCountInString(name) >= minRunes && levenshtein.ComputeDistance(query, name) <= maxDistance {
+			if utf8.RuneCountInString(name) >= minRunes && refLevenshtein(query, name) <= maxDistance {
 				matches = append(matches, name)
 			}
 		}
@@ -72,8 +99,9 @@ func TestNGramSearchMatchesBruteForce(t *testing.T) {
 		for _, q := range queries {
 			got := index.search(q, d)
 			for _, m := range got {
-				assert.LessOrEqualf(t, levenshtein.ComputeDistance(q, m), d,
-					"false positive: search(%q, %d) returned %q at distance %d", q, d, m, levenshtein.ComputeDistance(q, m))
+				dist := refLevenshtein(q, m)
+				assert.LessOrEqualf(t, dist, d,
+					"false positive: search(%q, %d) returned %q at distance %d", q, d, m, dist)
 			}
 			want := bruteForceMatches(q, d, safeLen)
 			gotSafe := make([]string, 0, len(got))
@@ -122,9 +150,9 @@ func mangle(s string, edits int) string {
 }
 
 // TestLevenshteinCheckerMatchesReference cross-validates the banded,
-// allocation-free checker against the agnivade reference implementation
-// over a grid of string pairs and distance bounds, including Unicode,
-// repeated runes, and empty strings.
+// allocation-free checker against the independent full-matrix DP reference
+// (refLevenshtein above) over a grid of string pairs and distance bounds,
+// including Unicode, repeated runes, and empty strings.
 func TestLevenshteinCheckerMatchesReference(t *testing.T) {
 	pairs := [][2]string{
 		{"", ""}, {"", "abc"}, {"abc", ""}, {"abc", "abc"},
@@ -147,7 +175,7 @@ func TestLevenshteinCheckerMatchesReference(t *testing.T) {
 	var c levenshteinChecker
 	for _, p := range pairs {
 		c.prepare(p[0])
-		want := levenshtein.ComputeDistance(p[0], p[1])
+		want := refLevenshtein(p[0], p[1])
 		for d := 0; d <= 5; d++ {
 			got := c.atMost(p[1], d)
 			assert.Equalf(t, want <= d, got, "atMost(%q, %q, %d): reference distance is %d", p[0], p[1], d, want)
