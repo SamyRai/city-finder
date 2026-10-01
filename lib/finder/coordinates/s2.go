@@ -10,6 +10,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -53,6 +54,15 @@ const populationRankRadiusGrowth = 5.0
 // distance any two points on the sphere can be apart.
 const maxSearchRadiusKm = math.Pi * earthRadiusKm
 
+// topPopulationK is the size of the top-K population table backing the anytime
+// bound of population-ranked queries (see populationOutsideBound). 4096 keeps
+// the table ~128 KB at prod (32 B per entry) while dropping the worst-case
+// outside-radius score ceiling from maxPopulation (the single largest city,
+// ~37M) to the 4096th-largest population — plus exact scores for those 4096
+// cities — which is what lets mid-ocean queries certify a winner without the
+// terminal full-sphere scan.
+const topPopulationK = 4096
+
 // S2Finder uses a ShapeIndex for efficient nearest neighbor searches.
 type S2Finder struct {
 	Index  *s2.ShapeIndex
@@ -76,12 +86,21 @@ type S2Finder struct {
 	Admin1Names map[string]string
 
 	// maxPopulation is the largest Population across Cities (0 when no city
-	// carries population data). It bounds the gravity score of every city
-	// outside a search radius, which is what lets population-ranked queries
-	// stop escalating. Derived from Cities — never serialized; both
+	// carries population data). It detects the all-zero degenerate case of
+	// population-ranked queries. Derived from Cities — never serialized; both
 	// constructors recompute it in one pass, so the on-disk format is
 	// unchanged.
 	maxPopulation int32
+
+	// topPopulations is the topPopulationK-table behind the anytime bound of
+	// population-ranked queries: the most populous cities with Population > 0,
+	// sorted by population descending (ties broken by city index ascending, so
+	// the table is deterministic). populationOutsideBound scores these cities
+	// exactly outside a search radius and bounds everyone else by the K-th
+	// largest population. Derived from Cities in memory — never serialized,
+	// never mutated after construction — so the on-disk format is unchanged.
+	// Empty when no city carries population data.
+	topPopulations []topPopulationEntry
 }
 
 // maxPopulationOf returns the largest Population in cities (0 when empty or
@@ -94,6 +113,51 @@ func maxPopulationOf(cities []city.City) int32 {
 		}
 	}
 	return max
+}
+
+// topPopulationEntry is one row of the finder's top-K population table: a
+// city's population paired with its indexed s2 location, so the anytime bound
+// can score it against a query point without touching the shape index.
+type topPopulationEntry struct {
+	population int32
+	point      s2.Point
+}
+
+// topPopulationsOf builds the top-K population table from cities: the
+// topPopulationK largest populations, population > 0 only (zero/negative
+// populations score nothing under the gravity model and are excluded), sorted
+// by population descending with ties broken by city index ascending for
+// determinism. With fewer than topPopulationK positive populations the table
+// simply holds them all, which leaves the K-th-largest population at 0 —
+// populationOutsideBound then relies on exact scores alone.
+func topPopulationsOf(cities []city.City) []topPopulationEntry {
+	type ref struct {
+		population int32
+		index      int
+	}
+	refs := make([]ref, 0, min(topPopulationK, len(cities)))
+	for i := range cities {
+		if cities[i].Population > 0 {
+			refs = append(refs, ref{population: cities[i].Population, index: i})
+		}
+	}
+	sort.Slice(refs, func(a, b int) bool {
+		if refs[a].population != refs[b].population {
+			return refs[a].population > refs[b].population
+		}
+		return refs[a].index < refs[b].index
+	})
+	if len(refs) > topPopulationK {
+		refs = refs[:topPopulationK]
+	}
+	entries := make([]topPopulationEntry, len(refs))
+	for i, r := range refs {
+		entries[i] = topPopulationEntry{
+			population: r.population,
+			point:      s2.PointFromLatLng(s2.LatLngFromDegrees(cities[r.index].Latitude, cities[r.index].Longitude)),
+		}
+	}
+	return entries
 }
 
 // SerializableS2Finder is the v3 on-disk payload: the city table plus the
@@ -248,13 +312,14 @@ func BuildIndex(cities []city.SpatialCity, config *config.S2) (*S2Finder, error)
 	index.Build()
 
 	return &S2Finder{
-		Index:         index,
-		Cities:        cityData,
-		Admin1IDs:     admin1IDs,
-		Admin2IDs:     admin2IDs,
-		Admin1Codes:   admin1Codes,
-		Admin2Codes:   admin2Codes,
-		maxPopulation: maxPopulationOf(cityData),
+		Index:          index,
+		Cities:         cityData,
+		Admin1IDs:      admin1IDs,
+		Admin2IDs:      admin2IDs,
+		Admin1Codes:    admin1Codes,
+		Admin2Codes:    admin2Codes,
+		maxPopulation:  maxPopulationOf(cityData),
+		topPopulations: topPopulationsOf(cityData),
 	}, nil
 }
 
@@ -370,7 +435,7 @@ func (f *S2Finder) nearest(lat, lon float64, rank Rank) (*city.City, int, float6
 		}
 		winner = results[0]
 	case RankPopulation:
-		result, err := f.nearestByPopulation(targetPoint)
+		result, _, err := f.nearestByPopulation(targetPoint)
 		if err != nil {
 			return nil, 0, 0, err
 		}
@@ -395,6 +460,68 @@ func kmToChordAngle(km float64) s1.ChordAngle {
 	return s1.ChordAngleFromAngle(s1.Angle(km / earthRadiusKm))
 }
 
+// populationOutsideBound returns an upper bound on the gravity score of any
+// city NOT returned by the radiusKm disc query of nearestByPopulation:
+//
+//	UB(R) = max( best exact score among top-K cities at distance >= R,
+//	             popK / (R*R + 1) )
+//
+// Correctness: a city outside the top-K table has population <= popK (the
+// K-th largest population; 0 when fewer than K positive populations exist, in
+// which case the term vanishes), and it sits at distance > R because the disc
+// query — whose limit is chord(R).Successor() — already returned everything
+// nearer. So its score <= popK/(R*R+1). The top-K cities outside R are scored
+// exactly at their true great-circle distance. The max of both terms bounds
+// every excluded city, and the winner can be declared as soon as the best
+// in-radius score exceeds it. This is never larger than the single-max bound
+// maxPopulation/(R*R+1) it replaces (popK <= maxPopulation and exact scores
+// are computed at distances >= R), so escalation never gets worse.
+//
+// Two deliberate conservatisms: entries are exact-scored using the same
+// chord-angle distance the query scores its own results by, and entries that
+// compute as inside R still contribute population/(R*R+1) — cheap insurance
+// against a rim city that the disc query's successor-epsilon limit classified
+// differently. Exactness never depends on this bound: the escalation loop
+// keeps its terminal unbounded full-sphere iteration.
+func (f *S2Finder) populationOutsideBound(radiusKm float64, targetPoint s2.Point) float64 {
+	radiusTerm := radiusKm*radiusKm + 1.0
+
+	// popK is the K-th largest population; with fewer than K entries in the
+	// table no city was excluded by the table itself, so the term is 0.
+	var popK int32
+	if len(f.topPopulations) >= topPopulationK {
+		popK = f.topPopulations[topPopulationK-1].population
+	}
+	bound := float64(popK) / radiusTerm
+
+	// The table is sorted by population descending and every entry can
+	// contribute at most population/(R*R+1) (outside entries score lower the
+	// farther they are), so the scan stops at the first entry that cannot
+	// raise the bound.
+	limit := kmToChordAngle(radiusKm)
+	for _, entry := range f.topPopulations {
+		if float64(entry.population)/radiusTerm <= bound {
+			break
+		}
+		if chord := s2.ChordAngleBetweenPoints(entry.point, targetPoint); chord > limit {
+			// Outside the disc (strictly beyond chord(R), which the query's
+			// successor-epsilon limit treats as excluded): score it exactly
+			// through the same chord->angle->km path the query's own results
+			// are scored by.
+			distanceKm := chord.Angle().Radians() * earthRadiusKm
+			if score := float64(entry.population) / (distanceKm*distanceKm + 1.0); score > bound {
+				bound = score
+			}
+		} else if inside := float64(entry.population) / radiusTerm; inside > bound {
+			// Inside the disc: the disc query scored it exactly. Counting it
+			// at population/(R*R+1) anyway only inflates the bound (never
+			// unsound) and covers the rim-seam case above.
+			bound = inside
+		}
+	}
+	return bound
+}
+
 // nearestByPopulation returns the highest gravity-scored query result over
 // ALL cities — exact, no truncation — using a radius that escalates until an
 // anytime bound proves no city outside it can win:
@@ -407,22 +534,33 @@ func kmToChordAngle(km float64) s1.ChordAngle {
 //     semantics are exclusive ("edges whose distance is equal are not
 //     returned"); the successor makes each disc inclusive of its rim.
 //  2. Track the best gravity score s* among the returned candidates.
-//  3. Any city beyond R scores at most maxPopulation/(R*R + 1) — population
-//     is a non-negative int32, so that fraction bounds every excluded city.
-//     If s* already exceeds the bound, the in-radius winner is the global
-//     winner and the search stops.
+//  3. Bound every excluded city by the top-K population table
+//     (populationOutsideBound): cities outside the table have population <=
+//     popK so they score at most popK/(R*R+1), and the table's own cities
+//     are scored exactly at their true distance. If s* already exceeds that
+//     bound, the in-radius winner is the global winner and the search stops.
+//     The single-max bound this replaces could only certify when
+//     s* > maxPopulation/(R*R+1), which for a mid-ocean query (small s*, a
+//     megacity somewhere beyond the horizon) never holds before the final
+//     step — the top-K exact term is what cuts those queries short.
 //  4. Otherwise R grows by populationRankRadiusGrowth. The final iteration
 //     drops the distance limit entirely (an exclusive limit at exactly the
 //     half-circumference could drop an antipodal city, and Successor() at
 //     the straight angle degenerates), covering the whole sphere — so the
-//     loop always terminates with the exact answer. That unbounded
-//     iteration is the full-scan worst case (~seconds at prod scale,
-//     measured); in practice it is reached only from mid-ocean points far
-//     from any populated place.
+//     loop always terminates with the exact answer. Exactness never depends
+//     on the bound: the unbounded iteration is the fallback that guarantees
+//     the brute-force winner (~seconds at prod scale, measured); in practice
+//     the top-K bound keeps even mid-ocean points off it.
+//
+// The second return value is the radius of the disc that produced the
+// winner — the certified escalation radius, or maxSearchRadiusKm when the
+// answer came from the terminal unbounded iteration (including the
+// degenerate all-zero-population path below). It is an unexported test
+// observation hook for escalation depth; nearest discards it.
 //
 // With no population data anywhere (maxPopulation == 0), every score is 0
 // and the gravity winner is simply the nearest city.
-func (f *S2Finder) nearestByPopulation(targetPoint s2.Point) (s2.EdgeQueryResult, error) {
+func (f *S2Finder) nearestByPopulation(targetPoint s2.Point) (s2.EdgeQueryResult, float64, error) {
 	queryAll := func(radiusKm float64, limited bool) []s2.EdgeQueryResult {
 		options := s2.NewClosestEdgeQueryOptions()
 		if limited {
@@ -440,9 +578,9 @@ func (f *S2Finder) nearestByPopulation(targetPoint s2.Point) (s2.EdgeQueryResult
 		// worst case) — the nearest city is still returned correctly.
 		results := queryAll(0, false)
 		if len(results) == 0 {
-			return none, fmt.Errorf("no city found")
+			return none, maxSearchRadiusKm, fmt.Errorf("no city found")
 		}
-		return results[0], nil
+		return results[0], maxSearchRadiusKm, nil
 	}
 
 	radiusKm := populationRankInitialRadiusKm
@@ -450,12 +588,11 @@ func (f *S2Finder) nearestByPopulation(targetPoint s2.Point) (s2.EdgeQueryResult
 		results := queryAll(radiusKm, true)
 		if len(results) > 0 {
 			best := f.bestPopulationRank(results)
-			// Anytime bound: every city at distance >= radiusKm scores at
-			// most maxPopulation / (radiusKm^2 + 1); a strictly better
+			// Anytime bound (populationOutsideBound): every city beyond
+			// radiusKm scores at most the returned bound; a strictly better
 			// in-radius winner cannot be beaten (or tied) from outside.
-			bound := float64(f.maxPopulation) / (radiusKm*radiusKm + 1.0)
-			if f.populationRankScore(best) > bound {
-				return best, nil
+			if f.populationRankScore(best) > f.populationOutsideBound(radiusKm, targetPoint) {
+				return best, radiusKm, nil
 			}
 		}
 		next := radiusKm * populationRankRadiusGrowth
@@ -466,9 +603,9 @@ func (f *S2Finder) nearestByPopulation(targetPoint s2.Point) (s2.EdgeQueryResult
 		// Final iteration: no distance limit — the whole sphere, exact.
 		results = queryAll(0, false)
 		if len(results) == 0 {
-			return none, fmt.Errorf("no city found")
+			return none, maxSearchRadiusKm, fmt.Errorf("no city found")
 		}
-		return f.bestPopulationRank(results), nil
+		return f.bestPopulationRank(results), maxSearchRadiusKm, nil
 	}
 }
 
@@ -652,12 +789,13 @@ func DeserializeIndex(filepath string) (*S2Finder, error) {
 	index.Build()
 
 	return &S2Finder{
-		Index:         index,
-		Cities:        payload.Cities,
-		Admin1IDs:     payload.Admin1IDs,
-		Admin2IDs:     payload.Admin2IDs,
-		Admin1Codes:   payload.Admin1Codes,
-		Admin2Codes:   payload.Admin2Codes,
-		maxPopulation: maxPopulationOf(payload.Cities),
+		Index:          index,
+		Cities:         payload.Cities,
+		Admin1IDs:      payload.Admin1IDs,
+		Admin2IDs:      payload.Admin2IDs,
+		Admin1Codes:    payload.Admin1Codes,
+		Admin2Codes:    payload.Admin2Codes,
+		maxPopulation:  maxPopulationOf(payload.Cities),
+		topPopulations: topPopulationsOf(payload.Cities),
 	}, nil
 }
