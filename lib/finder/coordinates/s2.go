@@ -273,6 +273,10 @@ func (f *S2Finder) nearestByPopulation(targetPoint s2.Point) (s2.EdgeQueryResult
 
 	var none s2.EdgeQueryResult
 	if f.maxPopulation == 0 {
+		// Degenerate case: with no population data anywhere the anytime
+		// bound can never certify a winner, so every rank=population query
+		// pays the unbounded full-scan iteration (the loop's documented
+		// worst case) — the nearest city is still returned correctly.
 		results := queryAll(0, false)
 		if len(results) == 0 {
 			return none, fmt.Errorf("no city found")
