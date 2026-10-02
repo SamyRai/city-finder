@@ -92,7 +92,54 @@ a range, not a distribution.
 - **Warm start** decodes the three indexes concurrently. Name decode dominates
   (~14 s), and S2 and postal decode overlap inside its window.
 
+## Index footprint reduction (2026-10, after v1.3.1)
+
+Five changes target memory and index files, and none changes an exact
+answer:
+- one shared city table instead of a second copy in the name index;
+- postal entries reduced to the served fields, in sorted columns;
+- the GeoNames loader no longer pins source lines;
+- interned country codes, and primary-name bytes shared with `City.Name`;
+- delta-varint fuzzy posting lists.
+
+**Measured** with `cmd/memreport` on a 4M-city synthetic, production-shaped
+dataset (~30 % of production rows), on one machine (Linux, 4 vCPU, Go
+1.26.0). It is the same dataset for both sides, and each `measure` ran in a
+fresh process:
+
+| Metric (4M cities) | Before (`4b71da4`) | After | Change |
+|---|---|---|---|
+| Live heap after warm start | 1,233.8 MB | 724.1 MB | **−41 %** |
+| … with the fuzzy index built | 1,496.5 MB | 856.0 MB | **−43 %** |
+| Fuzzy index alone | 262.6 MB | 131.9 MB | **−50 %** |
+| Live heap after a cold build | 1,510.0 MB | 733.7 MB | **−51 %** |
+| Index files: S2 / name / postal | 118.3 / 142.8 / 24.6 MB | 118.3 / 55.7 / 8.6 MB | **−36 %** total |
+| Cold build: init time / peak RSS | 58.8 s / 5,421 MB | 46.3 s / 4,580 MB | −21 % / −16 % |
+| Warm start: init time | 10.4 s | 9.9 s | −5 % |
+| Warm start + query transcript: peak RSS | 4,334 MB | 3,134 MB | −28 % |
+
+**Answers.** Seeded transcripts of 42,469 queries were compared line by line:
+nearest (both ranks, with admin attribution), exact and alternate-name
+lookups, typos, prefixes and postal codes.
+- Nearest, prefix and postal answers are byte-identical.
+- Name answers differ only for ambiguous typos. 380 queries, none of them an
+  indexed key, and none flipping between hit and miss. There the old code
+  picked a random winner per process. The new code picks the closest match,
+  then the alphabetical first. Two new-code processes produce byte-identical
+  transcripts (all 42,469 lines).
+
+**At production scale** these are estimates, to be confirmed with a heap
+profile (`PPROF_ADDR`) on the real dump.
+- The removed duplicates scale with rows (~72 B per city for the second city
+  copy; ~250–300 B per postal entry).
+- The ~4.5 GB production heap should land around 2.6–2.9 GB.
+- The ~1.2 GB fuzzy index should land around 0.6 GB.
+- The name file (531 MB) should lose most of its 546 MB-raw city table.
+
 ## Memory sizing
+
+Figures below are the v1.3 production measurements. See the reduction above
+for the post-v1.3.1 changes, which lower all of them.
 
 - A cold start on an empty volume peaks around 9–9.3 GB RSS while building
   indexes. A warm boot alone also peaks ≈ 9 GB (concurrent decode).
