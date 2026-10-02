@@ -2,18 +2,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/SamyRai/cityFinder/cmd/server/app"
+	"github.com/SamyRai/cityFinder/cmd/server/diag"
 	"github.com/SamyRai/cityFinder/cmd/server/metrics"
-	"github.com/SamyRai/cityFinder/cmd/server/routes"
 	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/SamyRai/cityFinder/lib/initializer"
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/recover"
 )
 
 func main() {
@@ -31,26 +32,22 @@ func main() {
 	// name.Finder.WarmFuzzy). Non-blocking; serving starts immediately.
 	mainFinder.WarmFuzzy()
 
-	app := fiber.New(fiber.Config{
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
-		BodyLimit:    1 << 20, // 1MB; POST /nearest/batch peaks at ~6KB for 100 points
-		ETag:         true,
-		// fasthttp's default admission control (256k) is effectively
-		// unbounded: each accepted connection costs a goroutine plus
-		// buffers, so a flood ties up memory the 5.7 GB index heap cannot
-		// spare. 1024 concurrent connections is far above any legitimate
-		// load for this API and caps the per-connection overhead.
-		Concurrency: 1024,
-	})
-	// fasthttp performs no panic recovery of its own: without this middleware
-	// any handler panic terminates the process. It must be registered before
-	// all other middleware so it wraps the full handler chain.
-	app.Use(recover.New())
-	app.Use(Logger())
 	registry := metrics.NewRegistry()
-	routes.SetupRoutesWithMetrics(app, mainFinder, registry)
+	server := app.New(mainFinder, registry, log.Default())
+
+	// Opt-in profiling listener (see package diag): off unless PPROF_ADDR is
+	// set, and never on the public port. Started after initialization so
+	// profiles cover serving, not index loading.
+	var pprofServer *http.Server
+	if addr := os.Getenv("PPROF_ADDR"); addr != "" {
+		pprofServer = diag.NewServer(addr)
+		go func() {
+			if err := pprofServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("pprof listener on %s stopped: %v", addr, err)
+			}
+		}()
+		log.Printf("pprof listening on %s (PPROF_ADDR)", addr)
+	}
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -69,7 +66,7 @@ func main() {
 
 	listenErr := make(chan error, 1)
 	go func() {
-		listenErr <- app.Listen(":" + port)
+		listenErr <- server.Listen(":" + port)
 	}()
 
 	select {
@@ -79,12 +76,15 @@ func main() {
 		}
 	case <-sigCtx.Done():
 		log.Println("shutting down")
+		if pprofServer != nil {
+			_ = pprofServer.Close()
+		}
 		for {
 			// A shutdown that races ahead of the serve loop (signal arriving
 			// in the moment between starting Listen and the listener being
 			// registered) is a no-op and must be retried, otherwise the
 			// process would keep serving forever with the signal swallowed.
-			if err := app.ShutdownWithTimeout(shutdownTimeout); err != nil {
+			if err := server.ShutdownWithTimeout(shutdownTimeout); err != nil {
 				log.Printf("Shutdown error: %v", err)
 			}
 			select {
@@ -96,24 +96,5 @@ func main() {
 			case <-time.After(100 * time.Millisecond):
 			}
 		}
-	}
-}
-
-// Logger writes a single line per request: timestamp, method, path (query
-// string excluded), status, latency, and response size in bytes. Request
-// bodies, query parameters, and multipart forms are never logged.
-func Logger() fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		start := time.Now()
-		err := c.Next()
-		log.Printf("%s %s %s %d %s %d",
-			start.Format(time.RFC3339),
-			c.Method(),
-			c.Path(),
-			c.Response().StatusCode(),
-			time.Since(start),
-			len(c.Response().Body()),
-		)
-		return err
 	}
 }
