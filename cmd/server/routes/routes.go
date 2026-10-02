@@ -24,15 +24,18 @@ import (
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
 	"github.com/SamyRai/cityFinder/lib/finder/name"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/recover"
 )
 
 // parseCoordinate parses and validates a lat/lon query parameter. It rejects
 // values that are not finite numbers: NaN passes strconv.ParseFloat but fails
 // every range comparison, and ±Inf must not leak into the spatial index.
-func parseCoordinate(raw, name string) (float64, bool) {
+func parseCoordinate(raw string) (float64, bool) {
+	// No log on a parse failure: the 400 is already visible in metrics and
+	// the access log, and echoing client-supplied input into the log on
+	// every bad request was an unauthenticated log-amplification path.
 	value, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
-		log.Printf("Error parsing %s: %v", name, err)
 		return 0, false
 	}
 	if math.IsNaN(value) || math.IsInf(value, 0) {
@@ -185,9 +188,10 @@ func executeNearest(f *finder.Finder, lat, lon float64, rank coordinates.Rank, i
 }
 
 // maxBatchPoints caps a POST /nearest/batch request. The batch exists so a
-// client pays one round trip instead of N; past ~100 points the sequential
-// population-gated lookups would hold a connection far longer than the
-// equivalent parallel GETs, so larger batches are a 400, not a slowdown.
+// client pays one round trip instead of N; past ~100 points a batch of
+// population-gated lookups (bounded by the gate) would hold a connection far
+// longer than the equivalent parallel GETs, so larger batches are a 400, not
+// a slowdown.
 const maxBatchPoints = 100
 
 // maxBatchWorkers bounds the POST /nearest/batch fan-out. CPU-bound lookups
@@ -195,6 +199,19 @@ const maxBatchPoints = 100
 // the expensive class, so one worker per P (capped by the batch size) is the
 // honest ceiling.
 var maxBatchWorkers = runtime.GOMAXPROCS(0)
+
+// batchWorkerCount returns the fan-out for a batch of n points. A batch that
+// contains population-ranked points never runs more workers than the
+// population gate has slots: the gate fails fast, so a fan-out wider than the
+// gate (GOMAXPROCS > 8) would let a single batch on an idle server saturate
+// it and 503 itself. Distance-only batches keep the full fan-out.
+func batchWorkerCount(n int, hasPopulation bool) int {
+	workers := min(n, maxBatchWorkers)
+	if hasPopulation {
+		workers = min(workers, cap(populationGate))
+	}
+	return max(workers, 1)
+}
 
 // heapAllocMetricName is the runtime gauge backing go_heap_alloc_bytes:
 // /memory/classes/heap/objects:bytes is maintained continuously by the
@@ -274,6 +291,38 @@ func validateBatchPoint(p batchPoint) (validatedPoint, string) {
 	return v, ""
 }
 
+// CompletedStatus returns the HTTP status a request ends with. A handler (or
+// fiber's router, for 404/405) may return an error that fiber's error handler
+// turns into the response AFTER the middleware chain has unwound, so inside a
+// middleware the response still carries the default 200; the error's code is
+// the status the client actually receives.
+func CompletedStatus(c *fiber.Ctx, err error) int {
+	if err == nil {
+		return c.Response().StatusCode()
+	}
+	var fe *fiber.Error
+	if errors.As(err, &fe) {
+		return fe.Code
+	}
+	return fiber.StatusInternalServerError
+}
+
+// RouteLabel returns the route pattern a request matched, for metrics and
+// logs. When no route matches, fiber's router answers 404/405 and reports the
+// catch-all middleware ("/") as the request's route; that case is labelled
+// "(unrouted)" so 404/405 floods stay one bounded series instead of
+// masquerading as a "/" route (this API registers no "/" route). err is the
+// error the handler chain returned.
+func RouteLabel(c *fiber.Ctx, err error) string {
+	path := c.Route().Path
+	var fe *fiber.Error
+	if path == "/" && errors.As(err, &fe) &&
+		(fe.Code == fiber.StatusNotFound || fe.Code == fiber.StatusMethodNotAllowed) {
+		return "(unrouted)"
+	}
+	return path
+}
+
 // SetupRoutes registers the data routes without a metrics registry (tests
 // and embedded use); the metrics middleware and endpoint are skipped.
 func SetupRoutes(app *fiber.App, mainFinder *finder.Finder) {
@@ -287,16 +336,17 @@ func SetupRoutesWithMetrics(app *fiber.App, mainFinder *finder.Finder, reg *metr
 		app.Use(func(c *fiber.Ctx) error {
 			start := time.Now()
 			err := c.Next()
-			pattern := c.Route().Path
-			if pattern == "" {
-				pattern = "(unrouted)"
-			}
-			if pattern != "/metrics" { // a scrape must not grow its own counts
-				reg.ObserveRequest(pattern, c.Response().StatusCode(), time.Since(start))
+			if pattern := RouteLabel(c, err); pattern != "/metrics" { // a scrape must not grow its own counts
+				reg.ObserveRequest(pattern, CompletedStatus(c, err), time.Since(start))
 			}
 			return err
 		})
 	}
+	// Handler panics are recovered HERE, inside the instrumentation, so the
+	// metrics middleware above (and any access log further out) observes them
+	// as the 500 the client receives. A recover registered outermost only
+	// would let the panic unwind through every middleware unrecorded.
+	app.Use(recover.New())
 
 	// Liveness probe: registered before the data routes and never touches the
 	// finders, so it stays cheap and answers even when data loading is slow
@@ -337,11 +387,11 @@ func SetupRoutesWithMetrics(app *fiber.App, mainFinder *finder.Finder, reg *metr
 	}
 
 	app.Get("/nearest", func(c *fiber.Ctx) error {
-		lat, ok := parseCoordinate(c.Query("lat"), "lat")
+		lat, ok := parseCoordinate(c.Query("lat"))
 		if !ok {
 			return c.Status(fiber.StatusBadRequest).SendString("Invalid latitude")
 		}
-		lon, ok := parseCoordinate(c.Query("lon"), "lon")
+		lon, ok := parseCoordinate(c.Query("lon"))
 		if !ok {
 			return c.Status(fiber.StatusBadRequest).SendString("Invalid longitude")
 		}
@@ -384,7 +434,7 @@ func SetupRoutesWithMetrics(app *fiber.App, mainFinder *finder.Finder, reg *metr
 	// point carries the GET endpoint's parameters (lat/lon required,
 	// rank/include optional with the same whitelist); the reply is a
 	// parallel results array — the object GET would return for that point,
-	// or null where GET would 404. Points execute sequentially through the
+	// or null where GET would 404. Points execute concurrently through the
 	// same query core (population gate included), so a batch observes the
 	// same per-point semantics as the GETs it replaces.
 	app.Post("/nearest/batch", func(c *fiber.Ctx) error {
@@ -447,10 +497,11 @@ func SetupRoutesWithMetrics(app *fiber.App, mainFinder *finder.Finder, reg *metr
 		responses := make([]nearestCityResponse, len(queries))
 		outcomes := make([]nearestOutcome, len(queries))
 		work := make(chan int)
-		workers := len(queries)
-		if workers > maxBatchWorkers {
-			workers = maxBatchWorkers
+		hasPopulation := false
+		for _, q := range queries {
+			hasPopulation = hasPopulation || q.rank == coordinates.RankPopulation
 		}
+		workers := batchWorkerCount(len(queries), hasPopulation)
 		var wg sync.WaitGroup
 		wg.Add(workers)
 		for w := 0; w < workers; w++ {
@@ -484,8 +535,7 @@ func SetupRoutesWithMetrics(app *fiber.App, mainFinder *finder.Finder, reg *metr
 			case nearestNotFound:
 				results = append(results, nil) // the batch form of GET's 404
 			default: // nearestOK
-				response := responses[i]
-				results = append(results, &response)
+				results = append(results, &responses[i])
 			}
 		}
 		return c.JSON(batchResponse{Results: results})
