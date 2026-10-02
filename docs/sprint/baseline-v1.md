@@ -104,3 +104,25 @@ timings ~10–40×; the numbers above are from converged warm passes (the
 one-off harness and probe live outside the repo). Boot on the noisy second
 run was 45.9 s vs 23.3 s quiet — cite the quiet figure with variance in
 mind.
+
+## v1.3 validation (2026-10-02, v3/v2 index files unchanged from v1.2, same method, quiet machine)
+
+v1.3 changed no index format, so warm boot and heap carry over from the
+v1.2 validation (23.3 s decode-only boot; 4.49 GB post-GC heap). The
+changes below are query-path and were measured at prod scale on the
+13.47M-row dataset:
+
+| Metric | v1.3 | v1.2 (reference) |
+|---|---|---|
+| Nearest rank=distance (10k random) | p50 9.4 µs (pooled query objects, −20%); allocs −40% | p50 11.9 µs / p99 103 µs |
+| rank=population, ocean-class points | 1.0–9.5 s (top-K-anchored disc) | 8.5–14.3 s |
+| rank=population exactness | all brute-force oracles (ties, crowd-out, all-zero populations) pass unedited | same |
+| POST /nearest/batch | points execute concurrently (GOMAXPROCS-bounded; population gate still caps the expensive class) — a far-from-land batch now costs ≈ its slowest single point, not the sum | sequential (sum of points) |
+| include=admin / autocomplete / postal | unchanged paths (re-measured in-repo: see benchmarks/README.md baseline) | — |
+
+Repeatable in-repo benchmarks now cover every public query path (the
+missing ones — autocomplete PrefixNames, admin attribution, the metrics
+registry, and HTTP round-trips — were added 2026-10-02, with baseline
+numbers, fixture caveats, and a trust assessment of the prod-scale
+comparison in benchmarks/README.md). /metrics additionally exposes
+go_goroutines and go_heap_alloc_bytes per scrape.

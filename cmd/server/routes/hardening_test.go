@@ -95,6 +95,9 @@ func TestMetricsEndpoint(t *testing.T) {
 	// The fuzzy build-state gauge is always present on the metrics surface
 	// (0 = not built here; the fixture never triggers a fuzzy build).
 	assert.Contains(t, out, "# TYPE fuzzy_build_state gauge\nfuzzy_build_state 0")
+	// Runtime gauges are computed per scrape: goroutine count and live heap.
+	assert.Contains(t, out, "# TYPE go_goroutines gauge\ngo_goroutines ")
+	assert.Contains(t, out, "# TYPE go_heap_alloc_bytes gauge\ngo_heap_alloc_bytes ")
 
 	// SetupRoutes with a nil registry keeps serving without the metrics
 	// surface (tests and embedded use).

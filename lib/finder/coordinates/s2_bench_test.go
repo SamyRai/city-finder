@@ -154,7 +154,10 @@ func BenchmarkMemoryUsage(b *testing.B) {
 			b.ReportMetric(float64(m2.Alloc-m1.Alloc)/1024/1024, "MB/op")
 			b.ReportMetric(float64(m2.TotalAlloc-m1.TotalAlloc)/1024/1024, "MB_total/op")
 
-			_ = finder // Keep reference to prevent GC
+			// KeepAlive, not `_ = finder`: a blank assignment does not extend
+			// the index's lifetime, so without this the second GC can reclaim
+			// it before m2 and report a near-zero retained heap.
+			runtime.KeepAlive(finder)
 		})
 	}
 }

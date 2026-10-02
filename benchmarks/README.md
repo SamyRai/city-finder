@@ -297,3 +297,136 @@ the latency profile silently; (2) winner agreement with cKDTree was exact
 (3) Redis GEO rejects |lat| > 85.05° (Web-Mercator limit); rtreego
 returns nil for 8.4% of queries at this scale (unusable). Harnesses were
 throwaway (/tmp); the table above is the durable record.
+
+## In-repo Go benchmarks — inventory, baseline, and what to trust
+
+Repeatable `go test` benchmarks live next to the code they measure (the
+suite in this directory is a separate, fixture-bound tool — see the scope
+caveat at the top). Run and compare with benchstat; never compare single
+runs:
+
+```bash
+go test -run '^$' -bench 'BenchmarkCityByName$' -benchmem -count=10 \
+  ./lib/finder/name | tee /tmp/now.txt
+benchstat /tmp/baseline.txt /tmp/now.txt
+```
+
+Tip: `go test` merges the test binary's stderr into its own stdout, and
+`BuildIndex` logs each call — for parseable output compile the binary and
+separate the streams: `go test -c -o /tmp/pkg.test ./lib/finder/name &&
+/tmp/pkg.test -test.run '^$' -test.bench . -test.benchmem -test.count=10
+> out.txt 2>/dev/null`.
+
+### Inventory
+
+| Benchmark | Measures | Fixture | Notes |
+|---|---|---|---|
+| coordinates `NearestPlaceDistinctPoints` | nearest, rank=distance core | 100k distinct sphere points | the realistic distance-rank benchmark; legacy `NearestPlace` keeps the duplicated-point fixture for historical comparability |
+| coordinates `NearestPlaceWithAdmin` (added 2026-10-02) | include=admin attribution read | 100k distinct + admin codes/names | distance and land-population sub-runs |
+| coordinates `NearestByPopulationOceanQuery` | population-rank escalation worst case | 200k clustered synthetic world | mid-ocean vs populated; exercises the v1.3 anchored disc |
+| coordinates `BuildIndex` / `SerializeIndex` / `DeserializeIndex` / `MemoryUsage` | index lifecycle | 1K–1M | BuildIndex logs per call (that log is part of the public op) |
+| name `CityByNameExactTail` + `Parallel` | exact lookup, full 1M-key sweep | 1M distinct names / 20 countries | per-query p50/p99/p99.9 + RWMutex contention check |
+| name `CityByName` / `CityByNameFuzzy` | exact hit; distance-1 fuzzy resolve | 100k distinct names | fixtures repaired 2026-10-02 (were 100k copies of ONE name — see below) |
+| name `PrefixNames` (added 2026-10-02) | autocomplete prefix walk | 1M-name single-country table | sparse / dense-cap / miss sub-runs |
+| name `NGramSearch` / `EnsureFuzzyBuilt` | budget-capped d2 walk; one-time n-gram build | 100k names sharing a 9-gram prefix | deliberately maximal skew: worst case for the candidate budget |
+| name `AddCity` | post-build overflow insert | — | |
+| postalCode `CityByPostalCode` (+ add/serialize) | postal hit | 1k–10k entries | |
+| metrics `Render` / `ObserveRequest` (added 2026-10-02) | /metrics scrape serialization; per-request observation | populated registry (6 routes × 4 statuses) | |
+| routes `BenchmarkHTTP*` (added 2026-10-02) | full fiber `app.Test` round-trip per route | 10k-city app | /nearest ×3 (distance/admin/population), /nearest/batch (10 pts), /coordinates, /autocomplete, /postalCode, /metrics |
+
+### Baseline — 2026-10-02, Apple M2 (8 cores, 24 GB), darwin/arm64, Go 1.27.1
+
+Tree = v1.3.0 plus this documentation/benchmark commit (no production
+query-path changes; the only production file touched is the /metrics
+handler). Sequential runs on a quiet machine, `-count=10` for the fast
+rows (benchstat mean ± noise), fixed counts as noted.
+
+Query path:
+
+| Benchmark | Result | Allocs |
+|---|---|---|
+| nearest distance, 100k distinct points | 3.7 µs ± 38% | 978 B, 45 |
+| nearest distance + admin attribution | 2.33 µs ± 1% | 978 B, 45 |
+| nearest population (land, uniform world) | 141 µs ± 1% | 4.8 KiB, 172 |
+| nearest population (mid-ocean, clustered world) | 4.8 ms ± 7% | 2.07 MiB, 49.7k |
+| exact name hit, 100k distinct sweep | 241 ns ± 16% | 0 |
+| exact name hit, 1M-key sweep (mean / p50 / p99 / p99.9) | 700 / 667 / 1291 / 7958 ns | 0 |
+| exact name hit, 1M parallel | 167 ns per goroutine-op | 0 |
+| fuzzy d1 typo resolve, 100k names | 140 µs ± 11% | 46 KiB, 55 |
+| fuzzy d2 walk, 100k maximal-skew names (budget-capped) | 22.9 ms ± 12% | 2.33 MiB, 569 |
+| autocomplete prefix, 1M-name table (sparse / dense / miss) | 358 / 217 / 150 ns | 240 B, 1 |
+| postal hit, 1k entries | 176 ns ± 27% | 77 B, 2 |
+| /metrics Render (populated) / ObserveRequest | 42 µs ± 31% / 47 ns ± 10% | 36.6 KiB, 214 / 0 |
+| HTTP /nearest (distance / admin / population) | 14.1 / 14.3 / 107 µs | 12.5–15.6 KiB, 77–166 |
+| HTTP /nearest/batch (10 points, parallel) | 60.4 µs ± 4% | 33 KiB, 496 |
+| HTTP /coordinates, /autocomplete, /postalCode, /metrics | 12.2 / 16.6 / 11.2 / 15.7 µs | 11–16 KiB |
+
+Lifecycle:
+
+| Benchmark | Result |
+|---|---|
+| name BuildIndex, 1M distinct names | 1.95 s, 768 MB transient, 123 MB retained |
+| name BuildIndex, 100K | 324 ms, 12.4 MB retained |
+| name n-gram (fuzzy) build, 100k names | 139 ms |
+| name AddCity (overflow path) | 166 ns |
+| name Serialize/Deserialize, 10k names | 4.3 / 4.8 ms |
+| S2 BuildIndex, 1M points | 423 ms, 1.52 GiB transient, 93 MB retained |
+| S2 Serialize/Deserialize, 100k points | 22.8 / 72.2 ms |
+| postal add / serialize / deserialize, 10k | 55 ns / 8.9 / 11.7 ms |
+
+### What these numbers are for
+
+The fixtures are synthetic (uniform sphere points, syllable names, US-style
+postal grids) and deliberately smaller than production (13.47M GeoNames
+rows clustered on land, real name skew, 35M name/alternate keys). Use the
+in-repo benchmarks for REGRESSION DETECTION and relative comparison on one
+machine — not as absolute production claims. Production-scale numbers come
+from the passes recorded in docs/sprint/baseline-v1.md and the cross-engine
+table above. Known fixture-vs-production deltas measured on 2026-10-02:
+synthetic exact-lookup names are longer than real city names (700 ns mean
+here vs 334 ns p50 prod on v1.0, same machine class); the d2 fuzzy
+benchmark is a maximal-skew worst case (all names share a 9-gram prefix)
+where production's mixed-typo p50 at 17.7M names is 3–5 ms; the ocean
+fixture's anchored-disc win (~12×) does not transfer to prod (2–3×), where
+the disc is dominated by the winner's own distance. The HTTP benchmarks
+measure fiber's in-process `app.Test` round-trip — no TCP, no TLS, no
+kernel network stack — so they bound the application's own overhead, not
+network-exposed latency.
+
+## Trust assessment (2026-10-02 review)
+
+**Cross-engine table — trust it for the conclusions drawn, not as a
+universal ranking.** Trustable: one shared query set, one shared dataset
+row scope (the original 40.8% winner disagreement was root-caused to a
+row-scope mismatch and re-measured to 0/1000 disagreement against
+scipy cKDTree on identical scope), in-process latency on one host, and
+per-engine build/memory reported alongside latency. Caveats: single host
+(Apple M2, 24 GB, no CPU pinning, background load possible); engines
+measured as a user would run them, not hand-tuned (Redis over a socket
+with defaults, rtreego unwarmed); one workload only — nearest-neighbor
+point queries, no range/polygon/batch workloads; the harnesses were
+throwaway /tmp scripts, so the table and method notes above are the
+durable record and cannot be re-run bit-exact. What the table supports:
+at 13.47M points on one machine, an in-process S2 index answers nearest
+queries ~2 orders of magnitude faster than networked Redis GEO and ~3
+orders faster than an R-tree that degrades at this N, and its winners are
+provably correct against an independent engine. What it does NOT support:
+"S2 beats X everywhere" — different hardware, network placement, or
+workloads can reorder the engines.
+
+**In-repo baseline — trust it for regression detection.** Same-machine
+sequential runs, benchstat means with noise over ≥10 counts for the fast
+rows, `-benchmem` throughout; measurement defects found and fixed while
+establishing it (GC-invalidated retained-heap metrics now use
+`runtime.KeepAlive`; degenerate single-name name-index fixtures replaced
+with distinct-name ones; the legacy duplicated-point nearest fixture is
+kept only for historical comparability and superseded by
+`NearestPlaceDistinctPoints`). Residual limits: laptop thermals and
+background load (±38% worst row); synthetic fixture skew as itemized
+above; `BuildIndex` rows include the library's per-call log line.
+
+**Known-broken measurements, kept visible rather than hidden:** rtreego
+p99 (8.4% nil results at 13.5M — engine unusable at that scale); Redis
+GEO polar queries (capability gap, excluded from its distribution); the
+run_benchmarks.go suite in this directory (10-row fixture — its "scaling"
+and size caps are over the fixture, not real datasets).

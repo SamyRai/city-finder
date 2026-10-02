@@ -41,8 +41,10 @@ paths:
         counters and `http_request_duration_seconds` histograms keyed by
         route pattern and status code (label cardinality is bounded —
         never by user input), plus `fuzzy_budget_trips_total` (fuzzy
-        searches that returned budget-truncated partial results). The
-        scrape does not count itself.
+        searches that returned budget-truncated partial results),
+        `fuzzy_build_state` (0 not built / 1 building / 2 built / 3
+        disabled), and the per-scrape runtime gauges `go_goroutines` and
+        `go_heap_alloc_bytes`. The scrape does not count itself.
       operationId: metrics
       responses:
         "200":

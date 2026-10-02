@@ -8,6 +8,33 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- Missing benchmarks, one per public query path: `PrefixNames`
+  (sparse/dense/miss on a 1M-name table), `NearestPlaceWithAdmin`
+  (distance + land-population with admin attribution), metrics-registry
+  `Render`/`ObserveRequest`, and HTTP round-trips for every route
+  (`/nearest` ×3, `/nearest/batch`, `/coordinates`, `/autocomplete`,
+  `/postalCode`, `/metrics`) via fiber `app.Test`.
+- `/metrics` runtime gauges `go_goroutines` and `go_heap_alloc_bytes`,
+  computed per scrape; the heap figure reads
+  `/memory/classes/heap/objects:bytes` via `runtime/metrics`, so a scrape
+  pays no stop-the-world.
+
+### Changed
+
+- Name-index benchmark fixtures use 100k–1M distinct synthetic names
+  instead of copies of one name, which collapsed the name tables and the
+  n-gram index to a handful of keys; exact/fuzzy/autocomplete lookups now
+  measure real table spread. `BenchmarkMemoryUsage` keeps the index alive
+  with `runtime.KeepAlive` (a blank assignment let the second GC reclaim
+  it and report a near-zero retained heap).
+- benchmarks/README.md gained the full benchmark inventory, a repeatable
+  baseline (2026-10-02, Apple M2, Go 1.27.1, benchstat), fixture-vs-
+  production caveats, and a trust assessment of the cross-engine
+  comparison and of the in-process numbers. docs/sprint/baseline-v1.md
+  gained the v1.3 validation section.
+
 ## [1.3.0] - 2026-10-02
 
 ### Added

@@ -10,6 +10,7 @@ import (
 	"log"
 	"math"
 	"runtime"
+	rmetrics "runtime/metrics"
 	"strconv"
 	"strings"
 	"sync"
@@ -195,6 +196,11 @@ const maxBatchPoints = 100
 // honest ceiling.
 var maxBatchWorkers = runtime.GOMAXPROCS(0)
 
+// heapAllocSample reads the runtime's live-heap gauge. The sample slice is
+// reused across scrapes; /memory/classes/heap/objects:bytes is maintained
+// continuously by the runtime, so reading it needs no stop-the-world.
+var heapAllocSample = []rmetrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
+
 // batchRequest is the POST /nearest/batch body: one point per lookup.
 type batchRequest struct {
 	Points []batchPoint `json:"points"`
@@ -313,6 +319,16 @@ func SetupRoutesWithMetrics(app *fiber.App, mainFinder *finder.Finder, reg *metr
 			// 0 = not built, 1 = building, 2 = built, 3 = disabled —
 			// name.Finder.FuzzyBuildState documents the mapping.
 			reg.SetGauge("fuzzy_build_state", float64(mainFinder.FuzzyBuildState()))
+			// Runtime gauges, computed per scrape. The heap figure comes
+			// from runtime/metrics rather than runtime.ReadMemStats so a
+			// scrape never pays that call's stop-the-world.
+			reg.SetGauge("go_goroutines", float64(runtime.NumGoroutine()))
+			rmetrics.Read(heapAllocSample)
+			if v := heapAllocSample[0].Value; v.Kind() == rmetrics.KindUint64 {
+				reg.SetGauge("go_heap_alloc_bytes", float64(v.Uint64()))
+			} else {
+				reg.SetGauge("go_heap_alloc_bytes", v.Float64())
+			}
 			return c.Type("text", "plain").SendString(reg.Render())
 		})
 	}
