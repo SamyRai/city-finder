@@ -549,7 +549,10 @@ func ensureAdmin1Names(path string) map[string]string {
 func loadData(cfg *config.Config) ([]city.SpatialCity, map[string]map[string]dataLoader.PostalCodeEntry, error) {
 	cities, err := dataLoader.LoadGeoNamesCSVWithOptions(
 		filepath.Join(cfg.DatasetsFolder, cfg.AllCitiesFile),
-		dataLoader.LoadOptions{ExcludeAdminDivisions: cfg.ExcludeAdminDivisions},
+		dataLoader.LoadOptions{
+			ExcludeAdminDivisions: cfg.ExcludeAdminDivisions,
+			IncludeFeatureClasses: cfg.IncludeFeatureClasses,
+		},
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load GeoNames data from CSV: %v", err)

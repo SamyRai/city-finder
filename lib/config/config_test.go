@@ -322,6 +322,91 @@ func TestLoadConfigExcludeAdminDivisions(t *testing.T) {
 	})
 }
 
+// TestLoadConfigIncludeFeatureClasses pins the include_feature_classes knob's
+// JSON semantics: a comma-separated string that UnmarshalJSON trims,
+// uppercases, dedupes, and validates against the GeoNames feature-class set;
+// absent or empty decodes nil (the historical load — existing config files are
+// unaffected), and an invalid entry fails the config LOAD with the offending
+// value in the message.
+func TestLoadConfigIncludeFeatureClasses(t *testing.T) {
+	t.Run("absent key decodes nil", func(t *testing.T) {
+		// validConfigJSON carries no include_feature_classes key.
+		path := writeConfig(t, t.TempDir(), "config.json", validConfigJSON)
+
+		cfg, err := LoadConfig(path)
+		require.NoError(t, err)
+		assert.Empty(t, cfg.IncludeFeatureClasses,
+			"a config file written before the knob existed must decode as no filter")
+		assert.Nil(t, cfg.IncludeFeatureClasses, "no filter is nil, not an empty slice")
+	})
+
+	t.Run("empty string decodes nil (explicit default-off)", func(t *testing.T) {
+		path := writeConfig(t, t.TempDir(), "config.json",
+			`{"datasets_folder": "datasets", "include_feature_classes": ""}`)
+
+		cfg, err := LoadConfig(path)
+		require.NoError(t, err)
+		assert.Nil(t, cfg.IncludeFeatureClasses)
+	})
+
+	t.Run("single class", func(t *testing.T) {
+		path := writeConfig(t, t.TempDir(), "config.json",
+			`{"datasets_folder": "datasets", "include_feature_classes": "P"}`)
+
+		cfg, err := LoadConfig(path)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"P"}, cfg.IncludeFeatureClasses)
+	})
+
+	t.Run("multiple classes comma-separated", func(t *testing.T) {
+		path := writeConfig(t, t.TempDir(), "config.json",
+			`{"datasets_folder": "datasets", "include_feature_classes": "P,A"}`)
+
+		cfg, err := LoadConfig(path)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"P", "A"}, cfg.IncludeFeatureClasses)
+	})
+
+	t.Run("entries are trimmed, uppercased, and deduped", func(t *testing.T) {
+		path := writeConfig(t, t.TempDir(), "config.json",
+			`{"datasets_folder": "datasets", "include_feature_classes": " p , A , p "}`)
+
+		cfg, err := LoadConfig(path)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"P", "A"}, cfg.IncludeFeatureClasses)
+	})
+
+	t.Run("invalid entry fails the config load naming the value", func(t *testing.T) {
+		for name, raw := range map[string]string{
+			"unknown letter":      `{"include_feature_classes": "P,X"}`,
+			"lowercase multi":     `{"include_feature_classes": "pp"}`,
+			"lowercase x":         `{"include_feature_classes": "p,x"}`,
+			"empty entry in list": `{"include_feature_classes": "P,,"}`,
+		} {
+			t.Run(name, func(t *testing.T) {
+				path := writeConfig(t, t.TempDir(), "config.json", raw)
+
+				cfg, err := LoadConfig(path)
+				require.Error(t, err,
+					"an invalid class must be a config LOAD error, never silently ignored")
+				assert.Nil(t, cfg)
+				assert.Contains(t, err.Error(), "failed to decode config file",
+					"the failure surfaces through the normal decode path of LoadConfig")
+				assert.Contains(t, err.Error(), "invalid include_feature_classes",
+					"the error must name the offending key")
+			})
+		}
+
+		// The offending VALUE lands in the message: "X" is blamed, "P" is not.
+		path := writeConfig(t, t.TempDir(), "config.json", `{"include_feature_classes": "P,X"}`)
+		_, err := LoadConfig(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `"X"`)
+		assert.Contains(t, err.Error(), "A P H L R S T U V",
+			"the error must state the valid class set")
+	})
+}
+
 // TestLoadFromEnvHonorsConfigPath pins the binary config resolution: with
 // CONFIG_PATH set, LoadFromEnv loads exactly that file — the same resolution
 // cmd/server/main.go performs inline.

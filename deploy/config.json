@@ -11,6 +11,7 @@
   "postal_code_index_file": "postal_code_index.gob",
   "name_index_file": "name_index.gob",
   "exclude_admin_divisions": false,
+  "include_feature_classes": "",
   "s2": {
     "index_file": "s2index.gob"
   }
