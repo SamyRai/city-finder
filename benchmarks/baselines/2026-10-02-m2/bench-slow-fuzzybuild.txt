@@ -1,0 +1,6 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/SamyRai/cityFinder/lib/finder/name
+cpu: Apple M2
+BenchmarkEnsureFuzzyBuilt-8   	       3	 139407014 ns/op	12503477 B/op	    1431 allocs/op
+PASS

@@ -1,0 +1,25 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/SamyRai/cityFinder/cmd/server/metrics
+cpu: Apple M2
+BenchmarkRender-8           	   32794	     42575 ns/op	   37480 B/op	     214 allocs/op
+BenchmarkRender-8           	   21927	     55093 ns/op	   37480 B/op	     214 allocs/op
+BenchmarkRender-8           	   23374	     54074 ns/op	   37480 B/op	     214 allocs/op
+BenchmarkRender-8           	   21610	     56029 ns/op	   37481 B/op	     214 allocs/op
+BenchmarkRender-8           	   31168	     42222 ns/op	   37479 B/op	     214 allocs/op
+BenchmarkRender-8           	   30090	     41250 ns/op	   37479 B/op	     214 allocs/op
+BenchmarkRender-8           	   24811	     41995 ns/op	   37479 B/op	     214 allocs/op
+BenchmarkRender-8           	   30090	     35861 ns/op	   37479 B/op	     214 allocs/op
+BenchmarkRender-8           	   26049	     41488 ns/op	   37479 B/op	     214 allocs/op
+BenchmarkRender-8           	   45019	     27169 ns/op	   37479 B/op	     214 allocs/op
+BenchmarkObserveRequest-8   	27351308	        43.05 ns/op	       0 B/op	       0 allocs/op
+BenchmarkObserveRequest-8   	22807346	        48.32 ns/op	       0 B/op	       0 allocs/op
+BenchmarkObserveRequest-8   	22990560	        49.98 ns/op	       0 B/op	       0 allocs/op
+BenchmarkObserveRequest-8   	23482542	        48.95 ns/op	       0 B/op	       0 allocs/op
+BenchmarkObserveRequest-8   	38001790	        42.49 ns/op	       0 B/op	       0 allocs/op
+BenchmarkObserveRequest-8   	27650511	        46.95 ns/op	       0 B/op	       0 allocs/op
+BenchmarkObserveRequest-8   	31025254	        47.02 ns/op	       0 B/op	       0 allocs/op
+BenchmarkObserveRequest-8   	21743348	        48.04 ns/op	       0 B/op	       0 allocs/op
+BenchmarkObserveRequest-8   	24071190	        47.47 ns/op	       0 B/op	       0 allocs/op
+BenchmarkObserveRequest-8   	29883046	        38.05 ns/op	       0 B/op	       0 allocs/op
+PASS

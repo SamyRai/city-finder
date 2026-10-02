@@ -1,0 +1,11 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/SamyRai/cityFinder/lib/finder/name
+cpu: Apple M2
+BenchmarkSerializeIndex-8     	     283	   4112464 ns/op	15081740 B/op	   30283 allocs/op
+BenchmarkSerializeIndex-8     	     249	   4296979 ns/op	15079332 B/op	   30282 allocs/op
+BenchmarkSerializeIndex-8     	     265	   4381908 ns/op	15079593 B/op	   30282 allocs/op
+BenchmarkDeserializeIndex-8   	     241	   4833580 ns/op	 5316690 B/op	   50896 allocs/op
+BenchmarkDeserializeIndex-8   	     252	   4724194 ns/op	 5300808 B/op	   50897 allocs/op
+BenchmarkDeserializeIndex-8   	     249	   4797912 ns/op	 5309285 B/op	   50897 allocs/op
+PASS

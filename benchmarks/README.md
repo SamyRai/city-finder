@@ -430,3 +430,18 @@ p99 (8.4% nil results at 13.5M — engine unusable at that scale); Redis
 GEO polar queries (capability gap, excluded from its distribution); the
 run_benchmarks.go suite in this directory (10-row fixture — its "scaling"
 and size caps are over the fixture, not real datasets).
+
+## Committed baselines
+
+The raw `benchstat`-parseable outputs behind the 2026-10-02 baseline tables
+above are committed under `baselines/2026-10-02-m2/` (captured with the
+separate-streams workflow described earlier). Use them as the comparison
+side of a regression check:
+
+```bash
+benchstat benchmarks/baselines/2026-10-02-m2/bench-name-fast.txt /tmp/now.txt
+```
+
+Regenerate them with the commands from the inventory section; commit a new
+dated directory alongside (never overwrite an old baseline) when the
+machine, Go version, or fixture-generating code changes.

@@ -1,0 +1,45 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/SamyRai/cityFinder/lib/finder/coordinates
+cpu: Apple M2
+BenchmarkNearestPlaceWithAdmin/distance-8         	  509342	      2312 ns/op	     978 B/op	      45 allocs/op
+BenchmarkNearestPlaceWithAdmin/distance-8         	  522750	      2349 ns/op	     978 B/op	      45 allocs/op
+BenchmarkNearestPlaceWithAdmin/distance-8         	  510826	      2340 ns/op	     978 B/op	      45 allocs/op
+BenchmarkNearestPlaceWithAdmin/distance-8         	  510726	      2323 ns/op	     978 B/op	      45 allocs/op
+BenchmarkNearestPlaceWithAdmin/distance-8         	  508970	      2373 ns/op	     978 B/op	      45 allocs/op
+BenchmarkNearestPlaceWithAdmin/distance-8         	  516343	      2361 ns/op	     978 B/op	      45 allocs/op
+BenchmarkNearestPlaceWithAdmin/distance-8         	  518701	      2322 ns/op	     978 B/op	      45 allocs/op
+BenchmarkNearestPlaceWithAdmin/distance-8         	  526260	      2328 ns/op	     978 B/op	      45 allocs/op
+BenchmarkNearestPlaceWithAdmin/distance-8         	  508939	      2350 ns/op	     978 B/op	      45 allocs/op
+BenchmarkNearestPlaceWithAdmin/distance-8         	  530562	      2325 ns/op	     978 B/op	      45 allocs/op
+BenchmarkNearestPlaceWithAdmin/population-8       	    8763	    142111 ns/op	    4888 B/op	     172 allocs/op
+BenchmarkNearestPlaceWithAdmin/population-8       	    7196	    169267 ns/op	    4888 B/op	     172 allocs/op
+BenchmarkNearestPlaceWithAdmin/population-8       	    8014	    141706 ns/op	    4888 B/op	     172 allocs/op
+BenchmarkNearestPlaceWithAdmin/population-8       	    8708	    142361 ns/op	    4888 B/op	     172 allocs/op
+BenchmarkNearestPlaceWithAdmin/population-8       	    8493	    138171 ns/op	    4888 B/op	     172 allocs/op
+BenchmarkNearestPlaceWithAdmin/population-8       	    8605	    141029 ns/op	    4888 B/op	     172 allocs/op
+BenchmarkNearestPlaceWithAdmin/population-8       	    8445	    138631 ns/op	    4888 B/op	     172 allocs/op
+BenchmarkNearestPlaceWithAdmin/population-8       	    8617	    139114 ns/op	    4888 B/op	     172 allocs/op
+BenchmarkNearestPlaceWithAdmin/population-8       	    8598	    140000 ns/op	    4888 B/op	     172 allocs/op
+BenchmarkNearestPlaceWithAdmin/population-8       	    8005	    139820 ns/op	    4888 B/op	     172 allocs/op
+BenchmarkNearestPlace-8                           	   35836	     33967 ns/op	    7235 B/op	     503 allocs/op
+BenchmarkNearestPlace-8                           	   34959	     34935 ns/op	    7235 B/op	     503 allocs/op
+BenchmarkNearestPlace-8                           	   35734	     33798 ns/op	    7235 B/op	     503 allocs/op
+BenchmarkNearestPlace-8                           	   36043	     33531 ns/op	    7235 B/op	     503 allocs/op
+BenchmarkNearestPlace-8                           	   35865	     33516 ns/op	    7235 B/op	     503 allocs/op
+BenchmarkNearestPlace-8                           	   35569	     33671 ns/op	    7235 B/op	     503 allocs/op
+BenchmarkNearestPlace-8                           	   35964	     33471 ns/op	    7235 B/op	     503 allocs/op
+BenchmarkNearestPlace-8                           	   35968	     33890 ns/op	    7235 B/op	     503 allocs/op
+BenchmarkNearestPlace-8                           	   35558	     34022 ns/op	    7235 B/op	     503 allocs/op
+BenchmarkNearestPlace-8                           	   35432	     33448 ns/op	    7235 B/op	     503 allocs/op
+BenchmarkNearestPlaceDistinctPoints-8             	  538107	      2261 ns/op	     978 B/op	      45 allocs/op
+BenchmarkNearestPlaceDistinctPoints-8             	  539889	      3415 ns/op	     978 B/op	      45 allocs/op
+BenchmarkNearestPlaceDistinctPoints-8             	  355268	      3792 ns/op	     978 B/op	      45 allocs/op
+BenchmarkNearestPlaceDistinctPoints-8             	  478930	      3686 ns/op	     978 B/op	      45 allocs/op
+BenchmarkNearestPlaceDistinctPoints-8             	  231381	      4604 ns/op	     978 B/op	      45 allocs/op
+BenchmarkNearestPlaceDistinctPoints-8             	  280227	      4585 ns/op	     978 B/op	      45 allocs/op
+BenchmarkNearestPlaceDistinctPoints-8             	  314275	      3875 ns/op	     978 B/op	      45 allocs/op
+BenchmarkNearestPlaceDistinctPoints-8             	  430142	      4113 ns/op	     978 B/op	      45 allocs/op
+BenchmarkNearestPlaceDistinctPoints-8             	  299152	      3349 ns/op	     978 B/op	      45 allocs/op
+BenchmarkNearestPlaceDistinctPoints-8             	  511140	      2328 ns/op	     978 B/op	      45 allocs/op
+PASS

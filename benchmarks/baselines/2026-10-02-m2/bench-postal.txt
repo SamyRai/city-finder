@@ -1,0 +1,15 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/SamyRai/cityFinder/lib/finder/postalCode
+cpu: Apple M2
+BenchmarkCityByPostalCode-8   	 9786819	       128.1 ns/op	      77 B/op	       2 allocs/op
+BenchmarkCityByPostalCode-8   	11474546	       109.8 ns/op	      77 B/op	       2 allocs/op
+BenchmarkCityByPostalCode-8   	10259931	       135.7 ns/op	      77 B/op	       2 allocs/op
+BenchmarkCityByPostalCode-8   	 9252396	       143.3 ns/op	      77 B/op	       2 allocs/op
+BenchmarkCityByPostalCode-8   	 8032526	       176.8 ns/op	      77 B/op	       2 allocs/op
+BenchmarkCityByPostalCode-8   	 7571325	       209.8 ns/op	      77 B/op	       2 allocs/op
+BenchmarkCityByPostalCode-8   	 7639214	       204.6 ns/op	      77 B/op	       2 allocs/op
+BenchmarkCityByPostalCode-8   	 6827514	       174.3 ns/op	      77 B/op	       2 allocs/op
+BenchmarkCityByPostalCode-8   	 4977854	       230.6 ns/op	      77 B/op	       2 allocs/op
+BenchmarkCityByPostalCode-8   	 7091922	       192.3 ns/op	      77 B/op	       2 allocs/op
+PASS

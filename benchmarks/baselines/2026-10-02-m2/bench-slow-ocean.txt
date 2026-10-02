@@ -1,0 +1,17 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/SamyRai/cityFinder/lib/finder/coordinates
+cpu: Apple M2
+BenchmarkNearestByPopulationOceanQuery/mid-ocean-8         	     253	   5136874 ns/op	 2172043 B/op	   49699 allocs/op
+BenchmarkNearestByPopulationOceanQuery/mid-ocean-8         	     264	   4547489 ns/op	 2172041 B/op	   49699 allocs/op
+BenchmarkNearestByPopulationOceanQuery/mid-ocean-8         	     265	   4556879 ns/op	 2172043 B/op	   49699 allocs/op
+BenchmarkNearestByPopulationOceanQuery/mid-ocean-8         	     248	   4553697 ns/op	 2172065 B/op	   49699 allocs/op
+BenchmarkNearestByPopulationOceanQuery/mid-ocean-8         	     255	   5077059 ns/op	 2172042 B/op	   49699 allocs/op
+BenchmarkNearestByPopulationOceanQuery/mid-ocean-8         	     234	   5054630 ns/op	 2172041 B/op	   49699 allocs/op
+BenchmarkNearestByPopulationOceanQuery/populated-8         	    5994	    213319 ns/op	    5704 B/op	     221 allocs/op
+BenchmarkNearestByPopulationOceanQuery/populated-8         	    5857	    199601 ns/op	    5704 B/op	     221 allocs/op
+BenchmarkNearestByPopulationOceanQuery/populated-8         	    6147	    209075 ns/op	    5704 B/op	     221 allocs/op
+BenchmarkNearestByPopulationOceanQuery/populated-8         	    5734	    202736 ns/op	    5704 B/op	     221 allocs/op
+BenchmarkNearestByPopulationOceanQuery/populated-8         	    5859	    202659 ns/op	    5704 B/op	     221 allocs/op
+BenchmarkNearestByPopulationOceanQuery/populated-8         	    6142	    198202 ns/op	    5704 B/op	     221 allocs/op
+PASS

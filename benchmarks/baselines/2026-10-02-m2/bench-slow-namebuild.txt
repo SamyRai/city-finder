@@ -1,0 +1,23 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/SamyRai/cityFinder/lib/finder/name
+cpu: Apple M2
+BenchmarkBuildIndex/1K-8          	     763	   1523694 ns/op	 2467359 B/op	    9773 allocs/op
+BenchmarkBuildIndex/1K-8          	     806	   1579679 ns/op	 2467330 B/op	    9773 allocs/op
+BenchmarkBuildIndex/1K-8          	     740	   1551931 ns/op	 2467298 B/op	    9773 allocs/op
+BenchmarkBuildIndex/10K-8         	      82	  16398056 ns/op	20254903 B/op	   95289 allocs/op
+BenchmarkBuildIndex/10K-8         	      36	  43783036 ns/op	19883162 B/op	   94987 allocs/op
+BenchmarkBuildIndex/10K-8         	      21	  48675972 ns/op	20046682 B/op	   95146 allocs/op
+BenchmarkBuildIndex/100K-8        	       4	 324235521 ns/op	70224074 B/op	  934903 allocs/op
+BenchmarkBuildIndex/100K-8        	       4	 324138656 ns/op	69768202 B/op	  932052 allocs/op
+BenchmarkBuildIndex/100K-8        	       5	 203029692 ns/op	70362812 B/op	  935770 allocs/op
+BenchmarkBuildIndex/1M-8          	       1	1820739416 ns/op	661537584 B/op	 9269089 allocs/op
+BenchmarkBuildIndex/1M-8          	       1	1948468959 ns/op	662903520 B/op	 9277399 allocs/op
+BenchmarkBuildIndex/1M-8          	       1	2307571750 ns/op	665061712 B/op	 9292019 allocs/op
+BenchmarkBuildIndexConcurrent-8   	       6	 185505722 ns/op	70286582 B/op	  935287 allocs/op
+BenchmarkBuildIndexConcurrent-8   	       7	 164232488 ns/op	70232994 B/op	  934962 allocs/op
+BenchmarkBuildIndexConcurrent-8   	       6	 177284694 ns/op	70290910 B/op	  935321 allocs/op
+BenchmarkAddCity-8                	 6593577	       161.3 ns/op	     487 B/op	       2 allocs/op
+BenchmarkAddCity-8                	 6211075	       165.6 ns/op	     493 B/op	       2 allocs/op
+BenchmarkAddCity-8                	 6130010	       167.3 ns/op	     498 B/op	       2 allocs/op
+PASS

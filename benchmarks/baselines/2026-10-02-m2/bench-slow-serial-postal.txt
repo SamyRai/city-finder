@@ -1,0 +1,14 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/SamyRai/cityFinder/lib/finder/postalCode
+cpu: Apple M2
+BenchmarkAddPostalCode-8      	26607808	        55.38 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAddPostalCode-8      	27675276	        64.15 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAddPostalCode-8      	28770969	        55.08 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSerializeIndex-8     	     142	   8147304 ns/op	14634305 B/op	   20171 allocs/op
+BenchmarkSerializeIndex-8     	     159	   8890074 ns/op	14634167 B/op	   20171 allocs/op
+BenchmarkSerializeIndex-8     	     152	   9286454 ns/op	14634087 B/op	   20171 allocs/op
+BenchmarkDeserializeIndex-8   	     100	  10600595 ns/op	 5357986 B/op	   50517 allocs/op
+BenchmarkDeserializeIndex-8   	     100	  12267750 ns/op	 5358285 B/op	   50518 allocs/op
+BenchmarkDeserializeIndex-8   	     100	  11710152 ns/op	 5358145 B/op	   50518 allocs/op
+PASS
