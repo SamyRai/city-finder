@@ -159,6 +159,9 @@ type buildPaths struct {
 	// was loaded (false on the legacy-literal fallback), so an index built
 	// here matches what a first boot would build from the same config.
 	excludeAdminDivisions bool
+	// includeFeatureClasses mirrors cfg.IncludeFeatureClasses (nil on the
+	// legacy-literal fallback) for the same parity reason.
+	includeFeatureClasses []string
 }
 
 // resolvePaths returns the input and output paths for the given mode.
@@ -206,6 +209,7 @@ func resolvePaths(mode string) buildPaths {
 	paths.outputDir = cfg.DatasetsFolder
 	paths.s2IndexPath, paths.nameIndexPath, paths.postalIndexPath = cfg.IndexFilePaths()
 	paths.excludeAdminDivisions = cfg.ExcludeAdminDivisions
+	paths.includeFeatureClasses = cfg.IncludeFeatureClasses
 	return paths
 }
 
@@ -283,6 +287,7 @@ func main() {
 		// same config (it applies only when an index is (re)built).
 		cities, err = dataLoader.LoadGeoNamesCSVWithOptions(dataFile, dataLoader.LoadOptions{
 			ExcludeAdminDivisions: paths.excludeAdminDivisions,
+			IncludeFeatureClasses: paths.includeFeatureClasses,
 		})
 		if err != nil {
 			log.Fatalf("Failed to load cities: %v", err)
