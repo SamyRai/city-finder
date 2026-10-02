@@ -104,7 +104,7 @@ func TestNGramScaleGate(t *testing.T) {
 
 		t.Logf("SCALE %s: names=%d build=%v structure=%d B (%.2f GiB) approxBytes=%d B postings=%d grams=%d",
 			scale, n, buildDur.Round(time.Millisecond), structure, float64(structure)/(1<<30),
-			index.approxBytes(), len(index.post), len(index.gramIDs))
+			index.approxBytes(), index.postings(), len(index.gramIDs))
 		report(t, "d1", lat1)
 		report(t, "d2", lat2)
 		runtime.KeepAlive(index)

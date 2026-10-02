@@ -1,9 +1,11 @@
 package name
 
 import (
+	"encoding/binary"
 	"fmt"
 	"log"
 	"math"
+	"slices"
 	"sort"
 	"sync/atomic"
 	"unicode/utf8"
@@ -67,12 +69,40 @@ const (
 // ngramIndex is an immutable q-gram inverted index over distinct names.
 // Every field is written during the lock-free build and read-only after,
 // making concurrent searches race-free without locks.
+//
+// Posting lists are delta + uvarint encoded: each gram's list holds its
+// ascending name ids (repeated when a name contains the gram twice) as
+// differences from the previous id, so most entries take one byte instead of
+// four. postLen keeps the raw entry count per gram, which is what list
+// ranking and the per-query candidate budget count — decoding yields exactly
+// the ids the plain int32 layout held, in the same order.
 type ngramIndex struct {
 	names    []string         // id -> name (headers shared with the snapshot)
 	nameLens []uint16         // id -> rune count, for the length filter
-	post     []int32          // CSR payload: name ids grouped by gram id
-	postOff  []int32          // gram id -> start offset; one sentinel entry
+	post     []byte           // CSR payload: per gram, uvarint id deltas
+	postOff  []int64          // gram id -> byte offset into post; one sentinel entry
+	postLen  []int32          // gram id -> number of postings (ids) in its list
 	gramIDs  map[string]int32 // distinct padded gram -> CSR column
+}
+
+// appendPostings delta-encodes one ascending id list.
+func appendPostings(dst []byte, ids []int32) []byte {
+	prev := int32(0)
+	for _, id := range ids {
+		dst = binary.AppendUvarint(dst, uint64(id-prev))
+		prev = id
+	}
+	return dst
+}
+
+// nextPosting decodes one delta from data, returning the delta and the bytes
+// consumed. Single-byte deltas (the common case) take the fast path.
+func nextPosting(data []byte) (int32, int) {
+	if b := data[0]; b < 0x80 {
+		return int32(b), 1
+	}
+	v, n := binary.Uvarint(data)
+	return int32(v), n
 }
 
 // ngramScratch is the reusable build/search buffer for gram extraction:
@@ -165,23 +195,35 @@ func buildNGramIndex(names []string) (*ngramIndex, error) {
 	}
 	postOff[len(counts)] = total
 
-	// Pass 2: fill the postings.
-	post := make([]int32, total)
+	// Pass 2: fill the postings (plain int32 CSR, build-transient).
+	plain := make([]int32, total)
 	cursors := make([]int32, len(counts))
 	copy(cursors, postOff[:len(counts)])
 	for id, name := range names {
 		s.forEachGram(name, nil, func() {
 			gid := gramIDs[string(s.win)]
-			post[cursors[gid]] = int32(id)
+			plain[cursors[gid]] = int32(id)
 			cursors[gid]++
 		})
 	}
 
+	// Pass 3: delta-encode each gram's list. Ids were appended in name-id
+	// order, so every list is ascending; the plain array is dropped after.
+	encOff := make([]int64, len(counts)+1)
+	enc := make([]byte, 0, int(total)+int(total)/2)
+	for gid := range counts {
+		encOff[gid] = int64(len(enc))
+		enc = appendPostings(enc, plain[postOff[gid]:postOff[gid+1]])
+	}
+	encOff[len(counts)] = int64(len(enc))
+	plain = nil
+
 	return &ngramIndex{
 		names:    names,
 		nameLens: nameLens,
-		post:     post,
-		postOff:  postOff,
+		post:     slices.Clip(enc),
+		postOff:  encOff,
+		postLen:  counts,
 		gramIDs:  gramIDs,
 	}, nil
 }
@@ -350,7 +392,7 @@ func (ix *ngramIndex) search(query string, d int) (matches []string, truncated b
 	ranked := make([]gramLen, 0, g)
 	for _, gram := range grams {
 		if gid, ok := ix.gramIDs[gram]; ok {
-			ranked = append(ranked, gramLen{gid, ix.postOff[gid+1] - ix.postOff[gid]})
+			ranked = append(ranked, gramLen{gid, ix.postLen[gid]})
 		}
 	}
 	// Stable order: shortest lists first, gram id as the tie-break, so the
@@ -387,7 +429,12 @@ func (ix *ngramIndex) search(query string, d int) (matches []string, truncated b
 walk:
 	for i := 0; i < walkCount; i++ {
 		gid := ranked[i].gid
-		for _, id := range ix.post[ix.postOff[gid]:ix.postOff[gid+1]] {
+		data := ix.post[ix.postOff[gid]:ix.postOff[gid+1]]
+		id := int32(0)
+		for len(data) > 0 {
+			delta, n := nextPosting(data)
+			data = data[n:]
+			id += delta
 			if walked >= budget {
 				truncated = true
 				break walk
@@ -454,5 +501,14 @@ walk:
 // scale gates and logs.
 func (ix *ngramIndex) approxBytes() int {
 	const mapEntryBytes = 48 // Go map[string]int32 amortized bucket cost, conservative
-	return len(ix.post)*4 + len(ix.postOff)*4 + len(ix.nameLens)*2 + len(ix.gramIDs)*mapEntryBytes
+	return len(ix.post) + len(ix.postOff)*8 + len(ix.postLen)*4 + len(ix.nameLens)*2 + len(ix.gramIDs)*mapEntryBytes
+}
+
+// postings returns the total number of posting entries (ids) across grams.
+func (ix *ngramIndex) postings() int {
+	n := 0
+	for _, c := range ix.postLen {
+		n += int(c)
+	}
+	return n
 }

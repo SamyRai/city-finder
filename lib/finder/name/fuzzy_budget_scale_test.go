@@ -79,7 +79,7 @@ func TestFuzzyBudgetScaleGate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("buildNGramIndex at scale %q: %v", scale, err)
 		}
-		t.Logf("SCALE %s: names=%d postings=%d grams=%d", scale, n, len(index.post), len(index.gramIDs))
+		t.Logf("SCALE %s: names=%d postings=%d grams=%d", scale, n, index.postings(), len(index.gramIDs))
 
 		std := standardQueries(rng, corpus)
 		adv := adversarialQueries(rng, corpus)
