@@ -15,7 +15,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -254,6 +256,12 @@ func downloadFile(dst string, url string) error {
 			_ = out.Close()
 			return fmt.Errorf("failed to write response body: %w", err)
 		}
+		// Durable before the rename publishes it: after a power loss the
+		// final path must never name a zero-length or partial file.
+		if err := out.Sync(); err != nil {
+			_ = out.Close()
+			return fmt.Errorf("failed to sync %s: %w", partPath, err)
+		}
 
 		if err := out.Close(); err != nil {
 			return fmt.Errorf("failed to finalize %s: %w", partPath, err)
@@ -274,9 +282,10 @@ func downloadFile(dst string, url string) error {
 }
 
 // unzipAndRename extracts the single data file from the zip archive at src
-// into dest under newFileName. GeoNames archives contain exactly one dataset
-// file; archives with a different layout are rejected instead of silently
-// overwriting the output with the last entry.
+// into dest under newFileName. GeoNames archives hold one dataset file,
+// possibly next to a readme; the data entry is selected by datasetEntry, and
+// archives with any other layout are rejected instead of silently picking
+// one.
 //
 // The entry streams through outPath+".part" and is renamed into place only
 // after a complete copy, mirroring downloadFile: a crash or a full disk
@@ -294,23 +303,13 @@ func unzipAndRename(src string, dest string, newFileName string) (err error) {
 		}
 	}()
 
-	if len(r.File) != 1 {
-		return fmt.Errorf("archive %s contains %d entries, expected exactly 1 (a single GeoNames dataset file)", src, len(r.File))
-	}
-	f := r.File[0]
-	if f.FileInfo().IsDir() {
-		return fmt.Errorf("archive %s: sole entry %q is a directory", src, f.Name)
+	f, err := datasetEntry(r.File)
+	if err != nil {
+		return fmt.Errorf("archive %s: %w", src, err)
 	}
 
-	// Zip-slip guard: the entry name must resolve inside dest.
-	fpath := filepath.Join(dest, f.Name)
-	if !strings.HasPrefix(fpath, filepath.Clean(dest)+string(os.PathSeparator)) {
-		return fmt.Errorf("%s: illegal file path in archive %s", fpath, src)
-	}
-	if err := os.MkdirAll(filepath.Dir(fpath), os.ModePerm); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", filepath.Dir(fpath), err)
-	}
-
+	// The entry's own name is never used as a write path (the output is
+	// always dest/newFileName), so archive paths cannot escape dest.
 	outPath := filepath.Join(dest, newFileName)
 	partPath := outPath + ".part"
 	if err := extractEntryTo(f, partPath); err != nil {
@@ -324,10 +323,41 @@ func unzipAndRename(src string, dest string, newFileName string) (err error) {
 	return nil
 }
 
+// datasetEntry selects the dataset file of a GeoNames archive: the single
+// regular entry that is not a readme. The postal export, for one, has been
+// published with a readme next to the data; requiring exactly one entry
+// would reject it and fail the cold boot.
+func datasetEntry(files []*zip.File) (*zip.File, error) {
+	var data []*zip.File
+	for _, f := range files {
+		// Defense in depth: a dataset archive has no business carrying
+		// absolute or parent-relative names, even though the entry name is
+		// never used as a write path.
+		if path.IsAbs(f.Name) || slices.Contains(strings.Split(f.Name, "/"), "..") {
+			return nil, fmt.Errorf("illegal file path %q", f.Name)
+		}
+		base := strings.ToLower(path.Base(f.Name))
+		if f.FileInfo().IsDir() || strings.HasPrefix(base, "readme") {
+			continue
+		}
+		data = append(data, f)
+	}
+	if len(data) != 1 {
+		names := make([]string, len(files))
+		for i, f := range files {
+			names[i] = f.Name
+		}
+		return nil, fmt.Errorf("expected exactly 1 dataset entry (readmes and directories aside), found %d among %q", len(data), names)
+	}
+	return data[0], nil
+}
+
 // extractEntryTo streams one archive entry into partPath. The caller owns
 // cleanup of partPath on any failure.
 func extractEntryTo(f *zip.File, partPath string) (err error) {
-	outFile, err := os.OpenFile(partPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+	// Fixed permissions: an entry stored without mode bits would otherwise
+	// produce an unreadable 0000 file.
+	outFile, err := os.OpenFile(partPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("failed to create %s: %w", partPath, err)
 	}
@@ -349,6 +379,10 @@ func extractEntryTo(f *zip.File, partPath string) (err error) {
 
 	if _, err := io.Copy(outFile, rc); err != nil {
 		return fmt.Errorf("failed to extract %q: %w", f.Name, err)
+	}
+	// Durable before the caller's rename publishes it (see downloadFile).
+	if err := outFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync %s: %w", partPath, err)
 	}
 	return nil
 }

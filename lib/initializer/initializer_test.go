@@ -152,8 +152,29 @@ func TestUnzipAndRename_MultiEntryRejected(t *testing.T) {
 
 	dest := t.TempDir()
 	err := unzipAndRename(src, dest, "renamed.txt")
-	require.Error(t, err, "multi-entry archives must be rejected explicitly")
-	assert.Contains(t, err.Error(), "2 entries")
+	require.Error(t, err, "archives with two candidate data files must be rejected explicitly")
+	assert.Contains(t, err.Error(), "found 2")
+}
+
+// TestUnzipAndRename_IgnoresReadmeAndDirectories pins that a GeoNames archive
+// shipping a readme (and/or a directory entry) next to its single data file
+// extracts the data file instead of failing the cold boot.
+func TestUnzipAndRename_IgnoresReadmeAndDirectories(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "zipCodes.zip")
+	buildZip(t, src, map[string]string{
+		"readme.txt":       "about this export\n",
+		"docs/":            "",
+		"allCountries.txt": "AD\tAD100\tCanillo\n",
+	})
+	dest := t.TempDir()
+	require.NoError(t, unzipAndRename(src, dest, "allCountries_zip.txt"))
+	got, err := os.ReadFile(filepath.Join(dest, "allCountries_zip.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "AD\tAD100\tCanillo\n", string(got))
+	info, err := os.Stat(filepath.Join(dest, "allCountries_zip.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o644), info.Mode().Perm()&^0o022, "extracted files are readable regardless of zip mode bits")
 }
 
 func TestUnzipAndRename_TraversalRejected(t *testing.T) {
