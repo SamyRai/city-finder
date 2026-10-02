@@ -2,12 +2,15 @@ package initializer
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -229,8 +232,8 @@ func TestAcquireInitLock_ExclusiveWhileHeld(t *testing.T) {
 	release, err := acquireInitLock(dir)
 	require.NoError(t, err)
 
-	// A second initializer (here: same process, which the pid check also
-	// reports as alive) must fail fast instead of racing the holder.
+	// A second initializer (a second open file description, as another
+	// process would have) must fail fast instead of racing the holder.
 	_, err = acquireInitLock(dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "another initializer")
@@ -242,35 +245,59 @@ func TestAcquireInitLock_ExclusiveWhileHeld(t *testing.T) {
 	release2()
 }
 
-func TestAcquireInitLock_StealsStaleLockFromDeadPid(t *testing.T) {
-	dir := t.TempDir()
-	lockPath := filepath.Join(dir, initLockName)
-	// A pid far beyond any pid_max cannot be alive on any supported platform.
-	require.NoError(t, os.WriteFile(lockPath, []byte("999999999\n"), 0o600))
-
-	release, err := acquireInitLock(dir)
-	require.NoError(t, err, "a lock whose owner is provably dead must be stolen")
-	release()
+// TestAcquireInitLock_LeftoverFileIsNotALock pins the restart case that
+// crash-looped the pid-file lock: a lock FILE left behind by a dead process
+// (any content — including our own pid, which is what a restarted container
+// running as PID 1 finds after an OOM-killed cold build) must not block.
+// Only a lock held by a living process does.
+func TestAcquireInitLock_LeftoverFileIsNotALock(t *testing.T) {
+	for _, content := range []string{fmt.Sprintf("%d\n", os.Getpid()), "1\n", "999999999\n", "not a pid"} {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, initLockName), []byte(content), 0o600))
+		release, err := acquireInitLock(dir)
+		require.NoError(t, err, "leftover lock file with %q must not block", content)
+		release()
+	}
 }
 
-func TestAcquireInitLock_RefusesLockFromLivingForeignPid(t *testing.T) {
+// TestAcquireInitLock_HeldByAnotherProcessThenReleasedOnDeath runs a child
+// process (this test binary, re-executed) that takes the lock and blocks.
+// While it lives, acquisition fails; once it is SIGKILLed — no cleanup code
+// runs — the kernel releases the lock and acquisition succeeds at once.
+func TestAcquireInitLock_HeldByAnotherProcessThenReleasedOnDeath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("flock is unix-only")
+	}
+	if dir := os.Getenv("CF_LOCK_HOLDER_DIR"); dir != "" {
+		release, err := acquireInitLock(dir)
+		if err != nil {
+			fmt.Println("ERR", err)
+			os.Exit(1)
+		}
+		defer release()
+		fmt.Println("HELD")
+		select {} // hold until killed
+	}
+
 	dir := t.TempDir()
-	lockPath := filepath.Join(dir, initLockName)
-	// pid 1 (launchd/systemd) is alive on both darwin and linux.
-	require.NoError(t, os.WriteFile(lockPath, []byte("1\n"), 0o600))
+	cmd := exec.Command(os.Args[0], "-test.run", "^TestAcquireInitLock_HeldByAnotherProcessThenReleasedOnDeath$")
+	cmd.Env = append(os.Environ(), "CF_LOCK_HOLDER_DIR="+dir)
+	out, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	line, err := bufio.NewReader(out).ReadString('\n')
+	require.NoError(t, err)
+	require.Equal(t, "HELD\n", line)
 
-	_, err := acquireInitLock(dir)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "another initializer")
-}
+	_, err = acquireInitLock(dir)
+	require.Error(t, err, "a lock held by a living process must block")
+	assert.Contains(t, err.Error(), fmt.Sprintf("pid %d", cmd.Process.Pid), "the error names the holder")
 
-func TestAcquireInitLock_GarbageLockIsStale(t *testing.T) {
-	dir := t.TempDir()
-	lockPath := filepath.Join(dir, initLockName)
-	require.NoError(t, os.WriteFile(lockPath, []byte("not a pid"), 0o600))
-
+	require.NoError(t, cmd.Process.Kill()) // SIGKILL: no release code runs
+	_ = cmd.Wait()
 	release, err := acquireInitLock(dir)
-	require.NoError(t, err, "an unparseable lock cannot prove a live owner and must be treated as stale")
+	require.NoError(t, err, "the kernel must release a dead holder's lock")
 	release()
 }
 
