@@ -9,8 +9,10 @@ import (
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/config"
+	"github.com/SamyRai/cityFinder/lib/dataLoader"
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
 	"github.com/SamyRai/cityFinder/lib/finder/postalCode"
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -52,7 +54,10 @@ func writeV2PostalIndex(t *testing.T, path string) {
 	require.NoError(t, err)
 	enc := gob.NewEncoder(f)
 	require.NoError(t, enc.Encode(v2IndexHeader{Magic: "CFPOSTIDX", Version: 2, Count: 2}))
-	require.NoError(t, enc.Encode(postalCode.NewPostalCodeFinder()))
+	// The old Finder's only exported field, mirrored (gob matches by name).
+	require.NoError(t, enc.Encode(struct {
+		PostalCode map[string]map[string]dataLoader.PostalCodeEntry
+	}{map[string]map[string]dataLoader.PostalCodeEntry{}}))
 	require.NoError(t, f.Close())
 }
 
@@ -149,12 +154,13 @@ func TestEnsureFinders_RebuildsV2PostalIndexAsV3(t *testing.T) {
 	require.NotNil(t, c, "the rebuilt postal finder must contain the source data")
 	assert.Equal(t, "Canillo", c.Name)
 
-	assert.Equal(t, uint32(3), readFileVersion(t, postalPath), "the corrupt file must be rewritten as v3")
+	assert.Equal(t, uint32(4), readFileVersion(t, postalPath), "the corrupt file must be rewritten in the current (v4) format")
 }
 
 // TestEnsureFinders_IndexFormatVersions pins the on-disk versions a cold
-// build writes: S2 v3, postal v3, and name v3 (row-number ids into the S2
-// city table, which the name file references instead of embedding).
+// build writes: S2 v3, name v3 (row-number ids into the S2
+// city table, which the name file references instead of embedding), postal
+// v4 (served-fields-only columns).
 func TestEnsureFinders_IndexFormatVersions(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
@@ -168,7 +174,7 @@ func TestEnsureFinders_IndexFormatVersions(t *testing.T) {
 	assert.Equal(t, uint32(3), readFileVersion(t, namePath),
 		"the name index is v3: ids are row numbers into the shared S2 city table")
 	assert.Equal(t, uint32(3), readFileVersion(t, filepath.Join(dir, cfg.S2.IndexFile)))
-	assert.Equal(t, uint32(3), readFileVersion(t, filepath.Join(dir, cfg.PostalCodeIndexFile)))
+	assert.Equal(t, uint32(4), readFileVersion(t, filepath.Join(dir, cfg.PostalCodeIndexFile)), "postal v4: served-fields-only columns")
 }
 
 // TestEnsureFinders_Admin1NamesModes covers design gate 3: with the optional
@@ -288,4 +294,42 @@ func TestInitialize_Admin1NamesEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, f.S2Finder.Admin1Names, "the downloaded names file must be attached")
 	assert.Equal(t, "Andorra la Vella", f.S2Finder.Admin1Names["AD.07"])
+}
+
+// TestEnsureFinders_MigratesLegacyV3PostalIndexInPlace pins the postal
+// upgrade path: a v3 file (the full loader map) is loaded into the compact
+// table and rewritten as v4 on a warm start with no raw datasets present.
+func TestEnsureFinders_MigratesLegacyV3PostalIndexInPlace(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	writeTinyDatasets(t, cfg)
+	postalMap, err := dataLoader.LoadPostalCodes(filepath.Join(dir, cfg.PostalCodesFile))
+	require.NoError(t, err)
+	f1, err := ensureFinders(cfg, "")
+	require.NoError(t, err)
+	want := *f1.PostalCodeFinder.CityByPostalCode("AD100", "AD")
+
+	postalPath := filepath.Join(dir, cfg.PostalCodeIndexFile)
+	total := 0
+	for _, byCode := range postalMap {
+		total += len(byCode)
+	}
+	pf, err := os.Create(postalPath)
+	require.NoError(t, err)
+	require.NoError(t, gob.NewEncoder(pf).Encode(v2IndexHeader{Magic: "CFPOSTIDX", Version: 3, Count: total}))
+	zw, err := zstd.NewWriter(pf)
+	require.NoError(t, err)
+	require.NoError(t, gob.NewEncoder(zw).Encode(struct {
+		PostalCode map[string]map[string]dataLoader.PostalCodeEntry
+	}{postalMap}))
+	require.NoError(t, zw.Close())
+	require.NoError(t, pf.Close())
+	require.Equal(t, uint32(3), readFileVersion(t, postalPath))
+
+	require.NoError(t, os.Remove(filepath.Join(dir, cfg.AllCitiesFile)))
+	require.NoError(t, os.Remove(filepath.Join(dir, cfg.PostalCodesFile)))
+	f2, err := ensureFinders(cfg, "")
+	require.NoError(t, err)
+	assert.Equal(t, want, *f2.PostalCodeFinder.CityByPostalCode("AD100", "AD"))
+	assert.Equal(t, uint32(4), readFileVersion(t, postalPath), "the v3 file must be migrated to v4")
 }

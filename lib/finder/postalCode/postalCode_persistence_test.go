@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/SamyRai/cityFinder/lib/dataLoader"
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,7 +25,7 @@ type fileHeader struct {
 
 const (
 	testIndexMagic   = "CFPOSTIDX"
-	testIndexVersion = uint32(3)
+	testIndexVersion = uint32(4)
 )
 
 // readFileHeader decodes only the leading header value from path.
@@ -55,11 +56,11 @@ func writeHeaderAndPayload(t *testing.T, path string, h fileHeader, payload any)
 	require.NoError(t, f.Close())
 }
 
-// writeFramedIndex writes a structurally valid v3 file: raw gob header
+// writeFramedIndex writes a structurally valid framed file: raw gob header
 // followed by one zstd frame (SpeedFastest, CRC) holding the gob payload.
 // Count validation tests need a payload that survives decompression so the
 // count check is what rejects the file.
-func writeFramedIndex(t *testing.T, path string, h fileHeader, payload *Finder) {
+func writeFramedIndex(t *testing.T, path string, h fileHeader, payload any) {
 	t.Helper()
 	f, err := os.Create(path)
 	require.NoError(t, err)
@@ -83,9 +84,50 @@ func buildTestPostalFinder() *Finder {
 // countPostalEntries counts the postal code records across all countries of
 // a finder; this is the quantity the header Count records.
 func countPostalEntries(finder *Finder) int {
-	finder.mutex.RLock()
-	defer finder.mutex.RUnlock()
-	return totalEntries(finder.PostalCode)
+	return finder.Len()
+}
+
+// legacyPayload is the v2/v3 payload shape: the old Finder's exported
+// country -> code -> PostalCodeEntry map.
+func legacyPayload() *payloadV3 {
+	m := map[string]map[string]dataLoader.PostalCodeEntry{}
+	for _, e := range testPostalCodeEntries {
+		if m[e.CountryCode] == nil {
+			m[e.CountryCode] = map[string]dataLoader.PostalCodeEntry{}
+		}
+		m[e.CountryCode][e.PostalCode] = e
+	}
+	return &payloadV3{PostalCode: m}
+}
+
+// TestDeserializeIndex_ReadsLegacyV3 pins the upgrade path: a v3 file (the
+// full loader map) loads into the compact table, answers exactly like an
+// index built from the same entries, and reports LegacyFormat so the
+// initializer rewrites it as v4.
+func TestDeserializeIndex_ReadsLegacyV3(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "postal_v3.gob")
+	writeFramedIndex(t, path,
+		fileHeader{Magic: testIndexMagic, Version: indexVersionV3, Count: len(testPostalCodeEntries)},
+		legacyPayload())
+	got, err := DeserializeIndex(path)
+	require.NoError(t, err)
+	assert.True(t, got.LegacyFormat())
+	want := buildTestPostalFinder()
+	assert.False(t, want.LegacyFormat())
+	for _, e := range testPostalCodeEntries {
+		assert.Equal(t, want.CityByPostalCode(e.PostalCode, e.CountryCode), got.CityByPostalCode(e.PostalCode, e.CountryCode))
+	}
+
+	// Rewritten as v4, it round-trips to the same answers.
+	v4 := filepath.Join(t.TempDir(), "postal_v4.gob")
+	require.NoError(t, got.SerializeIndex(v4))
+	assert.Equal(t, testIndexVersion, readFileHeader(t, v4).Version)
+	again, err := DeserializeIndex(v4)
+	require.NoError(t, err)
+	assert.False(t, again.LegacyFormat())
+	for _, e := range testPostalCodeEntries {
+		assert.Equal(t, want.CityByPostalCode(e.PostalCode, e.CountryCode), again.CityByPostalCode(e.PostalCode, e.CountryCode))
+	}
 }
 
 func TestSerializeIndex_WritesHeaderFirst(t *testing.T) {
@@ -139,7 +181,7 @@ func TestDeserializeIndex_WrongMagic(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "postal_code_index.gob")
 	writeHeaderAndPayload(t, path,
 		fileHeader{Magic: "NOTCFPST", Version: testIndexVersion, Count: len(testPostalCodeEntries)},
-		buildTestPostalFinder())
+		legacyPayload())
 
 	_, err := DeserializeIndex(path)
 	require.Error(t, err, "a file with a foreign magic must be rejected")
@@ -151,7 +193,7 @@ func TestDeserializeIndex_WrongVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "postal_code_index.gob")
 	writeHeaderAndPayload(t, path,
 		fileHeader{Magic: testIndexMagic, Version: testIndexVersion + 1, Count: len(testPostalCodeEntries)},
-		buildTestPostalFinder())
+		legacyPayload())
 
 	_, err := DeserializeIndex(path)
 	require.Error(t, err, "a file written by a future format version must be rejected")
@@ -160,11 +202,11 @@ func TestDeserializeIndex_WrongVersion(t *testing.T) {
 
 func TestDeserializeIndex_CountMismatch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "postal_code_index.gob")
-	// A fully decodable v3 frame whose header count disagrees with the
+	// A fully decodable frame whose header count disagrees with the
 	// payload: only the count check can reject it.
 	writeFramedIndex(t, path,
-		fileHeader{Magic: testIndexMagic, Version: testIndexVersion, Count: len(testPostalCodeEntries) + 7},
-		buildTestPostalFinder())
+		fileHeader{Magic: testIndexMagic, Version: indexVersionV3, Count: len(testPostalCodeEntries) + 7},
+		legacyPayload())
 
 	_, err := DeserializeIndex(path)
 	require.Error(t, err, "a payload whose entry count disagrees with the header must be rejected")
@@ -181,7 +223,7 @@ func TestDeserializeIndex_V2FileRejected(t *testing.T) {
 	// payload v2 wrote.
 	writeHeaderAndPayload(t, path,
 		fileHeader{Magic: testIndexMagic, Version: 2, Count: len(testPostalCodeEntries)},
-		buildTestPostalFinder())
+		legacyPayload())
 
 	_, err := DeserializeIndex(path)
 	require.Error(t, err, "a v2 file must not decode into the v3 format")
@@ -196,7 +238,7 @@ func TestDeserializeIndex_LegacyHeaderlessFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "postal_code_index_legacy.gob")
 	f, err := os.Create(path)
 	require.NoError(t, err)
-	require.NoError(t, gob.NewEncoder(f).Encode(buildTestPostalFinder()))
+	require.NoError(t, gob.NewEncoder(f).Encode(legacyPayload()))
 	require.NoError(t, f.Close())
 
 	_, err = DeserializeIndex(path)
