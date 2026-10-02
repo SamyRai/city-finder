@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/SamyRai/cityFinder/cmd/server/metrics"
@@ -105,4 +106,37 @@ func TestMetricsEndpoint(t *testing.T) {
 	resp, err = bare.Test(httptest.NewRequest("GET", "/metrics", nil))
 	require.NoError(t, err)
 	assert.Equal(t, 404, resp.StatusCode, "no /metrics route may exist without a registry")
+}
+
+// TestMetricsEndpoint_ConcurrentScrapes pins scrape-path safety: parallel
+// scrapes share the registry (mutex-guarded) and the runtime-gauge read,
+// which writes into a sample slice. The gauge slice was once a shared
+// package-level variable — a data race across concurrent scrapes that serial
+// tests cannot see (found by review, 2026-10-02); the slice is now
+// scrape-local. Run under -race this test fails on any shared scrape state.
+func TestMetricsEndpoint_ConcurrentScrapes(t *testing.T) {
+	app := setupMetricsApp(t)
+
+	const scrapers, perScraper = 8, 25
+	var wg sync.WaitGroup
+	wg.Add(scrapers)
+	for i := 0; i < scrapers; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < perScraper; j++ {
+				resp, err := app.Test(httptest.NewRequest("GET", "/metrics", nil))
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				if resp.StatusCode != 200 {
+					t.Errorf("scrape status %d, want 200", resp.StatusCode)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
