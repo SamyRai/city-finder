@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SamyRai/cityFinder/lib/city"
@@ -120,6 +121,48 @@ type S2Finder struct {
 	// never mutated after construction — so the on-disk format is unchanged.
 	// Empty when no city carries population data.
 	topPopulations []topPopulationEntry
+
+	// distanceQueryPool recycles the RankDistance query objects (see
+	// pooledDistanceQuery). A sync.Pool gives each concurrent goroutine its
+	// own instance, so NearestPlace stays safe under the concurrent load the
+	// finder serves. Never serialized. S2Finder must stay pointer-only (the
+	// pool makes it nocopy; both constructors already return pointers).
+	distanceQueryPool sync.Pool
+}
+
+// pooledDistanceQuery bundles the per-finder-reusable objects of the
+// RankDistance path: the options carrying MaxResults(1) and the EdgeQuery
+// built from them.
+//
+// Reuse safety (verified against the pinned golang/geo source,
+// v0.0.0-20260526120156): EdgeQuery.FindEdges re-initializes every per-call
+// field on each invocation — findEdgesInternal assigns fresh testedEdges and
+// results slices, recomputes distanceLimit/avoidDuplicates/useConservative-
+// CellDistance, and the optimized traversal's priority queue is always empty
+// or explicitly reset when FindEdges returns. What persists across calls is
+// exactly the same-index cache you WANT to persist: the precomputed index
+// covering (indexCovering/indexCells), the ShapeIndexIterator over this
+// finder's immutable index, and the edge count — which is why a reused query
+// is not just safe but faster than a fresh one. The public Reset() method
+// exists for switching indexes/options and would only discard that cache; it
+// is deliberately NOT called. The MinDistanceToPointTarget cannot be pooled
+// (its point field is unexported) and is allocated per call.
+type pooledDistanceQuery struct {
+	options *s2.EdgeQueryOptions
+	query   *s2.EdgeQuery
+}
+
+// distanceQuery acquires a RankDistance query bundle from the pool (or builds
+// one bound to this finder's index on first use).
+func (f *S2Finder) distanceQuery() *pooledDistanceQuery {
+	if pq, ok := f.distanceQueryPool.Get().(*pooledDistanceQuery); ok {
+		return pq
+	}
+	options := s2.NewClosestEdgeQueryOptions().MaxResults(1)
+	return &pooledDistanceQuery{
+		options: options,
+		query:   s2.NewClosestEdgeQuery(f.Index, options),
+	}
 }
 
 // maxPopulationOf returns the largest Population in cities (0 when empty or
@@ -392,10 +435,13 @@ func (f *S2Finder) adminOf(cityIndex int) AdminAttribution {
 // ordered by the requested ranking mode.
 //
 // rank == RankDistance (the default, and the behavior of every pre-ranking
-// release): issues the historical MaxResults(1) query verbatim and returns
-// its single closest result, so both the returned city and the latency
-// profile are exactly the pre-change path's. (A shared multi-result pool
-// fetch whose results[0] is provably the same city was tried first — the
+// release): issues the historical MaxResults(1) query and returns its single
+// closest result, so the returned city is exactly the pre-change path's; the
+// query OBJECT is now recycled through a per-finder pool (identical options,
+// same index — see pooledDistanceQuery), which only removes per-call
+// allocations. TestNearestPlaceDistanceRankMatchesMaxResultsOne pins the
+// equivalence against the verbatim unpooled query. (A shared multi-result
+// pool fetch whose results[0] is provably the same city was tried first — the
 // equivalence is real and test-pinned — but this golang/geo version never
 // tightens the search limit for maxResults > 1, turning every multi-result
 // query without a distance limit into a full 13.47M-edge scan (~10 s per
@@ -448,12 +494,17 @@ func (f *S2Finder) nearest(lat, lon float64, rank Rank) (*city.City, int, float6
 	case RankDistance:
 		// MaxResults(1) prunes the search: the default (MaxInt32) would
 		// collect and sort a result for every indexed point on each query.
-		query := s2.NewClosestEdgeQuery(f.Index, s2.NewClosestEdgeQueryOptions().MaxResults(1))
-		results := query.FindEdges(s2.NewMinDistanceToPointTarget(targetPoint))
+		// The query object comes from distanceQueryPool: same query, same
+		// options, recycled across calls (see pooledDistanceQuery for the
+		// reuse-safety reading of the pinned golang/geo source).
+		pq := f.distanceQuery()
+		results := pq.query.FindEdges(s2.NewMinDistanceToPointTarget(targetPoint))
 		if len(results) == 0 {
+			f.distanceQueryPool.Put(pq)
 			return nil, 0, 0, fmt.Errorf("no city found")
 		}
-		winner = results[0]
+		winner = results[0] // value copy, safe to make before returning the query
+		f.distanceQueryPool.Put(pq)
 	case RankPopulation:
 		result, _, err := f.nearestByPopulation(targetPoint)
 		if err != nil {
