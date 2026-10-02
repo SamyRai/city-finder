@@ -7,8 +7,13 @@ BASE  ?= origin/main
 COUNT ?= 10
 TIME  ?= 1s
 
+URL      ?= http://127.0.0.1:3000
+RATES    ?= 250,500,1000,2000
+WINDOW   ?= 30s
+WORKLOAD ?= nearest
+
 .PHONY: test test-race build build-pgo build-test build-prod rebuild-test-indexes \
-	bench bench-ab bench-smoke bench-env
+	bench bench-ab bench-smoke bench-env loadtest
 
 test:
 	go test ./...
@@ -46,6 +51,12 @@ bench-smoke:
 
 bench-env:
 	benchmarks/bench.sh env
+
+# Open-model load sweep against a RUNNING server (run the client on another
+# machine for capacity numbers). See docs/benchmarking.md "Load testing".
+#   make loadtest URL=http://host:3000 RATES=500,1000,2000,4000 WORKLOAD=mixed
+loadtest:
+	go run ./cmd/loadgen -url $(URL) -rates $(RATES) -window $(WINDOW) -workload $(WORKLOAD)
 
 # Build indexes with test data (small dataset)
 build-test:
