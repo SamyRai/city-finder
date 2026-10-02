@@ -65,11 +65,65 @@ func estimatedCityCount(filepath string, limit int) int {
 	return 0
 }
 
+// GeoNamesFeatureClasses lists every GeoNames feature class — the value of
+// field index 6 (0-based, tab-separated) in the allCountries dump. The nine
+// single uppercase letters cover the whole dump: A administrative divisions
+// (countries, states, districts), P populated places, H water bodies
+// (streams, lakes, seas), L parks/areas/vegetation, R roads/railroads,
+// S spots/buildings/farms, T mountains/hills/rocks, U undersea features,
+// V forests. IncludeFeatureClasses entries (loader) and
+// include_feature_classes values (config) are validated against this set.
+var GeoNamesFeatureClasses = []string{"A", "P", "H", "L", "R", "S", "T", "U", "V"}
+
+// IsValidFeatureClass reports whether class is exactly one of the GeoNames
+// feature classes — a member of GeoNamesFeatureClasses, i.e. a single
+// uppercase letter from A P H L R S T U V. Anything else (lowercase,
+// multi-letter, empty) is rejected.
+func IsValidFeatureClass(class string) bool {
+	for _, valid := range GeoNamesFeatureClasses {
+		if class == valid {
+			return true
+		}
+	}
+	return false
+}
+
 // LoadOptions parameterizes a GeoNames city load. The zero value is the
 // historical behavior: no row limit, every feature class loaded.
 type LoadOptions struct {
 	// Limit stops the load once Limit cities have been appended (0 = no limit).
 	Limit int
+
+	// IncludeFeatureClasses, when non-empty, is an allowlist of GeoNames
+	// feature classes (field index 6, 0-based, tab-separated): a row is loaded
+	// ONLY if its class is in the set. A populated-places-only mode (["P"])
+	// keeps cities and drops everything else — the validation findings that
+	// motivated the knob: a class-L "HHS Region 9" row with a synthetic 49.34M
+	// population otherwise wins every rank=population query in the western US,
+	// and the nearest raw features to far-from-land queries are country-less
+	// undersea/international rows.
+	//
+	// Every entry is validated at load start and must be exactly one of the
+	// GeoNames feature classes A P H L R S T U V (single uppercase letter —
+	// lowercase "p" is invalid here; normalize in the config layer, which does
+	// trim+uppercase). Anything else is an error returned from the loader
+	// before the file is opened: fail loud, never silently ignore a typo that
+	// would otherwise mean "no rows loaded". An empty (nil or zero-length)
+	// slice disables the filter and keeps the historical load byte-identical.
+	//
+	// INTERACTION with ExcludeAdminDivisions: the include-list is applied
+	// first; ExcludeAdminDivisions then still drops class-A rows that survived
+	// it. When the include-list already excludes A (A not in the set), the
+	// exclude flag is a no-op — its class-A skip counter stays 0 and its
+	// summary line is never logged.
+	//
+	// SEMANTIC SCOPE: the filter applies at dataset LOAD, which happens when
+	// an index is (re)built — warm boots that deserialize existing index
+	// files are unaffected until the operator deletes an index file to force
+	// a rebuild. Filtered-out rows also disappear from name lookups,
+	// /coordinates results and population-rank winners; that is the point of
+	// the knob.
+	IncludeFeatureClasses []string
 
 	// ExcludeAdminDivisions skips every row whose GeoNames feature class
 	// (field index 6, 0-based, tab-separated) is exactly "A" — countries
@@ -88,6 +142,25 @@ type LoadOptions struct {
 	ExcludeAdminDivisions bool
 }
 
+// validateIncludeFeatureClasses checks every IncludeFeatureClasses entry at
+// load start and returns an error naming every invalid entry. Validation
+// precedes the os.Open so a bad option fails without touching the filesystem.
+func validateIncludeFeatureClasses(classes []string) error {
+	if len(classes) == 0 {
+		return nil
+	}
+	var invalid []string
+	for _, class := range classes {
+		if !IsValidFeatureClass(class) {
+			invalid = append(invalid, class)
+		}
+	}
+	if len(invalid) > 0 {
+		return fmt.Errorf("invalid IncludeFeatureClasses entries %q: each must be exactly one of the GeoNames feature classes A P H L R S T U V (single uppercase letter)", invalid)
+	}
+	return nil
+}
+
 // LoadGeoNamesCSVWithLimit loads cities from a GeoNames CSV file with an optional limit
 func LoadGeoNamesCSVWithLimit(filepath string, limit int) ([]city.SpatialCity, error) {
 	return LoadGeoNamesCSVWithOptions(filepath, LoadOptions{Limit: limit})
@@ -96,6 +169,22 @@ func LoadGeoNamesCSVWithLimit(filepath string, limit int) ([]city.SpatialCity, e
 // LoadGeoNamesCSVWithOptions loads cities from a GeoNames CSV file under
 // LoadOptions. See LoadOptions for the option semantics.
 func LoadGeoNamesCSVWithOptions(filepath string, opts LoadOptions) ([]city.SpatialCity, error) {
+	// Allowlist entries are validated before the file is opened: a bad option
+	// is a configuration error, not an I/O one.
+	if err := validateIncludeFeatureClasses(opts.IncludeFeatureClasses); err != nil {
+		return nil, err
+	}
+
+	// The include-set is consulted per row; build it once. Only non-empty
+	// sets filter (see LoadOptions).
+	var includeSet map[string]bool
+	if len(opts.IncludeFeatureClasses) > 0 {
+		includeSet = make(map[string]bool, len(opts.IncludeFeatureClasses))
+		for _, class := range opts.IncludeFeatureClasses {
+			includeSet[class] = true
+		}
+	}
+
 	file, err := os.Open(filepath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %v", err)
@@ -112,6 +201,7 @@ func LoadGeoNamesCSVWithOptions(filepath string, opts LoadOptions) ([]city.Spati
 	cities := make([]city.SpatialCity, 0, estimatedCityCount(filepath, opts.Limit))
 	lineCount := 0
 	skippedAdminDivisions := 0
+	skippedByClassAllowlist := 0
 	for scanner.Scan() {
 		line := scanner.Bytes() // Use Bytes() instead of Text() to avoid string allocation
 		lineCount++
@@ -123,13 +213,25 @@ func LoadGeoNamesCSVWithOptions(filepath string, opts LoadOptions) ([]city.Spati
 		// Convert to string once for field extraction
 		lineStr := string(line)
 
-		// Optional feature-class-A exclusion: checked first (and only when
-		// enabled) so the default path does zero extra work; skipped rows are
-		// counted and summarized in ONE log line at end of load, never logged
-		// per row (prod is 13.5M rows).
-		if opts.ExcludeAdminDivisions && findField(lineStr, 6, '\t') == "A" {
-			skippedAdminDivisions++
-			continue
+		// Optional feature-class filtering: the include-list runs FIRST (a
+		// row must be in the set), then ExcludeAdminDivisions drops class-A
+		// survivors — so when A is not in the include-list the exclude flag
+		// is a no-op. Both checks run (and only when enabled) before the
+		// mandatory-field and coordinate checks, so a filtered row is counted
+		// as a class skip (never as malformed); the default path with both
+		// knobs off does zero extra work. Skipped rows are counted and
+		// summarized in ONE log line at end of load, never logged per row
+		// (prod is 13.5M rows).
+		if includeSet != nil || opts.ExcludeAdminDivisions {
+			featureClass := findField(lineStr, 6, '\t')
+			if includeSet != nil && !includeSet[featureClass] {
+				skippedByClassAllowlist++
+				continue
+			}
+			if opts.ExcludeAdminDivisions && featureClass == "A" {
+				skippedAdminDivisions++
+				continue
+			}
 		}
 
 		// Use strings.Index for more efficient field extraction to reduce allocations
@@ -201,8 +303,12 @@ func LoadGeoNamesCSVWithOptions(filepath string, opts LoadOptions) ([]city.Spati
 		return nil, fmt.Errorf("failed to scan file: %v, %v", filepath, err)
 	}
 
-	// Skip summary in the postal loader's style: one line, end of load, only
-	// when rows were actually skipped (never per row).
+	// Skip summaries in the postal loader's style: one line each, end of
+	// load, only when rows were actually skipped (never per row).
+	if skippedByClassAllowlist > 0 {
+		log.Printf("skipped %d rows outside feature class allowlist [%s] in %s",
+			skippedByClassAllowlist, strings.Join(opts.IncludeFeatureClasses, ","), filepath)
+	}
 	if skippedAdminDivisions > 0 {
 		log.Printf("skipped %d admin division rows (feature class A) in %s", skippedAdminDivisions, filepath)
 	}
