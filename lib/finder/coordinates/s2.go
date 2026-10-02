@@ -973,6 +973,10 @@ func DeserializeIndex(filepath string) (*S2Finder, error) {
 		filepath, compressedLen, zstdStart.Sub(readStart), compressedLen, len(payloadBytes),
 		zstdDone.Sub(zstdStart), gobDone.Sub(gobStart))
 
+	// gob allocates a fresh backing for every decoded string: collapse the
+	// per-city copies of the ~250 country codes to one each.
+	city.InternCountries(payload.Cities)
+
 	// Rebuild index efficiently without progress bar overhead. The same pass
 	// bounds-checks every admin id: a structurally valid frame can still
 	// carry ids that point outside the code tables, and such a file must be
