@@ -353,7 +353,14 @@ func (ix *ngramIndex) search(query string, d int) (matches []string, truncated b
 			ranked = append(ranked, gramLen{gid, ix.postOff[gid+1] - ix.postOff[gid]})
 		}
 	}
-	sort.Slice(ranked, func(i, j int) bool { return ranked[i].n < ranked[j].n })
+	// Stable order: shortest lists first, gram id as the tie-break, so the
+	// walk — and therefore a budget-truncated result — is reproducible.
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].n != ranked[j].n {
+			return ranked[i].n < ranked[j].n
+		}
+		return ranked[i].gid < ranked[j].gid
+	})
 	if len(ranked) < walkCount {
 		walkCount = len(ranked) // unknown grams only shrink the walk
 	}
@@ -401,6 +408,30 @@ walk:
 				matches = append(matches, ix.names[id])
 			}
 		}
+	}
+
+	// Deterministic, closest-first order: callers take the first candidate
+	// that resolves in the requested country, so the order IS the answer for
+	// ambiguous typos. Edit distance ascending, then name.
+	if d > 1 && len(matches) > 1 {
+		dist := make(map[string]int, len(matches))
+		for _, m := range matches {
+			dist[m] = d
+			for k := 0; k < d; k++ {
+				if check.atMost(m, k) {
+					dist[m] = k
+					break
+				}
+			}
+		}
+		sort.Slice(matches, func(i, j int) bool {
+			if dist[matches[i]] != dist[matches[j]] {
+				return dist[matches[i]] < dist[matches[j]]
+			}
+			return matches[i] < matches[j]
+		})
+	} else {
+		sort.Strings(matches)
 	}
 
 	fuzzyWalkedLast.Store(walked)

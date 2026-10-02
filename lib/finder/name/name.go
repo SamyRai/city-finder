@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -538,6 +539,10 @@ func (nf *Finder) namesFromIndex() []string {
 	for name := range nameSet {
 		names = append(names, name)
 	}
+	// Sorted, so the fuzzy index numbers names deterministically: map
+	// iteration order would otherwise leak into search order (and, via the
+	// candidate budget, into which matches a truncated search returns).
+	slices.Sort(names)
 	return names
 }
 

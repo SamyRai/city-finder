@@ -504,3 +504,37 @@ func TestAddCityVisibleAfterUncachedEmptyMiss(t *testing.T) {
 		t.Fatal("the now non-empty fuzzy result must be cached")
 	}
 }
+
+// TestFuzzyAmbiguousTypoIsDeterministicClosestFirst pins fuzzy resolution
+// for a typo with several matches: the closest name wins, ties break
+// lexicographically, and the answer does not depend on build order (the
+// fuzzy index used to number names in map-iteration order, so the winner
+// varied between processes).
+func TestFuzzyAmbiguousTypoIsDeterministicClosestFirst(t *testing.T) {
+	base := []city.SpatialCity{
+		{City: city.City{Name: "Bern", Country: "CH", Latitude: 1}},
+		{City: city.City{Name: "Berg", Country: "CH", Latitude: 2}},
+		{City: city.City{Name: "Bernex", Country: "CH", Latitude: 3}},
+		{City: city.City{Name: "Bear", Country: "CH", Latitude: 4}},
+	}
+	for run := 0; run < 6; run++ {
+		cities := append([]city.SpatialCity(nil), base...)
+		for i := range cities { // a different input order each run
+			j := (i + run) % len(cities)
+			cities[i], cities[j] = cities[j], cities[i]
+		}
+		f := BuildIndex(cities)
+		f.WarmFuzzy()
+		waitFuzzyBuilt(t, f)
+
+		// "Berm": Bern and Berg are both 1 edit away; Berg < Bern.
+		if got := f.CityByName("Berm", "CH"); got == nil || got.Name != "Berg" {
+			t.Fatalf("run %d: Berm resolved to %+v, want Berg (tie at distance 1 breaks lexicographically)", run, got)
+		}
+
+		// Distance-2 candidates come back closest first.
+		if matches, _ := f.ngrams.search("Bernx", 2); len(matches) == 0 || matches[0] != "Bern" {
+			t.Fatalf("run %d: search(Bernx, 2) = %v, want the distance-1 match Bern first", run, matches)
+		}
+	}
+}
