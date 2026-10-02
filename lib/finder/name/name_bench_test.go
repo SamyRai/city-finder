@@ -1,6 +1,8 @@
 package name
 
 import (
+	"fmt"
+	"path/filepath"
 	"runtime"
 	"testing"
 
@@ -15,12 +17,21 @@ import (
 // four-key index, neither representative of the production distribution.
 // The full-sweep tail measurement for exact lookups lives in
 // BenchmarkCityByNameExactTail (1M keys, per-query percentiles).
+//
+// Iteration-state rule for every benchmark in this package: iteration N must
+// inherit exactly the state the benchmark claims to measure from iteration
+// N-1. Where an operation mutates the finder (AddCity, the fuzzy cache), the
+// benchmark either resets that state off the clock or measures a documented
+// steady state — see the per-benchmark comments.
 
 // BenchmarkBuildIndex benchmarks the index building process over distinct
 // names, so the per-country name-table sort and CSR arrays pay their real
-// cost instead of sorting one repeated key.
+// cost instead of sorting one repeated key. BuildIndex does not mutate its
+// input, so every iteration builds from identical data. The measured op
+// includes BuildIndex's own log lines and its trailing runtime.GC() — both
+// are part of what a caller pays.
 func BenchmarkBuildIndex(b *testing.B) {
-	sizes := []struct {
+	for _, size := range []struct {
 		name string
 		size int
 	}{
@@ -28,25 +39,17 @@ func BenchmarkBuildIndex(b *testing.B) {
 		{"10K", 10000},
 		{"100K", 100000},
 		{"1M", 1000000},
-	}
-
-	for _, size := range sizes {
+	} {
 		b.Run(size.name, func(b *testing.B) {
 			cities := benchDiverseCities(size.size)
+			silenceBuildLogs(b)
 			b.ReportAllocs()
 			for b.Loop() {
-				_ = BuildIndex(cities)
+				if BuildIndex(cities) == nil {
+					b.Fatal("BuildIndex returned nil")
+				}
 			}
 		})
-	}
-}
-
-// BenchmarkBuildIndexConcurrent benchmarks concurrent index building
-func BenchmarkBuildIndexConcurrent(b *testing.B) {
-	cities := benchDiverseCities(100000)
-	b.ReportAllocs()
-	for b.Loop() {
-		_ = BuildIndex(cities)
 	}
 }
 
@@ -71,10 +74,22 @@ func BenchmarkCityByName(b *testing.B) {
 	}
 }
 
-// BenchmarkCityByNameFuzzy benchmarks distance-1 typo lookups over 100k
-// distinct names with the n-gram index prebuilt (WarmFuzzy + wait, untimed) —
-// matching production, where the build never runs inside a request. Every
-// query must resolve; a miss means the fixture or budget regressed.
+// BenchmarkCityByNameFuzzy benchmarks distance-1 typo lookups through the
+// public CityByName path over 100k distinct names, with the n-gram index
+// prebuilt (WarmFuzzy + wait, untimed) — matching production, where the build
+// never runs inside a request. Every query must resolve; a miss means the
+// fixture or budget regressed.
+//
+// The fuzzy result cache makes "a typo lookup" two different workloads, so
+// they are measured separately rather than averaged into one number:
+//
+//   - cache-churn: every query is distinct and the cache is pre-filled to its
+//     cap off the clock, so each timed iteration pays the full search plus a
+//     cache insert that must evict. This is the steady state of a long tail
+//     of distinct typos (the common production shape for user input).
+//   - cache-hit: a small query set that fits in the cache, pre-warmed off the
+//     clock, so each timed iteration is a cache hit. This is the repeated-
+//     typo steady state.
 func BenchmarkCityByNameFuzzy(b *testing.B) {
 	const keyCount = 100_000
 	finder := buildDiverseIndex(b, keyCount)
@@ -82,91 +97,145 @@ func BenchmarkCityByNameFuzzy(b *testing.B) {
 	waitFuzzyBuilt(b, finder)
 	queries := benchFuzzyQueries(keyCount)
 
+	b.Run("cache-churn", func(b *testing.B) {
+		// Fill the cache to its cap with the first maxFuzzyCacheEntries
+		// queries; the timed loop starts after them, and the sweep is
+		// 10x longer than the cache, so a timed query is never a hit.
+		for _, q := range queries[:maxFuzzyCacheEntries] {
+			finder.CityByName(q.name, q.country)
+		}
+		b.ReportAllocs()
+		i := maxFuzzyCacheEntries
+		for b.Loop() {
+			q := queries[i%len(queries)]
+			if finder.CityByName(q.name, q.country) == nil {
+				b.Fatalf("distance-1 typo %q (%s) must resolve", q.name, q.country)
+			}
+			i++
+		}
+	})
+
+	b.Run("cache-hit", func(b *testing.B) {
+		hot := queries[:1024]
+		for _, q := range hot {
+			finder.CityByName(q.name, q.country)
+		}
+		b.ReportAllocs()
+		i := 0
+		for b.Loop() {
+			q := hot[i%len(hot)]
+			if finder.CityByName(q.name, q.country) == nil {
+				b.Fatalf("distance-1 typo %q (%s) must resolve", q.name, q.country)
+			}
+			i++
+		}
+	})
+}
+
+// BenchmarkAddCity measures one post-build AddCity of a NEW distinct city
+// into a finder whose overflow holds at most addCityBatch entries. A single
+// repeated city would measure something else: its overflow id list, the
+// distinct-city table and the fuzzy overflow would all grow without bound
+// across iterations (amortized append growth of one hot key). The finder is
+// therefore replaced off the clock every addCityBatch iterations.
+func BenchmarkAddCity(b *testing.B) {
+	const addCityBatch = 4096
+	batch := make([]city.SpatialCity, addCityBatch)
+	for i := range batch {
+		batch[i] = city.SpatialCity{
+			City:     city.City{Name: fmt.Sprintf("Added City %04d", i), Country: "TC"},
+			AltNames: []string{fmt.Sprintf("Alt A %04d", i), fmt.Sprintf("Alt B %04d", i)},
+		}
+	}
+
 	b.ReportAllocs()
+	finder := NewNameFinder()
 	i := 0
 	for b.Loop() {
-		q := queries[i%len(queries)]
-		if finder.CityByName(q.name, q.country) == nil {
-			b.Fatalf("distance-1 typo %q (%s) must resolve", q.name, q.country)
+		if i == addCityBatch {
+			b.StopTimer()
+			finder, i = NewNameFinder(), 0
+			b.StartTimer()
 		}
+		finder.AddCity(batch[i])
 		i++
 	}
 }
 
-// BenchmarkAddCity benchmarks adding a single city through the overflow
-// path (direct table writes are what BuildIndex uses internally).
-func BenchmarkAddCity(b *testing.B) {
-	finder := NewNameFinder()
-	city := city.SpatialCity{
-		City: city.City{
-			Name:    "Test City",
-			Country: "TC",
-		},
-		AltNames: []string{"Alt1", "Alt2"},
-	}
-
-	b.ReportAllocs()
-	for b.Loop() {
-		finder.AddCity(city)
-	}
-}
-
-// BenchmarkSerializeIndex benchmarks index serialization
+// BenchmarkSerializeIndex benchmarks index serialization of a 10k-name index
+// to one fixed path (SerializeIndex writes a part file and renames it over
+// the target, exactly as the initializer does on every rebuild).
 func BenchmarkSerializeIndex(b *testing.B) {
-	cities := benchDiverseCities(10000)
-	finder := BuildIndex(cities)
+	finder := buildDiverseIndex(b, 10000)
+	path := filepath.Join(b.TempDir(), "test_index.gob")
 
 	b.ReportAllocs()
 	for b.Loop() {
-		// Use a temporary file for each iteration
-		tmpfile := b.TempDir() + "/test_index.gob"
-		_ = finder.SerializeIndex(tmpfile)
+		if err := finder.SerializeIndex(path); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
-// BenchmarkDeserializeIndex benchmarks index deserialization
+// BenchmarkDeserializeIndex benchmarks index deserialization of a 10k-name
+// index. The file is read through a warm OS page cache after the first
+// iteration: this measures decode CPU, not cold disk I/O.
 func BenchmarkDeserializeIndex(b *testing.B) {
-	cities := benchDiverseCities(10000)
-	finder := BuildIndex(cities)
-	tmpfile := b.TempDir() + "/test_index.gob"
-	_ = finder.SerializeIndex(tmpfile)
+	finder := buildDiverseIndex(b, 10000)
+	path := filepath.Join(b.TempDir(), "test_index.gob")
+	if err := finder.SerializeIndex(path); err != nil {
+		b.Fatal(err)
+	}
 
 	b.ReportAllocs()
 	for b.Loop() {
-		_, _ = DeserializeIndex(tmpfile)
+		if _, err := DeserializeIndex(path); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
-// BenchmarkMemoryUsage measures memory usage for different index sizes
+// BenchmarkMemoryUsage reports the heap an index RETAINS after a build
+// (retained-MB, measured after a forced GC with the finder kept alive) and
+// the bytes the build allocated in total (alloc-MB/op, transient garbage
+// included). The input fixture is generated before the first reading so it
+// is excluded from both. The GCs and MemStats reads run off the clock; ns/op
+// is the build time.
 func BenchmarkMemoryUsage(b *testing.B) {
-	sizes := []struct {
+	for _, size := range []struct {
 		name string
 		size int
 	}{
 		{"10K", 10000},
 		{"100K", 100000},
 		{"1M", 1000000},
-	}
-
-	for _, size := range sizes {
+	} {
 		b.Run(size.name, func(b *testing.B) {
-			var m1, m2 runtime.MemStats
-			runtime.GC()
-			runtime.ReadMemStats(&m1)
-
 			cities := benchDiverseCities(size.size)
-			finder := BuildIndex(cities)
+			silenceBuildLogs(b)
+			var retained, allocated float64
+			for b.Loop() {
+				b.StopTimer()
+				var before, after runtime.MemStats
+				runtime.GC()
+				runtime.ReadMemStats(&before)
+				b.StartTimer()
 
-			runtime.GC()
-			runtime.ReadMemStats(&m2)
+				finder := BuildIndex(cities)
 
-			b.ReportMetric(float64(m2.Alloc-m1.Alloc)/1024/1024, "MB/op")
-			b.ReportMetric(float64(m2.TotalAlloc-m1.TotalAlloc)/1024/1024, "MB_total/op")
-
-			// KeepAlive, not `_ = finder`: a blank assignment does not extend
-			// the index's lifetime, so without this the second GC can reclaim
-			// it before m2 and report a near-zero retained heap.
-			runtime.KeepAlive(finder)
+				b.StopTimer()
+				runtime.GC()
+				runtime.ReadMemStats(&after)
+				// KeepAlive, not `_ = finder`: a blank assignment does not
+				// extend the index's lifetime, so without this the GC above
+				// could reclaim it and report a near-zero retained heap.
+				runtime.KeepAlive(finder)
+				retained = float64(after.HeapAlloc) - float64(before.HeapAlloc)
+				allocated = float64(after.TotalAlloc - before.TotalAlloc)
+				b.StartTimer()
+			}
+			b.ReportMetric(retained/(1<<20), "retained-MB")
+			b.ReportMetric(allocated/(1<<20), "alloc-MB/op")
 		})
 	}
 }

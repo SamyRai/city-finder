@@ -26,32 +26,47 @@ func benchFuzzyFinder(b *testing.B, count int) *Finder {
 // wait IS the build. Without the wait the loop would spawn unbounded
 // concurrent builds; without the reset every iteration after the first
 // would fast-path out of ensureFuzzyBuilt (state already fuzzyBuilt) and
-// measure nothing.
+// measure nothing. The reset (dropping the previous index) runs off the
+// clock; the previous index's garbage is still collected during later timed
+// iterations, as it would be in a process that rebuilt.
 func BenchmarkEnsureFuzzyBuilt(b *testing.B) {
 	finder := benchFuzzyFinder(b, 100000)
-	b.ResetTimer()
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
+		b.StopTimer()
 		finder.mutex.Lock()
 		finder.ngrams = nil
 		finder.mutex.Unlock()
 		finder.fuzzyState.Store(fuzzyNotBuilt)
+		b.StartTimer()
+
 		finder.ensureFuzzyBuilt()
 		waitFuzzyBuilt(b, finder)
 	}
 }
 
 // BenchmarkNGramSearch measures steady-state distance-2 typo queries against
-// the built index (cache-bypassed, straight into the structure).
+// the built index (cache-bypassed, straight into the structure). The fixture
+// is deliberately maximal-skew — every name shares the 9-gram "BenchCity"
+// prefix — so this is the budget-capped worst case for the candidate walk,
+// not a typical query. Queries are precomputed: formatting them inside the
+// loop would add a Sprintf allocation to every measured op.
 func BenchmarkNGramSearch(b *testing.B) {
-	finder := benchFuzzyFinder(b, 100000)
+	const count = 100000
+	finder := benchFuzzyFinder(b, count)
 	finder.ensureFuzzyBuilt()
 	waitFuzzyBuilt(b, finder)
-	b.ResetTimer()
+	queries := make([]string, count)
+	for i := range queries {
+		queries[i] = fmt.Sprintf("BenchCitt%06d", i)
+	}
+
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		if got, _ := finder.ngrams.search(fmt.Sprintf("BenchCitt%06d", i%100000), 2); len(got) == 0 {
+	i := 0
+	for b.Loop() {
+		if got, _ := finder.ngrams.search(queries[i%count], 2); len(got) == 0 {
 			b.Fatal("typo query must find its base name")
 		}
+		i++
 	}
 }

@@ -2,6 +2,8 @@ package name
 
 import (
 	"fmt"
+	"io"
+	"log"
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/city"
@@ -67,9 +69,22 @@ func benchFuzzyQueries(count int) []struct{ name, country string } {
 // the benchmark if the fixture ever breaks.
 func buildDiverseIndex(b *testing.B, count int) *Finder {
 	b.Helper()
+	silenceBuildLogs(b)
 	finder := BuildIndex(benchDiverseCities(count))
 	if finder == nil {
 		b.Fatal("BuildIndex returned nil")
 	}
 	return finder
+}
+
+// silenceBuildLogs discards the package's log output (BuildIndex logs every
+// call) for the rest of the benchmark and restores it afterwards. The log
+// calls still run and format their messages — only the terminal write is
+// dropped — so the measured op keeps its logging CPU cost while benchmark
+// output stays parseable by benchstat.
+func silenceBuildLogs(b *testing.B) {
+	b.Helper()
+	old := log.Writer()
+	log.SetOutput(io.Discard)
+	b.Cleanup(func() { log.SetOutput(old) })
 }

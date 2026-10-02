@@ -450,22 +450,3 @@ func TestRaceConditionDetection_Extended(t *testing.T) {
 	wg.Wait()
 	t.Log("Extended race condition test completed without issues")
 }
-
-func BenchmarkConcurrentOperations(b *testing.B) {
-	// Create test data
-	cities := generateStressTestCities(10000)
-	finder := name.BuildIndex(cities)
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			cityIndex := i % len(cities)
-			testCity := cities[cityIndex]
-			finder.CityByName(testCity.Name, testCity.Country)
-			i++
-		}
-	})
-}

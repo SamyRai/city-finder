@@ -53,10 +53,11 @@ func buildStagedConcurrent(cities []city.SpatialCity) *Finder {
 // the per-city heap copy that stops the index from pinning the loader slice.
 func BenchmarkProcessBatchStreamlined(b *testing.B) {
 	cities := generateUniqueCities(100000)
-	b.ResetTimer()
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		_ = buildStaged(cities)
+	for b.Loop() {
+		if buildStaged(cities) == nil {
+			b.Fatal("buildStaged returned nil")
+		}
 	}
 }
 
@@ -64,10 +65,11 @@ func BenchmarkProcessBatchStreamlined(b *testing.B) {
 // a 100K-city slice with unique names (same metric, worker-pool shape).
 func BenchmarkProcessBatchConcurrent(b *testing.B) {
 	cities := generateUniqueCities(100000)
-	b.ResetTimer()
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		_ = buildStagedConcurrent(cities)
+	for b.Loop() {
+		if buildStagedConcurrent(cities) == nil {
+			b.Fatal("buildStagedConcurrent returned nil")
+		}
 	}
 }
 
