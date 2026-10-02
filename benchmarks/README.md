@@ -274,3 +274,26 @@ The benchmark suite integrates with:
 ---
 
 For more information, see the individual package documentation or run `go run benchmarks/run_benchmarks.go help`.
+## Cross-engine comparison (2026-10-02, v1.2.0) — re-run on golang/geo bumps
+
+Method: full dump (13,465,092 loader-valid rows; raw parses see +7,112
+country-less undersea/international rows the loader deliberately drops),
+one shared 10k-query set (random global points, seed 42), in-process
+latency, per-engine winner cross-validation against scipy cKDTree.
+
+| Engine | Build | Memory | p50 | p90 | p99 |
+|---|---|---|---|---|---|
+| cityFinder v1.2 (Go, S2, full product) | 12.8 s | 4.5 GB resident | 11.8 µs | 37 µs | 141 µs |
+| raw golang/geo S2 ClosestEdgeQuery | 3.7 s | ~5.5 GB peak | 5.6 µs | 14 µs | 29 µs |
+| scipy cKDTree (Python/C, 3D unit vectors) | 4.7 s | ~1.4 GB | 9.2 µs | 18 µs | 66 µs |
+| Redis 8 GEO (geohash, socket) | 237 s | 941 MB | 1.49 ms | 715 ms | 1.36 s |
+| rtreego (Go R-tree) | 3 m 20 s | ~6.1 GB | 32 ms | 86 ms | — (8.4% nil) |
+| brute force (Go) | — | 0.45 GB | 523 ms | 562 ms | 682 ms |
+
+Findings to re-check when the geo pin moves: (1) this golang/geo version
+only prunes at `MaxResults(1)` — a pruning-semantics change would alter
+the latency profile silently; (2) winner agreement with cKDTree was exact
+(0/1000 disagreements on identical row scope) — keep that as the oracle;
+(3) Redis GEO rejects |lat| > 85.05° (Web-Mercator limit); rtreego
+returns nil for 8.4% of queries at this scale (unusable). Harnesses were
+throwaway (/tmp); the table above is the durable record.
