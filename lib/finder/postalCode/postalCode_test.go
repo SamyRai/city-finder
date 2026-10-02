@@ -1,7 +1,6 @@
 package postalCode
 
 import (
-	"fmt"
 	"os"
 	"testing"
 
@@ -376,100 +375,4 @@ func TestPostalCodeEntry_ConversionToCity(t *testing.T) {
 	assert.Equal(t, entry.CountryCode, city.Country)
 	assert.Equal(t, entry.Latitude, city.Latitude)
 	assert.Equal(t, entry.Longitude, city.Longitude)
-}
-
-func BenchmarkAddPostalCode(b *testing.B) {
-	finder := NewPostalCodeFinder()
-	entry := dataLoader.PostalCodeEntry{
-		CountryCode: "US",
-		PostalCode:  "10001",
-		PlaceName:   "New York",
-		Latitude:    40.7505,
-		Longitude:   -73.9934,
-		Accuracy:    1,
-	}
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		finder.AddPostalCode(entry)
-	}
-}
-
-func BenchmarkCityByPostalCode(b *testing.B) {
-	finder := NewPostalCodeFinder()
-
-	// Add test data
-	for i := 0; i < 1000; i++ {
-		entry := dataLoader.PostalCodeEntry{
-			CountryCode: "US",
-			PostalCode:  fmt.Sprintf("%05d", i),
-			PlaceName:   fmt.Sprintf("City%d", i),
-			Latitude:    float64(i) / 100.0,
-			Longitude:   float64(i) / 100.0,
-			Accuracy:    1,
-		}
-		finder.AddPostalCode(entry)
-	}
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		postalCode := fmt.Sprintf("%05d", i%1000)
-		_ = finder.CityByPostalCode(postalCode, "US")
-	}
-}
-
-func BenchmarkSerializeIndex(b *testing.B) {
-	finder := NewPostalCodeFinder()
-
-	// Add test data
-	for i := 0; i < 10000; i++ {
-		entry := dataLoader.PostalCodeEntry{
-			CountryCode: "US",
-			PostalCode:  fmt.Sprintf("%05d", i),
-			PlaceName:   fmt.Sprintf("City%d", i),
-			Latitude:    float64(i) / 100.0,
-			Longitude:   float64(i) / 100.0,
-			Accuracy:    1,
-		}
-		finder.AddPostalCode(entry)
-	}
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		tmpfile := b.TempDir() + "/bench_postal_index.gob"
-		_ = finder.SerializeIndex(tmpfile)
-	}
-}
-
-func BenchmarkDeserializeIndex(b *testing.B) {
-	finder := NewPostalCodeFinder()
-
-	// Add test data and serialize once
-	for i := 0; i < 10000; i++ {
-		entry := dataLoader.PostalCodeEntry{
-			CountryCode: "US",
-			PostalCode:  fmt.Sprintf("%05d", i),
-			PlaceName:   fmt.Sprintf("City%d", i),
-			Latitude:    float64(i) / 100.0,
-			Longitude:   float64(i) / 100.0,
-			Accuracy:    1,
-		}
-		finder.AddPostalCode(entry)
-	}
-
-	tmpfile := b.TempDir() + "/bench_postal_index.gob"
-	_ = finder.SerializeIndex(tmpfile)
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		_, _ = DeserializeIndex(tmpfile)
-	}
 }

@@ -19,25 +19,6 @@ func silenceLoaderLogs(b *testing.B) {
 	b.Cleanup(func() { log.SetOutput(old) })
 }
 
-// BenchmarkMemLiveLoad_TestData measures the live loader
-// (LoadGeoNamesCSVWithLimit, limit=0) on the committed
-// testdata/allCountries.txt fixture. The fixture is tiny (~1.4 KB), so this
-// benchmark is dominated by fixed open/stat/scan costs; per-city allocation
-// deltas are better observed by BenchmarkMemLiveLoad_Synthetic100k.
-func BenchmarkMemLiveLoad_TestData(b *testing.B) {
-	b.ReportAllocs()
-	silenceLoaderLogs(b)
-	for b.Loop() {
-		cities, err := LoadGeoNamesCSVWithLimit(testDataRelPath, 0)
-		if err != nil {
-			b.Fatalf("load failed: %v", err)
-		}
-		if len(cities) == 0 {
-			b.Fatal("expected at least one city from the test dataset")
-		}
-	}
-}
-
 // writeSyntheticGeoNames writes n valid GeoNames-format lines into dir and
 // returns the file path. Rows mirror allCountries.txt field layout (19
 // tab-separated fields, alternatenames populated) so the live parser sees
@@ -65,12 +46,12 @@ func writeSyntheticGeoNames(b *testing.B, dir string, n int) string {
 // file generated once in setup. It measures the full per-row load cost
 // (field extraction, float parsing, string/altnames allocations) at a scale
 // where the per-row delta from removing the write-only Rect allocation is
-// visible in B/op and allocs/op.
+// visible in B/op and allocs/op. The file is read through a warm OS page
+// cache after the first iteration: this is parse cost, not disk I/O.
 func BenchmarkMemLiveLoad_Synthetic100k(b *testing.B) {
 	b.ReportAllocs()
 	path := writeSyntheticGeoNames(b, b.TempDir(), 100_000)
 	silenceLoaderLogs(b)
-	b.ResetTimer()
 	for b.Loop() {
 		cities, err := LoadGeoNamesCSVWithLimit(path, 0)
 		if err != nil {

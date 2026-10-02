@@ -3,6 +3,7 @@ package name
 import (
 	"fmt"
 	"sort"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,10 +18,9 @@ var exactTailCountries = []string{
 }
 
 // exactTailCities builds count distinct-name cities spread round-robin over
-// exactTailCountries. Distinct names matter: the pre-existing
-// BenchmarkCityByName re-queries one duplicated key, which measures a
-// hot-cache single-bucket hit and cannot see the latency tail that real
-// distinct-key traffic produces.
+// exactTailCountries. Distinct names matter: re-querying one duplicated key
+// measures a cache-hot single-entry hit and cannot see the latency tail that
+// real distinct-key traffic produces.
 func exactTailCities(count int) []city.SpatialCity {
 	cities := make([]city.SpatialCity, count)
 	for i := 0; i < count; i++ {
@@ -57,14 +57,15 @@ func exactTailQueries(keyCount, queryCount int) []struct{ name, country string }
 // (CityByName phase 1) over distinct synthetic keys. All queries are hits, so
 // the fuzzy phases never run. The query window sweeps every one of the 1M
 // index keys once (stride order): cycling a small hot key set hides the tail
-// (everything stays in L2), while a full sweep pays the cold map-bucket and
-// string-hash costs that dominate the production p99. Per-op latencies are
+// (everything stays in L2), while a full sweep pays the cold binary-search and
+// string-compare costs that dominate the production p99. Per-op latencies are
 // reported as p50/p99/p99.9 metrics, mirroring the production measurement
-// methodology from the README Performance table.
+// methodology in docs/performance.md.
 func BenchmarkCityByNameExactTail(b *testing.B) {
 	const keyCount = 1_000_000
 
 	b.Log("building index (untimed)")
+	silenceBuildLogs(b)
 	finder := BuildIndex(exactTailCities(keyCount))
 	queries := exactTailQueries(keyCount, keyCount)
 
@@ -108,22 +109,39 @@ func BenchmarkCityByNameExactTail(b *testing.B) {
 // BenchmarkCityByNameExactTailParallel answers one specific question the
 // sequential sweep cannot: does the Finder's RWMutex contend when many
 // goroutines run exact lookups concurrently (the server's real shape)?
-// ns/op here is per goroutine operation across all parallel workers.
+//
+// Reading the result: RunParallel's ns/op is wall-clock time divided by the
+// TOTAL operations across all workers — an aggregate throughput figure
+// (1e9 / ns/op = lookups per second for the whole process), NOT the latency
+// of one lookup. Run it as a scaling curve to see contention:
+//
+//	go test -run '^$' -bench 'ExactTailParallel$' -cpu 1,2,4,8 ./lib/finder/name
+//
+// Each worker starts its sweep at a different offset: workers walking the
+// same keys in lockstep would share warm cache lines and understate the cost
+// of independent concurrent requests.
 func BenchmarkCityByNameExactTailParallel(b *testing.B) {
 	const keyCount = 1_000_000
 
 	b.Log("building index (untimed)")
+	silenceBuildLogs(b)
 	finder := BuildIndex(exactTailCities(keyCount))
 	queries := exactTailQueries(keyCount, keyCount)
 
-	b.ResetTimer()
+	var worker atomic.Int64
 	b.ReportAllocs()
+	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
-		i := 0
+		// 7919 is prime and coprime to keyCount: worker offsets spread
+		// across the whole sweep.
+		i := int(worker.Add(1)*7919) % len(queries)
 		for pb.Next() {
 			q := queries[i%len(queries)]
 			if finder.CityByName(q.name, q.country) == nil {
-				b.Fatalf("query %q (%s) must hit", q.name, q.country)
+				// FailNow/Fatal must not be called from a RunParallel
+				// worker goroutine; record the failure and stop this worker.
+				b.Errorf("query %q (%s) must hit", q.name, q.country)
+				return
 			}
 			i++
 		}

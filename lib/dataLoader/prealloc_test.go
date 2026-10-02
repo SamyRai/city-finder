@@ -19,6 +19,7 @@ const testDataRelPath = "../../testdata/allCountries.txt"
 // the slice capacity must be derived from the input file size, not from a
 // hardcoded row count.
 func BenchmarkLoadGeoNamesCSV(b *testing.B) {
+	silenceLoaderLogs(b)
 	b.ReportAllocs()
 	for b.Loop() {
 		cities, err := LoadGeoNamesCSV(testDataRelPath)

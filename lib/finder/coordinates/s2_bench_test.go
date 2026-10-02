@@ -1,163 +1,195 @@
 package coordinates
 
 import (
+	"io"
+	"log"
+	"math"
+	"math/rand"
+	"path/filepath"
 	"runtime"
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/city"
 )
 
-// generateTestCities creates a slice of test cities for benchmarking
-func generateTestCities(count int) []city.SpatialCity {
+// Benchmark fixtures. Two worlds are used, chosen per question:
+//
+//   - generateDistinctCities: points uniform in lat/lon degrees, all distinct.
+//     Used where only N matters (index lifecycle, scaling-by-N curves).
+//   - anchoredOceanFixture (s2_anchored_test.go): 200k cities clustered on
+//     seven synthetic continents with a heavy-tailed population ladder — the
+//     closest in-repo shape to GeoNames (land-clustered, mostly-ocean globe).
+//     Used for the query benchmarks that make production-shaped claims.
+//
+// A former fixture placed i%360 longitudes, so above 360 cities every point
+// was duplicated ~N/360 times; that degeneracy inflated query cost and hid
+// the true scaling, and it was removed with the benchmarks that used it.
+
+// generateDistinctCities creates count points that are distinct on the sphere
+// (seeded, deterministic).
+func generateDistinctCities(count int) []city.SpatialCity {
+	rng := rand.New(rand.NewSource(7))
 	cities := make([]city.SpatialCity, count)
 	for i := 0; i < count; i++ {
 		cities[i] = city.SpatialCity{
 			City: city.City{
-				Name:      "Test City",
+				Name:      "Distinct City",
 				Country:   "TC",
-				Latitude:  float64(i%180) - 90.0,
-				Longitude: float64(i%360) - 180.0,
+				Latitude:  math.Round((rng.Float64()*180-90)*1e6) / 1e6,
+				Longitude: math.Round((rng.Float64()*360-180)*1e6) / 1e6,
 			},
 		}
 	}
 	return cities
 }
 
-// BenchmarkBuildIndex benchmarks S2 index building
-func BenchmarkBuildIndex(b *testing.B) {
-	sizes := []struct {
-		name string
-		size int
-	}{
-		{"1K", 1000},
-		{"10K", 10000},
-		{"100K", 100000},
-		{"1M", 1000000},
+// benchQueryPoint is one query coordinate.
+type benchQueryPoint struct{ lat, lon float64 }
+
+// benchQueryCount sizes the query sets: large enough that a sweep does not
+// sit in one warm corner of the index (cycling three fixed points — the old
+// workload — measured a cache- and branch-predictor-friendly special case),
+// small enough to generate in microseconds.
+const benchQueryCount = 4096
+
+// uniformSphereQueries returns n seeded query points uniformly distributed
+// over the sphere's surface (latitude via asin of a uniform z), the same
+// "random global coordinates" shape the production latency passes use. On a
+// land-clustered world most of them are over open water.
+func uniformSphereQueries(n int, seed int64) []benchQueryPoint {
+	rng := rand.New(rand.NewSource(seed))
+	points := make([]benchQueryPoint, n)
+	for i := range points {
+		points[i] = benchQueryPoint{
+			lat: math.Asin(2*rng.Float64()-1) * 180 / math.Pi,
+			lon: rng.Float64()*360 - 180,
+		}
 	}
+	return points
+}
 
-	for _, size := range sizes {
+// silenceIndexLogs discards the package's log output (BuildIndex logs
+// progress, (de)serialization logs timings) for the rest of the benchmark.
+// The log calls still format their messages — only the terminal write is
+// dropped — so measured ops keep their logging CPU while the output stays
+// parseable by benchstat.
+func silenceIndexLogs(b *testing.B) {
+	b.Helper()
+	old := log.Writer()
+	log.SetOutput(io.Discard)
+	b.Cleanup(func() { log.SetOutput(old) })
+}
+
+// buildBenchIndex builds an index over cities, failing the benchmark on error.
+func buildBenchIndex(b *testing.B, cities []city.SpatialCity) *S2Finder {
+	b.Helper()
+	finder, err := BuildIndex(cities)
+	if err != nil {
+		b.Fatal(err)
+	}
+	return finder
+}
+
+var benchSizes = []struct {
+	name string
+	size int
+}{
+	{"1K", 1_000},
+	{"10K", 10_000},
+	{"100K", 100_000},
+	{"1M", 1_000_000},
+}
+
+// BenchmarkBuildIndex benchmarks S2 index building over N distinct points.
+// BuildIndex does not mutate its input, so every iteration builds from
+// identical data; the measured op includes the eager ShapeIndex.Build() a
+// real boot pays.
+func BenchmarkBuildIndex(b *testing.B) {
+	silenceIndexLogs(b)
+	for _, size := range benchSizes {
 		b.Run(size.name, func(b *testing.B) {
-			cities := generateTestCities(size.size)
-			b.ResetTimer()
+			cities := generateDistinctCities(size.size)
 			b.ReportAllocs()
-
-			for i := 0; i < b.N; i++ {
-				_, _ = BuildIndex(cities)
+			for b.Loop() {
+				buildBenchIndex(b, cities)
 			}
 		})
 	}
 }
 
-// BenchmarkNearestPlace benchmarks nearest city lookup
-func BenchmarkNearestPlace(b *testing.B) {
-	cities := generateTestCities(100000)
-	finder, _ := BuildIndex(cities)
+// BenchmarkSerializeIndex benchmarks serialization of a 100k-point index to
+// one fixed path (SerializeIndex writes a part file and renames it over the
+// target, as every rebuild does). Creating a fresh temp dir per iteration —
+// the former shape — put directory creation inside the measured op and left
+// b.N files on disk until cleanup.
+func BenchmarkSerializeIndex(b *testing.B) {
+	silenceIndexLogs(b)
+	finder := buildBenchIndex(b, generateDistinctCities(100_000))
+	path := filepath.Join(b.TempDir(), "test_s2_index.gob")
 
-	testPoints := []struct {
-		lat, lon float64
-	}{
-		{37.7749, -122.4194}, // San Francisco
-		{40.7128, -74.0060},  // New York
-		{51.5074, -0.1278},   // London
-	}
-
-	b.ResetTimer()
 	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		point := testPoints[i%len(testPoints)]
-		_, _, _ = finder.NearestPlace(point.lat, point.lon, RankDistance)
+	for b.Loop() {
+		if err := finder.SerializeIndex(path); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
-// BenchmarkNearestByPopulationOceanQuery benchmarks the mid-ocean
-// population-ranked query on the 200k-city clustered synthetic world: the
-// cheap escalation discs are near-empty over open water, so the cost is
-// dominated by whatever strategy resolves the query after them. The populated
-// control point (same fixture) shows the land-query path for comparison.
-func BenchmarkNearestByPopulationOceanQuery(b *testing.B) {
-	cities := anchoredOceanFixture(b)
-	finder, err := BuildIndex(cities)
-	if err != nil {
+// BenchmarkDeserializeIndex benchmarks deserialization of a 100k-point index.
+// After the first iteration the file is served from a warm OS page cache:
+// this measures decode + index rebuild CPU, not cold disk I/O (a cold boot
+// from a fresh volume pays disk reads on top).
+func BenchmarkDeserializeIndex(b *testing.B) {
+	silenceIndexLogs(b)
+	finder := buildBenchIndex(b, generateDistinctCities(100_000))
+	path := filepath.Join(b.TempDir(), "test_s2_index.gob")
+	if err := finder.SerializeIndex(path); err != nil {
 		b.Fatal(err)
 	}
 
-	b.Run("mid-ocean", func(b *testing.B) {
-		b.ResetTimer()
-		b.ReportAllocs()
-		for i := 0; i < b.N; i++ {
-			_, _, _ = finder.NearestPlace(0.0, -140.0, RankPopulation)
-		}
-	})
-
-	b.Run("populated", func(b *testing.B) {
-		b.ResetTimer()
-		b.ReportAllocs()
-		for i := 0; i < b.N; i++ {
-			_, _, _ = finder.NearestPlace(35.0, 100.0, RankPopulation)
-		}
-	})
-}
-
-// BenchmarkSerializeIndex benchmarks index serialization
-func BenchmarkSerializeIndex(b *testing.B) {
-	cities := generateTestCities(100000)
-	finder, _ := BuildIndex(cities)
-
-	b.ResetTimer()
 	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		tmpfile := b.TempDir() + "/test_s2_index.gob"
-		_ = finder.SerializeIndex(tmpfile)
+	for b.Loop() {
+		if _, err := DeserializeIndex(path); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
-// BenchmarkDeserializeIndex benchmarks index deserialization
-func BenchmarkDeserializeIndex(b *testing.B) {
-	cities := generateTestCities(100000)
-	finder, _ := BuildIndex(cities)
-	tmpfile := b.TempDir() + "/test_s2_index.gob"
-	_ = finder.SerializeIndex(tmpfile)
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
-	for i := 0; i < b.N; i++ {
-		_, _ = DeserializeIndex(tmpfile)
-	}
-}
-
-// BenchmarkMemoryUsage measures memory usage for different index sizes
+// BenchmarkMemoryUsage reports the heap an index RETAINS after a build
+// (retained-MB: HeapAlloc delta across a forced GC, finder kept alive) and
+// the bytes the build allocated in total (alloc-MB/op, transient garbage
+// included — the s2 library warns construction can transiently use ~20x the
+// final index). The input fixture is generated before the first reading so
+// it is excluded from both. GCs and MemStats reads run off the clock; ns/op
+// is the build time.
 func BenchmarkMemoryUsage(b *testing.B) {
-	sizes := []struct {
-		name string
-		size int
-	}{
-		{"10K", 10000},
-		{"100K", 100000},
-		{"1M", 1000000},
-	}
-
-	for _, size := range sizes {
+	silenceIndexLogs(b)
+	for _, size := range benchSizes[1:] {
 		b.Run(size.name, func(b *testing.B) {
-			var m1, m2 runtime.MemStats
-			runtime.GC()
-			runtime.ReadMemStats(&m1)
+			cities := generateDistinctCities(size.size)
+			var retained, allocated float64
+			for b.Loop() {
+				b.StopTimer()
+				var before, after runtime.MemStats
+				runtime.GC()
+				runtime.ReadMemStats(&before)
+				b.StartTimer()
 
-			cities := generateTestCities(size.size)
-			finder, _ := BuildIndex(cities)
+				finder := buildBenchIndex(b, cities)
 
-			runtime.GC()
-			runtime.ReadMemStats(&m2)
-
-			b.ReportMetric(float64(m2.Alloc-m1.Alloc)/1024/1024, "MB/op")
-			b.ReportMetric(float64(m2.TotalAlloc-m1.TotalAlloc)/1024/1024, "MB_total/op")
-
-			// KeepAlive, not `_ = finder`: a blank assignment does not extend
-			// the index's lifetime, so without this the second GC can reclaim
-			// it before m2 and report a near-zero retained heap.
-			runtime.KeepAlive(finder)
+				b.StopTimer()
+				runtime.GC()
+				runtime.ReadMemStats(&after)
+				// KeepAlive, not `_ = finder`: a blank assignment does not
+				// extend the index's lifetime, so without this the GC above
+				// could reclaim it and report a near-zero retained heap.
+				runtime.KeepAlive(finder)
+				retained = float64(after.HeapAlloc) - float64(before.HeapAlloc)
+				allocated = float64(after.TotalAlloc - before.TotalAlloc)
+				b.StartTimer()
+			}
+			b.ReportMetric(retained/(1<<20), "retained-MB")
+			b.ReportMetric(allocated/(1<<20), "alloc-MB/op")
 		})
 	}
 }

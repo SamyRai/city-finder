@@ -23,6 +23,7 @@ func BenchmarkPrefixNames(b *testing.B) {
 	for i := range cities { // one big table: prefix space is unconstrained
 		cities[i].Country = "AD"
 	}
+	silenceBuildLogs(b)
 	finder := BuildIndex(cities)
 
 	sparse := make([]string, 0, 1024)
