@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/SamyRai/cityFinder/lib/dataLoader"
 )
 
 type Config struct {
@@ -19,6 +22,20 @@ type Config struct {
 	PostalCodeIndexFile string `json:"postal_code_index_file"`
 	Admin1CodesFile     string `json:"admin1_codes_file"`
 	Admin1CodesURL      string `json:"admin1_codes_url"`
+	// IncludeFeatureClasses, when non-empty, is the parsed include_feature_classes
+	// allowlist: at dataset LOAD (index build/rebuild) only rows whose GeoNames
+	// feature class is in the list are loaded. A populated-places-only config
+	// ("P") answers both validation findings — a class-L row ("HHS Region 9",
+	// population 49.34M) winning every rank=population query in the western US,
+	// and country-less undersea/international rows being the nearest raw
+	// features to far-from-land queries. Warm boots that deserialize existing
+	// index files are unaffected until an index file is deleted to force a
+	// rebuild; /coordinates results and population-rank winners change
+	// accordingly — that is the point of the knob. Entries are parsed from the
+	// comma-separated JSON string by UnmarshalJSON (trim + uppercase +
+	// validation); nil ("" or key absent) is the default and keeps the
+	// historical load exactly as-is.
+	IncludeFeatureClasses []string `json:"include_feature_classes"`
 	// ExcludeAdminDivisions drops GeoNames feature class A rows — countries
 	// (PCLI), states/provinces (ADM1/ADM2), districts (ADM3/ADM4) — at dataset
 	// LOAD time. Those rows carry huge synthetic populations and otherwise win
@@ -29,7 +46,8 @@ type Config struct {
 	// When enabled, admin-division names (e.g. "California" as an ADM1 row)
 	// also disappear from name lookups and /coordinates results — that is the
 	// point of the knob. Default false (or key absent) keeps the historical
-	// load exactly as-is.
+	// load exactly as-is. See also IncludeFeatureClasses: the include-list is
+	// applied first, so when it already excludes A this flag is a no-op.
 	ExcludeAdminDivisions bool `json:"exclude_admin_divisions"`
 	S2                    S2   `json:"s2"`
 }
@@ -43,6 +61,70 @@ type Config struct {
 // TestLoadConfigIgnoresRemovedS2Keys).
 type S2 struct {
 	IndexFile string `json:"index_file"`
+}
+
+// UnmarshalJSON decodes a Config and turns the comma-separated
+// include_feature_classes string into the parsed IncludeFeatureClasses slice.
+// Implemented as a method (rather than inline in LoadConfig) so every decode
+// path — LoadConfig and any caller feeding a Config to encoding/json itself —
+// parses and validates identically. The alias type breaks the method's
+// recursion; the alias-level IncludeFeatureClasses string shadows the promoted
+// []string field (encoding/json resolves the shallower depth), capturing the
+// raw value before parsing.
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type configAlias Config
+	aux := struct {
+		*configAlias
+		IncludeFeatureClasses string `json:"include_feature_classes"`
+	}{configAlias: (*configAlias)(c)}
+
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	classes, err := parseIncludeFeatureClasses(aux.IncludeFeatureClasses)
+	if err != nil {
+		return err
+	}
+	c.IncludeFeatureClasses = classes
+	return nil
+}
+
+// parseIncludeFeatureClasses parses the include_feature_classes value: a
+// comma-separated list of GeoNames feature classes ("P", "P,A"); empty or
+// absent means no filter (nil), the default. Entries are space-trimmed and
+// uppercased ("p" -> "P") and validated against the GeoNames feature-class
+// set (dataLoader.GeoNamesFeatureClasses) — the same set the loader enforces,
+// in one place. An invalid entry is a config LOAD error naming the offending
+// value: fail loud, never silently ignore a typo that would otherwise mean
+// "no rows loaded". Duplicates collapse; the parsed slice preserves first
+// occurrence order.
+func parseIncludeFeatureClasses(raw string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+
+	var classes []string
+	seen := make(map[string]bool)
+	var invalid []string
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		class := strings.ToUpper(entry)
+		if !dataLoader.IsValidFeatureClass(class) {
+			invalid = append(invalid, entry)
+			continue
+		}
+		if !seen[class] {
+			seen[class] = true
+			classes = append(classes, class)
+		}
+	}
+
+	if len(invalid) > 0 {
+		return nil, fmt.Errorf("invalid include_feature_classes entries %q in %q: each must be one of the GeoNames feature classes A P H L R S T U V (single uppercase letter, comma-separated)",
+			invalid, raw)
+	}
+	return classes, nil
 }
 
 // IndexFilePaths returns the on-disk locations of the three serialized indexes
