@@ -32,18 +32,20 @@ func generateUniqueCities(count int) []city.SpatialCity {
 // GC: stage the batch into the nested map the loaders merge into, then
 // flatten it into the finder's sorted tables.
 func buildStaged(cities []city.SpatialCity) *Finder {
-	index := make(map[string]map[string][]*city.City, estimateCapacity(cities))
-	processBatchStreamlined(index, cities)
+	index := make(map[string]map[string][]int32, estimateCapacity(cities))
+	processBatchStreamlined(index, cities, 0)
 	f := NewNameFinder()
+	f.cities = ownedCityTable(cities)
 	f.buildFromIndexMap(index)
 	return f
 }
 
 // buildStagedConcurrent is buildStaged's worker-pool twin.
 func buildStagedConcurrent(cities []city.SpatialCity) *Finder {
-	index := make(map[string]map[string][]*city.City, estimateCapacity(cities))
+	index := make(map[string]map[string][]int32, estimateCapacity(cities))
 	processBatchConcurrent(index, cities, runtime.NumCPU())
 	f := NewNameFinder()
+	f.cities = ownedCityTable(cities)
 	f.buildFromIndexMap(index)
 	return f
 }

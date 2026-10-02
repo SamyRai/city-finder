@@ -239,7 +239,7 @@ func TestDeserializeRevivesFuzzy(t *testing.T) {
 func TestDeserializeGarbageTailReturnsError(t *testing.T) {
 	buf := new(bytes.Buffer)
 	enc := gob.NewEncoder(buf)
-	assert.NoError(t, enc.Encode(&indexHeader{Magic: nameIndexMagic, Version: nameIndexVersion, Count: 1}))
+	assert.NoError(t, enc.Encode(&indexHeader{Magic: nameIndexMagic, Version: nameIndexVersionV2, Count: 1}))
 	assert.NoError(t, enc.Encode(12345)) // wrong type where the payload struct is expected
 
 	tmpfile, err := os.CreateTemp("", "name_corrupt_*.gob")

@@ -1,15 +1,9 @@
 package name
 
 import (
-	"bufio"
-	"bytes"
 	"container/list"
-	"encoding/gob"
-	"errors"
 	"fmt"
-	"io"
 	"log"
-	"os"
 	"runtime"
 	"sort"
 	"strings"
@@ -19,7 +13,6 @@ import (
 	"unique"
 
 	"github.com/SamyRai/cityFinder/lib/city"
-	"github.com/klauspost/compress/zstd"
 )
 
 // internString uses Go 1.23's unique package for efficient string interning
@@ -150,7 +143,7 @@ const (
 type nameTable struct {
 	names  []string // sorted ascending, one entry per distinct (country, name) key
 	starts []int32  // len(names)+1; the ids of names[i] are ids[starts[i]:starts[i+1]]
-	ids    []int32  // CSR city ids into Finder.cities, homonyms in load order
+	ids    []int32  // CSR city ids (row numbers, see cityTable), homonyms in load order
 }
 
 // lookup binary-searches name in the sorted table and returns the CSR slice
@@ -171,15 +164,15 @@ func (t *nameTable) lookup(name string) ([]int32, bool) {
 // - Bools and small fields last (1 byte, but padding matters)
 //
 // The exact-lookup index is flat: one nameTable per country (~250 keys at
-// prod scale, so a map here costs nothing), one shared distinct-city table
-// whose pointers every id resolves through, and a small unsorted overflow
-// for names added after construction (AddCity and friends) that is
-// consulted after the sorted-table miss. Pointer sharing — multiple names
-// referencing one *city.City — survives by construction: the distinct-city
-// table holds each pointer exactly once and every reference stores its id.
+// prod scale, so a map here costs nothing), one city table every id resolves
+// through (see cityTable: ids are input row numbers, and the table can be the
+// S2 index's own, so a city exists once per process), and a small unsorted
+// overflow for names added after construction (AddCity and friends) that is
+// consulted after the sorted-table miss. Every name of a city stores the
+// same row id, so all of them resolve to the same *city.City.
 type Finder struct {
 	countries     map[string]*nameTable         // per-country exact-lookup tables
-	cities        []*city.City                  // distinct-city table; every id in a table or the overflow indexes this slice
+	cities        cityTable                     // every id in a table or the overflow resolves here
 	overflow      map[string]map[string][]int32 // post-construction additions: country -> name -> city ids into cities
 	ngrams        *ngramIndex                   // Immutable q-gram fuzzy index (lazy-built, never serialized)
 	fuzzyOverflow []string                      // Names added after the last fuzzy build; linearly scanned until the next build folds them in
@@ -239,47 +232,32 @@ func NewFinderWithCapacity(countries int) *Finder {
 	}
 }
 
-// processBatchStreamlined processes a batch of cities with minimal overhead for bulk loading
-func processBatchStreamlined(index map[string]map[string][]*city.City, cities []city.SpatialCity) {
-	// Direct processing without temporary arrays or memory pools
-	// This reduces memory allocations and function call overhead
-	// Cache country map to reduce lookups
-	var cachedCountryMap map[string][]*city.City
+// processBatchStreamlined stages a batch of cities into the nested staging
+// map: country -> name -> row ids, where cities[i] has row id base+i. Every
+// name of a city (primary and alternates) stores the same row id, in input
+// order, so each name's list is in load order.
+func processBatchStreamlined(index map[string]map[string][]int32, cities []city.SpatialCity, base int32) {
+	var cachedCountryMap map[string][]int32
 	var cachedCountry string
 
 	for i := range cities {
 		spatialCity := &cities[i]
-		// Copy the City value to its own heap allocation and index that.
-		// Pointing the index at &spatialCity.City would be an interior pointer
-		// into the loader-owned []SpatialCity backing array, pinning the whole
-		// array (~80 B per city) for the index's lifetime even though only the
-		// 48 B City values are needed. The string fields stay shared with the
-		// loader slice, so the copy itself is cheap.
-		cityCopy := spatialCity.City
-		cityPtr := &cityCopy
+		id := base + int32(i)
 
-		// Use string interning for memory optimization
 		internedCountry := internString(spatialCity.Country)
-		internedPrimaryName := internString(spatialCity.Name)
-
-		// Cache country map lookup to reduce map access overhead
 		if internedCountry != cachedCountry {
 			cachedCountry = internedCountry
 			var exists bool
 			cachedCountryMap, exists = index[internedCountry]
 			if !exists {
-				cachedCountryMap = make(map[string][]*city.City, 1000)
+				cachedCountryMap = make(map[string][]int32, 1000)
 				index[internedCountry] = cachedCountryMap
 			}
 		}
 
-		// Process primary name with cached country map
-		addNameToMap(cachedCountryMap, internedPrimaryName, cityPtr)
-
-		// Process alternate names with interning
+		addNameToMap(cachedCountryMap, internString(spatialCity.Name), id)
 		for _, altName := range spatialCity.AltNames {
-			internedAltName := internString(altName)
-			addNameToMap(cachedCountryMap, internedAltName, cityPtr)
+			addNameToMap(cachedCountryMap, internString(altName), id)
 		}
 	}
 }
@@ -287,20 +265,20 @@ func processBatchStreamlined(index map[string]map[string][]*city.City, cities []
 // processBatchConcurrent processes cities concurrently: the input is split
 // into contiguous chunks, each worker stages its chunks into a private partial
 // index (lock-free), and the partials are merged IN CHUNK ORDER. That order is
-// what makes every per-name city list come out in load order — the homonym
+// what makes every per-name id list come out in load order — the homonym
 // order CityByName's first-id-wins resolution and the on-disk format promise.
 // (Merging in worker-completion order, as an earlier version did, made the
 // winning homonym vary between identical builds.)
-func processBatchConcurrent(index map[string]map[string][]*city.City, cities []city.SpatialCity, numWorkers int) {
+func processBatchConcurrent(index map[string]map[string][]int32, cities []city.SpatialCity, numWorkers int) {
 	chunkSize := (len(cities) + numWorkers - 1) / numWorkers
 	if chunkSize < 1000 {
 		// For small chunks, sequential is faster
-		processBatchStreamlined(index, cities)
+		processBatchStreamlined(index, cities, 0)
 		return
 	}
 	numChunks := (len(cities) + chunkSize - 1) / chunkSize
 
-	partials := make([]map[string]map[string][]*city.City, numChunks)
+	partials := make([]map[string]map[string][]int32, numChunks)
 	chunks := make(chan int, numChunks)
 	for c := 0; c < numChunks; c++ {
 		chunks <- c
@@ -315,9 +293,8 @@ func processBatchConcurrent(index map[string]map[string][]*city.City, cities []c
 			for c := range chunks {
 				start := c * chunkSize
 				end := min(start+chunkSize, len(cities))
-				partial := make(map[string]map[string][]*city.City, 300)
-				// Same staging as the sequential path (heap copies, interning).
-				processBatchStreamlined(partial, cities[start:end])
+				partial := make(map[string]map[string][]int32, 300)
+				processBatchStreamlined(partial, cities[start:end], int32(start))
 				partials[c] = partial // distinct index per chunk: no lock needed
 			}
 		}()
@@ -333,15 +310,15 @@ func processBatchConcurrent(index map[string]map[string][]*city.City, cities []c
 				index[country] = countryMap
 				continue
 			}
-			for name, cityList := range countryMap {
-				mainCityList, exists := mainCountryMap[name]
+			for name, ids := range countryMap {
+				mainIDs, exists := mainCountryMap[name]
 				if !exists {
-					mainCountryMap[name] = cityList
+					mainCountryMap[name] = ids
 					continue
 				}
-				merged := make([]*city.City, len(mainCityList), len(mainCityList)+len(cityList))
-				copy(merged, mainCityList)
-				mainCountryMap[name] = append(merged, cityList...)
+				merged := make([]int32, len(mainIDs), len(mainIDs)+len(ids))
+				copy(merged, mainIDs)
+				mainCountryMap[name] = append(merged, ids...)
 			}
 		}
 	}
@@ -367,9 +344,10 @@ func BuildIndex(cities []city.SpatialCity) *Finder {
 	start := time.Now()
 
 	finder := NewFinderWithCapacity(estimateCapacity(cities))
+	finder.cities = ownedCityTable(cities)
 
 	// Staging structure for the loaders; flattened (and freed) below.
-	index := make(map[string]map[string][]*city.City, estimateCapacity(cities))
+	index := make(map[string]map[string][]int32, estimateCapacity(cities))
 
 	// Use concurrent processing for better CPU utilization
 	numWorkers := runtime.NumCPU()
@@ -382,7 +360,7 @@ func BuildIndex(cities []city.SpatialCity) *Finder {
 
 	// For small datasets, use sequential processing to avoid overhead
 	if len(cities) < 10000 {
-		processBatchStreamlined(index, cities)
+		processBatchStreamlined(index, cities, 0)
 	} else {
 		// Concurrent processing for larger datasets
 		processBatchConcurrent(index, cities, numWorkers)
@@ -406,53 +384,40 @@ func BuildIndex(cities []city.SpatialCity) *Finder {
 }
 
 // buildFromIndexMap flattens a fully loaded staging index into the sorted CSR
-// tables and the distinct-city table, replacing whatever the finder held.
-// Only BuildIndex calls it, before the finder is published, so no locking is
-// needed.
+// tables, replacing whatever tables the finder held. Only BuildIndex calls
+// it, before the finder is published, so no locking is needed.
 //
-// Homonym order: each name's ids are appended in the staging slice's order,
+// Homonym order: each name's ids are copied in the staging slice's order,
 // which every loader path builds as load order — so the CSR range preserves
 // the insertion-order homonym sequence that CityByName's first-id-wins
 // resolution has always returned.
-//
-// Pointer sharing: distinct cities are numbered by first encounter, so the
-// same *city.City under several names (or countries) collapses to one id —
-// the sharing semantics the v2 on-disk format pins.
-func (nf *Finder) buildFromIndexMap(index map[string]map[string][]*city.City) {
-	ids := make(map[*city.City]int32)
+func (nf *Finder) buildFromIndexMap(index map[string]map[string][]int32) {
 	nf.countries = make(map[string]*nameTable, len(index))
 	for country, countryMap := range index {
-		t := &nameTable{}
-		t.names = make([]string, 0, len(countryMap))
-		for name := range countryMap {
-			t.names = append(t.names, name)
-		}
-		sort.Strings(t.names)
-
-		refs := 0
-		for _, name := range t.names {
-			refs += len(countryMap[name])
-		}
-		t.starts = make([]int32, len(t.names)+1)
-		t.ids = make([]int32, 0, refs)
-		for i, name := range t.names {
-			t.starts[i] = int32(len(t.ids))
-			for _, c := range countryMap[name] {
-				id, exists := ids[c]
-				if !exists {
-					// First encounter of this pointer: append it and
-					// remember its id. Two equal City values under different
-					// pointers are two entries — identity, not equality.
-					id = int32(len(nf.cities))
-					ids[c] = id
-					nf.cities = append(nf.cities, c)
-				}
-				t.ids = append(t.ids, id)
-			}
-		}
-		t.starts[len(t.names)] = int32(len(t.ids))
-		nf.countries[country] = t
+		nf.countries[country] = buildTable(countryMap)
 	}
+}
+
+// buildTable flattens one country's name -> ids map into a nameTable: names
+// sorted once, ids copied CSR-style in their stored order.
+func buildTable(refs map[string][]int32) *nameTable {
+	t := &nameTable{names: make([]string, 0, len(refs))}
+	for name := range refs {
+		t.names = append(t.names, name)
+	}
+	sort.Strings(t.names)
+	total := 0
+	for _, name := range t.names {
+		total += len(refs[name])
+	}
+	t.starts = make([]int32, len(t.names)+1)
+	t.ids = make([]int32, 0, total)
+	for i, name := range t.names {
+		t.starts[i] = int32(len(t.ids))
+		t.ids = append(t.ids, refs[name]...)
+	}
+	t.starts[len(t.names)] = int32(len(t.ids))
+	return t
 }
 
 // AddCity adds a city to the NameFinder (thread-safe)
@@ -469,12 +434,11 @@ func (nf *Finder) AddCity(spatialCity city.SpatialCity) {
 }
 
 // addOverflowLocked indexes one city value under every given name through the
-// unsorted overflow: the value is copied to its own heap allocation, appended
-// to the distinct-city table exactly once, and its id is appended to each
-// name's overflow id list — so the pointer stays shared across the city's
-// names exactly like a build-time city, and CityByName's sorted-table-first
-// probe order makes a post-build homonym resolve to the build-time winner,
-// the same first-inserted-wins order the nested map produced.
+// unsorted overflow: the value is copied into the city table's post-build
+// extras exactly once, and its id is appended to each name's overflow id
+// list — so all the city's names resolve to one pointer exactly like a
+// build-time city, and CityByName's sorted-table-first probe order makes a
+// post-build homonym resolve to the build-time winner.
 //
 // Insertion into the sorted tables is O(n) per add, which is why
 // post-construction additions live here instead: the overflow is consulted
@@ -482,9 +446,7 @@ func (nf *Finder) AddCity(spatialCity city.SpatialCity) {
 // serialization, mirroring the fuzzy overflow design. The caller must hold
 // nf.mutex for writing.
 func (nf *Finder) addOverflowLocked(country string, names []string, c city.City) {
-	cityCopy := c
-	id := int32(len(nf.cities))
-	nf.cities = append(nf.cities, &cityCopy)
+	id := nf.cities.add(c)
 
 	if nf.overflow == nil {
 		nf.overflow = make(map[string]map[string][]int32)
@@ -521,19 +483,14 @@ func (nf *Finder) addNameToIndexDirect(country, name string, cityPtr *city.City)
 	nf.mutex.Unlock()
 }
 
-// addNameToMap adds a name-city pair to a staging country map
-// This reduces map lookups in the hot path
-func addNameToMap(countryMap map[string][]*city.City, name string, cityPtr *city.City) {
-	cityList, exists := countryMap[name]
+// addNameToMap appends a row id to a name's staging list.
+func addNameToMap(countryMap map[string][]int32, name string, id int32) {
+	ids, exists := countryMap[name]
 	if !exists {
-		// Pre-allocate slice with small initial capacity
-		// Most city names are unique, so small capacity is appropriate
-		cityList = make([]*city.City, 0, 4)
-		countryMap[name] = cityList
+		// Most names are unique within a country: start small.
+		ids = make([]int32, 0, 2)
 	}
-
-	// Append the city pointer
-	countryMap[name] = append(cityList, cityPtr)
+	countryMap[name] = append(ids, id)
 }
 
 // firstCityExactLocked resolves an exact name to its first city under the
@@ -543,11 +500,11 @@ func addNameToMap(countryMap map[string][]*city.City, name string, cityPtr *city
 func (nf *Finder) firstCityExactLocked(countryCode, name string) (*city.City, bool) {
 	if t := nf.countries[countryCode]; t != nil {
 		if ids, ok := t.lookup(name); ok && len(ids) > 0 {
-			return nf.cities[ids[0]], true
+			return nf.cities.at(ids[0]), true
 		}
 	}
 	if ids, ok := nf.overflow[countryCode][name]; ok && len(ids) > 0 {
-		return nf.cities[ids[0]], true
+		return nf.cities.at(ids[0]), true
 	}
 	return nil, false
 }
@@ -864,12 +821,12 @@ func (nf *Finder) CityByName(name string, countryCode string) *city.City {
 	if hasEntries {
 		if t != nil {
 			if ids, ok := t.lookup(name); ok && len(ids) > 0 {
-				exact = nf.cities[ids[0]]
+				exact = nf.cities.at(ids[0])
 			}
 		}
 		if exact == nil {
 			if ids, ok := countryOverflow[name]; ok && len(ids) > 0 {
-				exact = nf.cities[ids[0]]
+				exact = nf.cities.at(ids[0])
 			}
 		}
 	}
@@ -988,7 +945,7 @@ func (nf *Finder) PrefixNames(countryCode, prefix string, maxNames int) []Prefix
 			if len(ids) == 0 {
 				continue // zero-ref keys carry no city to pair
 			}
-			matches = append(matches, PrefixMatch{Name: t.names[i], City: nf.cities[ids[0]]})
+			matches = append(matches, PrefixMatch{Name: t.names[i], City: nf.cities.at(ids[0])})
 		}
 	}
 
@@ -1005,352 +962,8 @@ func (nf *Finder) PrefixNames(countryCode, prefix string, maxNames int) []Prefix
 			if len(ids) == 0 {
 				continue
 			}
-			matches = append(matches, PrefixMatch{Name: name, City: nf.cities[ids[0]]})
+			matches = append(matches, PrefixMatch{Name: name, City: nf.cities.at(ids[0])})
 		}
 	}
 	return matches
-}
-
-// indexHeader is the first value written into the serialized stream. It lets
-// DeserializeIndex reject files written by an incompatible build (magic or
-// version mismatch) up front, with an error that tells the caller to rebuild
-// instead of failing halfway through a half-understood payload.
-type indexHeader struct {
-	Magic   string
-	Version uint32
-	Count   int
-}
-
-const (
-	// nameIndexMagic identifies name index files.
-	nameIndexMagic = "CFNAMEIDX"
-	// nameIndexVersion is the current on-disk format version.
-	//
-	// v2 replaced the gob-encoded map[string]map[string][]*city.City (which
-	// duplicates every City value per reference — 1.6 GB and ~54 s of warm
-	// start at Oct-2026 GeoNames scale) with a distinct-city table plus int32
-	// references. It also dropped the BK-tree/isBKTreeBuilt/allNames trailer:
-	// those are lazy-build runtime state. A v1 file fails the version check
-	// below with ErrCorruptIndex; the initializer rebuilds it from source.
-	nameIndexVersion = uint32(2)
-)
-
-// ErrCorruptIndex reports an index file that cannot be trusted: truncated,
-// undecodable, or written by an incompatible format version. The initializer
-// treats it (and only it) as rebuildable; any other error — a wrapped fs
-// error from an unreadable file, for example — is fatal.
-var ErrCorruptIndex = errors.New("name index file is corrupt or incompatible")
-
-// nameIndexPayloadV2 is the v2 on-disk payload: every distinct city exactly
-// once, plus the inverted index reduced to int32 city ids.
-//
-// Cities[i] is city id i. Refs maps country -> name -> ids into Cities, in
-// the same order the in-memory index holds them (per name: sorted-table ids
-// in load order, then overflow ids). The in-memory flat tables already
-// number cities by table position, so serialization is a straight dump of
-// those numbers and deserialization a straight restore — the format is why
-// the in-memory index could flatten without changing bytes on disk.
-// Serializing ids instead of pointers is what makes pointer sharing survive
-// a round trip: gob has no pointer identity, so v1's struct-per-reference
-// encoding ballooned the file and forced the initializer to decode 35M City
-// values for 13.47M distinct cities.
-type nameIndexPayloadV2 struct {
-	Cities []city.City
-	Refs   map[string]map[string][]int32
-}
-
-// The v2 payload stream is zstd-framed: the file layout is
-//
-//	gob(indexHeader)                      // uncompressed, so version checks
-//	                                     // (including v1 rejection) happen
-//	                                     // before any decompression
-//	zstd-frame(gob(nameIndexPayloadV2))   // one frame, SpeedFastest, CRC
-//
-// zstd is what brings the file under the 800 MB sprint gate: the raw gob
-// payload measures 1,019,093,377 B at prod scale (546 MB city table + 318 MB
-// reference keys + 155 MB ids), 560 MB compressed. The frame occupies the
-// rest of the file; a truncated or corrupted frame, or a payload that is not
-// a valid frame at all, decodes to ErrCorruptIndex exactly like a malformed
-// raw gob stream did.
-const (
-	// nameIndexZstdLevel trades compression ratio for encode/decode speed:
-	// SpeedFastest yields 559.9 MiB at prod scale (30% under the gate) with
-	// ~1.8 s decompress; SpeedDefault would save ~55 MB more but cost decode
-	// time on every warm start.
-	nameIndexZstdLevel = zstd.SpeedFastest
-)
-
-// nameIndexZstdCRC enables the per-frame checksum: corruption inside an
-// otherwise structurally valid frame is then detected deterministically by
-// the decoder instead of surfacing as garbage that happens to fail (or not
-// fail) the gob layer.
-const nameIndexZstdCRC = true
-
-// decodeZstdFrame decompresses one complete zstd frame with a per-call
-// decoder that is closed immediately afterwards. A shared package-level
-// decoder was measured to retain ~900 MB of internal window/worker buffers
-// after decoding the prod-scale frame (the decoder caches them for reuse);
-// warm start is a once-per-boot operation, so paying decoder setup (µs) to
-// release that memory is strictly better. DecodeAll itself is stateless.
-func decodeZstdFrame(compressed []byte) ([]byte, error) {
-	zd, err := zstd.NewReader(nil)
-	if err != nil {
-		return nil, err
-	}
-	defer zd.Close()
-	return zd.DecodeAll(compressed, nil)
-}
-
-// SerializeIndex saves the name index to a file.
-// The payload is written to a sibling ".part" file first and moved into place
-// with os.Rename only after the full stream has been written, so a crash
-// mid-write can never leave a truncated file where the index used to be.
-//
-// The BK-tree, isBKTreeBuilt, and allNames are runtime state and are NOT
-// written: v2 always rebuilds the fuzzy structure lazily on first lookup. Map
-// iteration order makes the file bytes non-deterministic — acceptable, indexes
-// are regenerable artifacts gated by count validation and round-trip tests,
-// not byte comparison.
-func (nf *Finder) SerializeIndex(filepath string) error {
-	nf.mutex.Lock()
-	payload := nf.buildPayloadV2Locked()
-	count := len(payload.Refs)
-	nf.mutex.Unlock()
-
-	partPath := filepath + ".part"
-	file, err := os.Create(partPath)
-	if err != nil {
-		return err
-	}
-	fail := func(err error) error {
-		_ = file.Close()
-		_ = os.Remove(partPath)
-		return err
-	}
-
-	// The header stays uncompressed (see the framing comment above); the
-	// payload is one zstd frame. A fresh encoder per call: encoders are not
-	// reusable, and serialization is a one-shot init-path operation.
-	encoder := gob.NewEncoder(file)
-	header := indexHeader{
-		Magic:   nameIndexMagic,
-		Version: nameIndexVersion,
-		Count:   count,
-	}
-	if err := encoder.Encode(&header); err != nil {
-		return fail(err)
-	}
-	zw, err := zstd.NewWriter(file, zstd.WithEncoderLevel(nameIndexZstdLevel), zstd.WithEncoderCRC(nameIndexZstdCRC))
-	if err != nil {
-		return fail(err)
-	}
-	if err := gob.NewEncoder(zw).Encode(&payload); err != nil {
-		_ = zw.Close()
-		return fail(err)
-	}
-	if err := zw.Close(); err != nil {
-		return fail(err)
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(partPath)
-		return err
-	}
-	if err := os.Rename(partPath, filepath); err != nil {
-		_ = os.Remove(partPath)
-		return err
-	}
-	return nil
-}
-
-// buildPayloadV2Locked reduces the flat tables plus the overflow to the v2
-// payload. The caller must hold nf.mutex: the tables are read while the
-// cities values are copied out, so a concurrent AddCity would race the walk.
-// A country present in both the sorted tables and the overflow serializes as
-// one Refs map whose per-name id lists carry the sorted-table ids first,
-// then the overflow ids — the order the nested map's append paths built.
-func (nf *Finder) buildPayloadV2Locked() nameIndexPayloadV2 {
-	payload := nameIndexPayloadV2{
-		Cities: make([]city.City, len(nf.cities)),
-		Refs:   make(map[string]map[string][]int32, len(nf.countries)+len(nf.overflow)),
-	}
-	for i, c := range nf.cities {
-		payload.Cities[i] = *c
-	}
-	for country, t := range nf.countries {
-		refs := make(map[string][]int32, len(t.names)+len(nf.overflow[country]))
-		for i, name := range t.names {
-			refs[name] = append([]int32(nil), t.ids[t.starts[i]:t.starts[i+1]]...)
-		}
-		for name, ids := range nf.overflow[country] {
-			refs[name] = append(refs[name], ids...)
-		}
-		payload.Refs[country] = refs
-	}
-	for country, countryOverflow := range nf.overflow {
-		if _, ok := nf.countries[country]; ok {
-			continue // serialized together with its sorted table above
-		}
-		refs := make(map[string][]int32, len(countryOverflow))
-		for name, ids := range countryOverflow {
-			refs[name] = append([]int32(nil), ids...)
-		}
-		payload.Refs[country] = refs
-	}
-	return payload
-}
-
-// buildTableFromRefs flattens one country's Refs map into a nameTable: the
-// names sorted once, the ids restaged CSR-style between adjacent offsets.
-// Id order per name is taken from the payload as-is (load order). The id
-// bound check runs here so a corrupt id is rejected as ErrCorruptIndex, not
-// as a panic during a later lookup.
-func buildTableFromRefs(refs map[string][]int32, cityCount int) (*nameTable, error) {
-	t := &nameTable{}
-	t.names = make([]string, 0, len(refs))
-	for name := range refs {
-		t.names = append(t.names, name)
-	}
-	sort.Strings(t.names)
-
-	refsTotal := 0
-	for _, name := range t.names {
-		refsTotal += len(refs[name])
-	}
-	t.starts = make([]int32, len(t.names)+1)
-	t.ids = make([]int32, 0, refsTotal)
-	for i, name := range t.names {
-		t.starts[i] = int32(len(t.ids))
-		for _, id := range refs[name] {
-			if id < 0 || int(id) >= cityCount {
-				return nil, fmt.Errorf("id %d outside the %d-city table", id, cityCount)
-			}
-			t.ids = append(t.ids, id)
-		}
-	}
-	t.starts[len(t.names)] = int32(len(t.ids))
-	return t, nil
-}
-
-// DeserializeIndex loads the name index from a file.
-// The stream layout is gob(indexHeader) followed by one zstd frame holding
-// gob(nameIndexPayloadV2) — see the framing comment near nameIndexPayloadV2.
-// The header must be readable and compatible (magic and version, including
-// the v1 rejection) before any decompression runs; a missing or mismatched
-// header yields an error that suggests deleting the file so the index gets
-// rebuilt. Every decode failure — bad header, format mismatch, truncated or
-// corrupted zstd frame, or malformed payload — wraps ErrCorruptIndex so
-// callers can distinguish rebuildable corruption from environmental errors
-// (open/close and read failures are returned unwrapped).
-//
-// Rehydration decodes each City exactly once and points every reference at
-// &cities[id] through a pointer table — one pointer store per reference, no
-// per-ref struct allocation, and the pre-serialization sharing semantics are
-// restored: the city under two names is one pointer again. Each country's
-// Refs map is flattened straight into its sorted nameTable, so the
-// deserialized index is binary-searchable without any nested-map detour.
-func DeserializeIndex(filepath string) (*Finder, error) {
-	file, err := os.Open(filepath)
-	if err != nil {
-		return nil, err
-	}
-
-	// The bufio.Reader is shared by the header gob decoder and the payload
-	// read: gob consumes exactly the header's bytes, and whatever it buffered
-	// past them belongs to the zstd frame.
-	bufFile := bufio.NewReader(file)
-	decoder := gob.NewDecoder(bufFile)
-	var header indexHeader
-	if err := decoder.Decode(&header); err != nil {
-		_ = file.Close()
-		return nil, fmt.Errorf("%w: name index %s is not a readable versioned index (legacy or corrupt file: %v); delete the file so the index is rebuilt",
-			ErrCorruptIndex, filepath, err)
-	}
-	if header.Magic != nameIndexMagic || header.Version != nameIndexVersion {
-		_ = file.Close()
-		return nil, fmt.Errorf("%w: name index %s format mismatch: got magic %q version %d, want magic %q version %d; delete the file so the index is rebuilt",
-			ErrCorruptIndex, filepath, header.Magic, header.Version, nameIndexMagic, nameIndexVersion)
-	}
-
-	// Payload: read the rest of the file (the compressed frame), decompress
-	// it whole, then gob-decode from memory. DecodeAll rather than a
-	// streaming reader keeps the decompress and gob phases separately
-	// measurable — the timing split is logged below.
-	readStart := time.Now()
-	compressed, err := io.ReadAll(bufFile)
-	if err != nil {
-		_ = file.Close()
-		return nil, fmt.Errorf("reading name index payload from %s: %w", filepath, err)
-	}
-	compressedLen := len(compressed)
-	zstdStart := time.Now()
-	payloadBytes, err := decodeZstdFrame(compressed)
-	if err != nil {
-		_ = file.Close()
-		return nil, fmt.Errorf("%w: name index %s payload is not a decodable zstd frame: %v; delete the file so the index is rebuilt",
-			ErrCorruptIndex, filepath, err)
-	}
-	zstdDone := time.Now()
-	compressed = nil // release the compressed buffer before the gob decode allocates
-	gobStart := zstdDone
-	var payload nameIndexPayloadV2
-	if err := gob.NewDecoder(bytes.NewReader(payloadBytes)).Decode(&payload); err != nil {
-		_ = file.Close()
-		return nil, fmt.Errorf("%w: decoding name index payload from %s: %v", ErrCorruptIndex, filepath, err)
-	}
-	if header.Count != len(payload.Refs) {
-		_ = file.Close()
-		return nil, fmt.Errorf("%w: name index %s payload holds %d countries but the header recorded %d; delete the file so the index is rebuilt",
-			ErrCorruptIndex, filepath, len(payload.Refs), header.Count)
-	}
-	gobDone := time.Now()
-
-	if err := file.Close(); err != nil {
-		return nil, err
-	}
-	log.Printf("name index %s decoded: read %d B in %s, zstd %d->%d B in %s, gob %s",
-		filepath, compressedLen, zstdStart.Sub(readStart), compressedLen, len(payloadBytes),
-		zstdDone.Sub(zstdStart), gobDone.Sub(gobStart))
-
-	// gob allocates a fresh backing for every decoded string, so each City
-	// carries its own copy of a country code shared by millions of cities.
-	// One intern pass over the distinct-city table (13.47M calls at prod
-	// scale, versus v1's 70M over every reference) collapses those to one
-	// backing per country. Names stay per-city: they are mostly distinct, and
-	// interning near-unique values only grows the unique-package table.
-	internDecodedCountries(payload.Cities)
-
-	// Pointer table + one-pass rehydration. The table is built before the
-	// country tables so no reference can observe a partially filled entry.
-	ptrs := make([]*city.City, len(payload.Cities))
-	for i := range payload.Cities {
-		ptrs[i] = &payload.Cities[i]
-	}
-
-	finder := NewNameFinder()
-	finder.cities = ptrs
-	for country, refs := range payload.Refs {
-		t, err := buildTableFromRefs(refs, len(ptrs))
-		if err != nil {
-			return nil, fmt.Errorf("%w: name index %s references %v; delete the file so the index is rebuilt",
-				ErrCorruptIndex, filepath, err)
-		}
-		finder.countries[country] = t
-	}
-
-	// Fuzzy state starts fresh: the BK-tree is deliberately not serialized,
-	// so the first fuzzy lookup rebuilds it lazily from the index (including
-	// the FuzzyMaxNames gate, which disables matching on an over-threshold
-	// warm start without ever building).
-	return finder, nil
-}
-
-// internDecodedCountries interns the Country field of every decoded city.
-// gob transmits each string occurrence with its own backing array, so the
-// distinct-city table carries ~13.47M copies of ~250 country codes; the pass
-// collapses them to one shared backing per country. It must run before the
-// finder is shared (DeserializeIndex is the only caller, pre-rehydration).
-func internDecodedCountries(cities []city.City) {
-	for i := range cities {
-		cities[i].Country = internString(cities[i].Country)
-	}
 }

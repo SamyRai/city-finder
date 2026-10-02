@@ -206,7 +206,7 @@ func TestDeserializeLegacyV2Fixture(t *testing.T) {
 
 	header, _ := readV2File(t, path)
 	assert.Equal(t, nameIndexMagic, header.Magic)
-	assert.Equal(t, nameIndexVersion, header.Version, "the fixture must be a v2 file")
+	assert.Equal(t, nameIndexVersionV2, header.Version, "the fixture must be a v2 file")
 
 	restored, err := DeserializeIndex(path)
 	require.NoError(t, err, "a v2 file written by the pre-flatten build must deserialize cleanly")

@@ -8,6 +8,7 @@ import (
 
 	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/SamyRai/cityFinder/lib/finder/name"
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -81,7 +82,10 @@ func TestEnsureFinders_RebuildsV1NameIndexAsV2(t *testing.T) {
 	// The bad file must have been replaced by a v2 index that decodes cleanly
 	// and preserves the population end to end.
 	repaired, err := name.DeserializeIndex(namePath)
-	require.NoError(t, err, "the corrupt file must be rewritten with a valid v2 index")
+	require.NoError(t, err, "the corrupt file must be rewritten with a valid index")
+	// The rewritten file references the S2 city table instead of embedding
+	// a copy, so it resolves cities only once attached to that table.
+	require.NoError(t, repaired.ShareCities(f2.S2Finder.Cities))
 	rp := repaired.CityByName("les Escaldes", "AD")
 	require.NotNil(t, rp)
 	assert.Equal(t, int32(16316), rp.Population)
@@ -96,4 +100,75 @@ func TestEnsureFinders_RebuildsV1NameIndexAsV2(t *testing.T) {
 	wp := f3.NameFinder.CityByName("les Escaldes", "AD")
 	require.NotNil(t, wp)
 	assert.Equal(t, int32(16316), wp.Population, "population must survive the v2 warm start too")
+}
+
+// TestEnsureFinders_MigratesLegacyV2NameIndexInPlace pins the upgrade path:
+// a legacy v2 name file — which embeds its own city table, numbered in a
+// different order than the S2 rows — is attached to the S2 table by value
+// and re-serialized in the compact v3 format on a warm start, with NO raw
+// datasets present (no rebuild, no download), and answers stay identical.
+func TestEnsureFinders_MigratesLegacyV2NameIndexInPlace(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	writeTinyDatasets(t, cfg)
+	f1, err := ensureFinders(cfg, "")
+	require.NoError(t, err)
+	want := *f1.FindCityByName("les Escaldes", "AD")
+
+	// Rewrite the name index as v2: reversed city order, ids pointing into it.
+	cities := f1.S2Finder.Cities
+	n := len(cities)
+	v2Cities := make([]city.City, n)
+	for i := range cities {
+		v2Cities[n-1-i] = cities[i]
+	}
+	refs := map[string]map[string][]int32{}
+	for i, c := range cities {
+		if refs[c.Country] == nil {
+			refs[c.Country] = map[string][]int32{}
+		}
+		refs[c.Country][c.Name] = append(refs[c.Country][c.Name], int32(n-1-i))
+	}
+	namePath := filepath.Join(dir, cfg.NameIndexFile)
+	writeLegacyV2NameIndex(t, namePath, v2Cities, refs)
+	require.Equal(t, uint32(2), readFileVersion(t, namePath))
+
+	// Warm start without the raw datasets: only an in-place migration works.
+	require.NoError(t, os.Remove(filepath.Join(dir, cfg.AllCitiesFile)))
+	require.NoError(t, os.Remove(filepath.Join(dir, cfg.PostalCodesFile)))
+	f2, err := ensureFinders(cfg, "")
+	require.NoError(t, err)
+	got := f2.FindCityByName("les Escaldes", "AD")
+	require.NotNil(t, got)
+	assert.Equal(t, want, *got)
+	assert.True(t, f2.NameFinder.CitiesShared())
+	assert.Equal(t, uint32(3), readFileVersion(t, namePath), "the file must be migrated to v3")
+
+	// And the migrated file warm-starts again.
+	f3, err := ensureFinders(cfg, "")
+	require.NoError(t, err)
+	assert.Equal(t, want, *f3.FindCityByName("les Escaldes", "AD"))
+}
+
+// writeLegacyV2NameIndex writes a name index in the legacy v2 layout:
+// gob(header{Magic, Version 2, Count}) + zstd(gob({Cities, Refs})). gob
+// matches structs by field name, so these local mirrors produce exactly the
+// bytes the v2 writer did.
+func writeLegacyV2NameIndex(t *testing.T, path string, cities []city.City, refs map[string]map[string][]int32) {
+	t.Helper()
+	f, err := os.Create(path)
+	require.NoError(t, err)
+	defer f.Close()
+	require.NoError(t, gob.NewEncoder(f).Encode(struct {
+		Magic   string
+		Version uint32
+		Count   int
+	}{"CFNAMEIDX", 2, len(refs)}))
+	zw, err := zstd.NewWriter(f)
+	require.NoError(t, err)
+	require.NoError(t, gob.NewEncoder(zw).Encode(struct {
+		Cities []city.City
+		Refs   map[string]map[string][]int32
+	}{cities, refs}))
+	require.NoError(t, zw.Close())
 }
