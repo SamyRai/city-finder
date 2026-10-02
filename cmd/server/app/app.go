@@ -49,6 +49,9 @@ func New(f *finder.Finder, reg *metrics.Registry, requestLog *log.Logger) *fiber
 
 // RequestLogger writes a single line per request to l: timestamp, method,
 // path (query string excluded), status, latency, and response size in bytes.
+// The status is the one the client receives, including router 404/405s and
+// recovered panics (500), which fiber's error handler writes only after the
+// middleware chain has returned.
 // Request bodies, query parameters, and multipart forms are never logged.
 func RequestLogger(l *log.Logger) fiber.Handler {
 	return func(c *fiber.Ctx) error {
@@ -58,7 +61,8 @@ func RequestLogger(l *log.Logger) fiber.Handler {
 			start.Format(time.RFC3339),
 			c.Method(),
 			c.Path(),
-			c.Response().StatusCode(),
+			routes.CompletedStatus(c, err), // the status the client receives, incl. 404/405/500
+
 			time.Since(start),
 			len(c.Response().Body()),
 		)
