@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/SamyRai/cityFinder/cmd/server/metrics"
@@ -32,8 +33,10 @@ import (
 //   - core: bare fiber.New() + the routes — the handler and lookup cost.
 //   - production: the exact stack cmd/server serves (app.New: production
 //     fiber config incl. ETag, panic recovery, one access-log line per
-//     request, request metrics). The access log is written to io.Discard, so
-//     its formatting cost is included but a real stderr/terminal write is not.
+//     request, request metrics). The access log is written to /dev/null — a
+//     real file, so formatting and the write syscall are both measured
+//     (log.Logger skips ALL work for io.Discard, which would hide the
+//     logger's cost entirely); a terminal or container stdout is slower.
 //
 // production − core is the per-request middleware cost on this machine.
 
@@ -90,6 +93,19 @@ func benchFinder(b *testing.B) *finder.Finder {
 	}
 }
 
+// benchAccessLog returns the production access logger writing to /dev/null:
+// a real file descriptor, unlike io.Discard (for which log.Logger skips
+// formatting and writing altogether).
+func benchAccessLog(b *testing.B) *log.Logger {
+	b.Helper()
+	f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = f.Close() })
+	return log.New(f, "", log.LstdFlags)
+}
+
 // benchVariants returns the core and production apps over one fixture.
 func benchVariants(b *testing.B) []struct {
 	name string
@@ -105,7 +121,7 @@ func benchVariants(b *testing.B) []struct {
 		app  *fiber.App
 	}{
 		{"core", core},
-		{"production", New(f, reg, log.New(io.Discard, "", log.LstdFlags))},
+		{"production", New(f, reg, benchAccessLog(b))},
 	}
 }
 
@@ -222,7 +238,7 @@ func BenchmarkHTTPPostalCode(b *testing.B) {
 func BenchmarkHTTPMetrics(b *testing.B) {
 	f := benchFinder(b)
 	reg := metrics.NewRegistry()
-	app := New(f, reg, log.New(io.Discard, "", log.LstdFlags))
+	app := New(f, reg, benchAccessLog(b))
 	// Populate the registry the way live traffic does, so the scrape renders
 	// a realistic series set rather than an empty registry.
 	for _, p := range append(nearestPaths(8, ""), "/healthz", "/autocomplete?name=Ben&country-code=TC", "/postalCode?code=00001&country-code=TC") {
