@@ -16,6 +16,19 @@ and this project adheres to
   A P H L R S T U V, invalid entries fail config load). Complements
   `exclude_admin_divisions`; applies at dataset load/index rebuild and is
   honored by both the initializer and `cmd/build-index`.
+- Top-K-anchored disc for population-rank escalation: when the 250 km disc
+  fails to certify, the best top-4096 candidate anchors a single
+  challenger-radius disc instead of the 1250/6250 km tiers. Measured at
+  full scale: ocean-class queries 8–14 s → 1–9.5 s (~2–3×; a 200k-city
+  fixture shows ~12×, but at 13.47M cities the disc is dominated by the
+  winner's own distance — the next lever is a merged comparator letting
+  table candidates win without entering the disc, currently blocked by
+  golang/geo's unexported EdgeQueryResult fields). Exactness unchanged:
+  all brute-force oracles (ties, crowd-out, all-zero populations) pass
+  unedited; the escalation ladder and terminal fallback remain.
+- RankDistance query objects are pooled per finder (sync.Pool over the
+  ClosestEdgeQuery + options): measured at prod scale, nearest p50
+  11.8 → 9.4 µs (−20%), allocations −40% on the realistic benchmark.
 - `POST /nearest/batch` now executes points concurrently (bounded by
   GOMAXPROCS; the population gate still caps the expensive class per
   point). A batch of far-from-land `rank=population` points that ran for
