@@ -284,124 +284,67 @@ func processBatchStreamlined(index map[string]map[string][]*city.City, cities []
 	}
 }
 
-// processBatchConcurrent processes cities concurrently using worker pools
-// Uses lock-free per-worker indices that are merged at the end to minimize contention
+// processBatchConcurrent processes cities concurrently: the input is split
+// into contiguous chunks, each worker stages its chunks into a private partial
+// index (lock-free), and the partials are merged IN CHUNK ORDER. That order is
+// what makes every per-name city list come out in load order — the homonym
+// order CityByName's first-id-wins resolution and the on-disk format promise.
+// (Merging in worker-completion order, as an earlier version did, made the
+// winning homonym vary between identical builds.)
 func processBatchConcurrent(index map[string]map[string][]*city.City, cities []city.SpatialCity, numWorkers int) {
-	// Divide cities into chunks for parallel processing
 	chunkSize := (len(cities) + numWorkers - 1) / numWorkers
 	if chunkSize < 1000 {
 		// For small chunks, sequential is faster
 		processBatchStreamlined(index, cities)
 		return
 	}
+	numChunks := (len(cities) + chunkSize - 1) / chunkSize
 
-	// Create worker channels
-	type workItem struct {
-		cities []city.SpatialCity
+	partials := make([]map[string]map[string][]*city.City, numChunks)
+	chunks := make(chan int, numChunks)
+	for c := 0; c < numChunks; c++ {
+		chunks <- c
 	}
-	workChan := make(chan workItem, numWorkers)
-	mergeChan := make(chan map[string]map[string][]*city.City, numWorkers)
-	var wg sync.WaitGroup
+	close(chunks)
 
-	// Start workers
-	for i := 0; i < numWorkers; i++ {
+	var wg sync.WaitGroup
+	for w := 0; w < numWorkers; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// Each worker builds a partial index (lock-free)
-			partialIndex := make(map[string]map[string][]*city.City, 300)
-
-			for work := range workChan {
-				// Process chunk with local index
-				for j := range work.cities {
-					spatialCity := &work.cities[j]
-					// Heap-copy the City value instead of indexing an interior
-					// pointer into the loader slice; see the note in
-					// processBatchStreamlined for why pinning must be avoided.
-					cityCopy := spatialCity.City
-					cityPtr := &cityCopy
-
-					// Use string interning for memory optimization
-					internedCountry := internString(spatialCity.Country)
-					internedPrimaryName := internString(spatialCity.Name)
-
-					// Get or create country map in local index
-					countryMap, exists := partialIndex[internedCountry]
-					if !exists {
-						countryMap = make(map[string][]*city.City, 1000)
-						partialIndex[internedCountry] = countryMap
-					}
-
-					// Add primary name
-					addNameToMap(countryMap, internedPrimaryName, cityPtr)
-
-					// Add alternate names with interning
-					for _, altName := range spatialCity.AltNames {
-						internedAltName := internString(altName)
-						addNameToMap(countryMap, internedAltName, cityPtr)
-					}
-				}
+			for c := range chunks {
+				start := c * chunkSize
+				end := min(start+chunkSize, len(cities))
+				partial := make(map[string]map[string][]*city.City, 300)
+				// Same staging as the sequential path (heap copies, interning).
+				processBatchStreamlined(partial, cities[start:end])
+				partials[c] = partial // distinct index per chunk: no lock needed
 			}
-
-			// Send partial index for merging (non-blocking)
-			mergeChan <- partialIndex
 		}()
 	}
+	wg.Wait()
 
-	// Start merger goroutine to combine partial indices. No mutex is needed:
-	// the merger is the only writer of index, and BuildIndex reads index only
-	// after mergeWg.Wait() establishes the happens-before edge (the finder is
-	// not published until then).
-	var mergeWg sync.WaitGroup
-	mergeWg.Add(1)
-	go func() {
-		defer mergeWg.Done()
-		// Collect all partial indices
-		partialIndices := make([]map[string]map[string][]*city.City, 0, numWorkers)
-		for i := 0; i < numWorkers; i++ {
-			partialIndices = append(partialIndices, <-mergeChan)
-		}
-
-		// Merge all partial indices into the staging index
-		for _, partialIndex := range partialIndices {
-			for country, countryMap := range partialIndex {
-				mainCountryMap, exists := index[country]
+	// Deterministic merge: chunk 0 first, so each name's list is the
+	// concatenation of its per-chunk lists in input order.
+	for _, partial := range partials {
+		for country, countryMap := range partial {
+			mainCountryMap, exists := index[country]
+			if !exists {
+				index[country] = countryMap
+				continue
+			}
+			for name, cityList := range countryMap {
+				mainCityList, exists := mainCountryMap[name]
 				if !exists {
-					index[country] = countryMap
-				} else {
-					// Merge maps efficiently
-					for name, cityList := range countryMap {
-						mainCityList, exists := mainCountryMap[name]
-						if !exists {
-							mainCountryMap[name] = cityList
-						} else {
-							// Pre-allocate merged slice to avoid multiple reallocations
-							merged := make([]*city.City, len(mainCityList), len(mainCityList)+len(cityList))
-							copy(merged, mainCityList)
-							mainCountryMap[name] = append(merged, cityList...)
-						}
-					}
+					mainCountryMap[name] = cityList
+					continue
 				}
+				merged := make([]*city.City, len(mainCityList), len(mainCityList)+len(cityList))
+				copy(merged, mainCityList)
+				mainCountryMap[name] = append(merged, cityList...)
 			}
 		}
-	}()
-
-	// Send work chunks to workers
-	for i := 0; i < len(cities); i += chunkSize {
-		end := i + chunkSize
-		if end > len(cities) {
-			end = len(cities)
-		}
-		workChan <- workItem{cities: cities[i:end]}
 	}
-	close(workChan)
-
-	// Wait for all workers to complete
-	wg.Wait()
-	close(mergeChan)
-
-	// Wait for merger to complete
-	mergeWg.Wait()
 }
 
 // getMemoryUsageMB returns current memory usage in MB
