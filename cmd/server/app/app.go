@@ -23,7 +23,8 @@ func Config() fiber.Config {
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 		BodyLimit:    1 << 20, // 1MB; POST /nearest/batch peaks at ~6KB for 100 points
-		ETag:         true,
+		// ETag is the ETag() middleware (same tags, same 304s), not fiber's
+		// deprecated Config.ETag, which rebuilds a CRC table per response.
 		// fasthttp's default admission control (256k) is effectively
 		// unbounded: each accepted connection costs a goroutine plus
 		// buffers, so a flood ties up memory the multi-GB index heap cannot
@@ -43,6 +44,7 @@ func New(f *finder.Finder, reg *metrics.Registry, requestLog *log.Logger) *fiber
 	// all other middleware so it wraps the full handler chain.
 	a.Use(recover.New())
 	a.Use(RequestLogger(requestLog))
+	a.Use(ETag())
 	routes.SetupRoutesWithMetrics(a, f, reg)
 	return a
 }
