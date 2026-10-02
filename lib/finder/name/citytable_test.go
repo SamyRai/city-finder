@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+	"unsafe"
 
 	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/stretchr/testify/assert"
@@ -153,4 +155,27 @@ func TestShareCitiesRemapsAPermutedTable(t *testing.T) {
 	for _, m := range prefix {
 		assert.Equal(t, m.Name, "Alt "+m.Name[len("Alt "):], "prefix pairs stay well-formed")
 	}
+}
+
+// TestShareCitiesSharesPrimaryNameBytes pins that after ShareCities a
+// primary-name key and its City's Name are the same string bytes (held
+// once), while lookups are unchanged.
+func TestShareCitiesSharesPrimaryNameBytes(t *testing.T) {
+	cities := shareFixture(3_000)
+	f := BuildIndex(cities)
+	table := rowTable(cities)
+	require.NoError(t, f.ShareCities(table))
+
+	tbl := f.countries[table[5].Country]
+	i, found := slices.BinarySearch(tbl.names, table[5].Name)
+	require.True(t, found)
+	// The key must point at SOME city's Name bytes among its ids.
+	shared := false
+	for _, id := range tbl.ids[tbl.starts[i]:tbl.starts[i+1]] {
+		if unsafe.StringData(table[id].Name) == unsafe.StringData(tbl.names[i]) {
+			shared = true
+		}
+	}
+	assert.True(t, shared, "primary-name key must share its City's bytes")
+	assert.Equal(t, table[5].Name, f.CityByName(table[5].Name, table[5].Country).Name)
 }

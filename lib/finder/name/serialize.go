@@ -281,10 +281,9 @@ func DeserializeIndex(filepath string) (*Finder, error) {
 	finder := NewNameFinder()
 	finder.cities = cityTable{base: payload.Cities, baseCount: payload.CityCount, fingerprint: payload.Fingerprint}
 	if payload.Cities != nil {
-		// gob allocates a fresh backing for every decoded string, so each
-		// City carries its own copy of a country code shared by millions of
-		// cities; one intern pass collapses them to one backing per country.
-		internDecodedCountries(payload.Cities)
+		// gob allocates a fresh backing for every decoded string; one intern
+		// pass collapses the country codes to one backing per country.
+		city.InternCountries(payload.Cities)
 	}
 	for i := range payload.Extra {
 		finder.cities.add(payload.Extra[i])
@@ -301,14 +300,4 @@ func DeserializeIndex(filepath string) (*Finder, error) {
 		finder.countries[country] = buildTable(refs)
 	}
 	return finder, nil
-}
-
-// internDecodedCountries interns the Country field of every decoded city.
-// gob transmits each string occurrence with its own backing array, so the
-// table carries ~13.47M copies of ~250 country codes; the pass collapses them
-// to one shared backing per country. It must run before the finder is shared.
-func internDecodedCountries(cities []city.City) {
-	for i := range cities {
-		cities[i].Country = internString(cities[i].Country)
-	}
 }

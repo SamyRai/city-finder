@@ -137,7 +137,7 @@ func TestDeserializeInterningSavesMemory(t *testing.T) {
 		return
 	}
 
-	internDecodedCountries(cities)
+	city.InternCountries(cities)
 	interned := internHeap(t)
 
 	saved := int64(decoded) - int64(interned)

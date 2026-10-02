@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unique"
 
 	"github.com/SamyRai/cityFinder/lib/city"
 )
@@ -278,8 +279,13 @@ func LoadGeoNamesCSVWithOptions(filepath string, opts LoadOptions) ([]city.Spati
 			Latitude:   lat,
 			Longitude:  lon,
 			Population: population,
-			Name:       field2,
-			Country:    field9,
+			// Name and Country are substrings of lineStr: storing them as-is
+			// would pin the whole source line (alternate names included) for
+			// as long as the City lives — i.e. for the process lifetime, since
+			// the S2 index keeps every City. Clone the name; intern the
+			// country (~250 distinct values).
+			Name:    strings.Clone(field2),
+			Country: unique.Make(field9).Value(),
 			// AltNames removed from City struct for memory optimization
 		}
 

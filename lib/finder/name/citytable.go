@@ -167,9 +167,19 @@ func (nf *Finder) ShareCities(table []city.City) error {
 	nf.mutex.Lock()
 	defer nf.mutex.Unlock()
 	remap, err := nf.cities.share(table)
-	if err != nil || remap == nil {
+	if err != nil {
 		return err
 	}
+	if remap != nil {
+		nf.remapIDsLocked(remap)
+	}
+	nf.shareKeyBytesLocked()
+	return nil
+}
+
+// remapIDsLocked rewrites every stored base id through remap (see share).
+// Extras (post-build cities, ids >= len(remap)) keep their ids.
+func (nf *Finder) remapIDsLocked(remap []int32) {
 	apply := func(ids []int32) {
 		for i, id := range ids {
 			if int(id) < len(remap) { // extras (post-build cities) keep their ids
@@ -185,7 +195,25 @@ func (nf *Finder) ShareCities(table []city.City) error {
 			apply(ids)
 		}
 	}
-	return nil
+}
+
+// shareKeyBytesLocked points every sorted-table key that equals one of its
+// cities' Name at that City's string, so the text of a primary name is held
+// once (in the shared table) instead of once more as an index key. Keys are
+// compared by value, so lookups are unaffected; alternate names have no City
+// string to share and keep their own bytes.
+func (nf *Finder) shareKeyBytesLocked() {
+	base := nf.cities.base
+	for _, t := range nf.countries {
+		for i, key := range t.names {
+			for _, id := range t.ids[t.starts[i]:t.starts[i+1]] {
+				if int(id) < len(base) && base[id].Name == key {
+					t.names[i] = base[id].Name
+					break
+				}
+			}
+		}
+	}
 }
 
 // OwnsCityTable reports whether the index holds its own copy of the city
