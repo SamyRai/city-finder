@@ -8,3 +8,4 @@ datasets/
 /*.log
 benchmark_output*.log
 
+bench-out/

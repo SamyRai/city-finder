@@ -45,6 +45,13 @@ jobs:
       - name: Run tests
         run: go test -v -race ./...
 
+      # Every benchmark once, WITHOUT -race (instrumented binaries are 2-20x
+      # slower and not what ships). Correctness only: it proves benchmarks
+      # still build, find their fixtures and pass their own assertions. The
+      # numbers from a shared runner are noise and are deliberately ignored.
+      - name: Benchmark smoke run
+        run: benchmarks/bench.sh smoke
+
       - name: Run go vet
         run: go vet ./...
 
