@@ -1,7 +1,9 @@
 package routes
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http/httptest"
 	"strings"
@@ -264,4 +266,80 @@ func TestNearest_GetUnchangedThroughSharedCore(t *testing.T) {
 	status, body = get(t, app, "/nearest?lat=abc&lon=0")
 	assert.Equal(t, 400, status)
 	assert.Equal(t, "Invalid latitude", body)
+}
+
+// TestNearestBatch_ParallelOrderStable pins the concurrent execution path:
+// a mixed 60-point batch (distance, population, admin, ocean, duplicate
+// points) must return results parallel to the request, each byte-identical
+// to the GET response for the same point, regardless of completion order.
+func TestNearestBatch_ParallelOrderStable(t *testing.T) {
+	app := setupTestApp(t, adminRouteNames)
+
+	type point struct {
+		lat, lon float64
+		rank     string
+		include  string
+	}
+	points := make([]point, 0, 60)
+	coords := [][2]float64{
+		{37.7749, -122.4194}, {39.5296, -119.8138}, {42.50729, 1.53414},
+		{0, -140}, {10, 90}, {-55, -120},
+	}
+	for i := 0; i < 60; i++ {
+		c := coords[i%len(coords)]
+		p := point{lat: c[0], lon: c[1]}
+		switch i % 4 {
+		case 1:
+			p.rank = "population"
+		case 2:
+			p.include = "admin"
+		case 3:
+			p.rank, p.include = "population", "admin"
+		}
+		points = append(points, p)
+	}
+
+	var body bytes.Buffer
+	body.WriteString(`{"points":[`)
+	for i, p := range points {
+		if i > 0 {
+			body.WriteByte(',')
+		}
+		fmt.Fprintf(&body, `{"lat":%g,"lon":%g`, p.lat, p.lon)
+		if p.rank != "" {
+			fmt.Fprintf(&body, `,"rank":%q`, p.rank)
+		}
+		if p.include != "" {
+			fmt.Fprintf(&body, `,"include":%q`, p.include)
+		}
+		body.WriteByte('}')
+	}
+	body.WriteString(`]}`)
+
+	req := httptest.NewRequest("POST", "/nearest/batch", &body)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req, 30000)
+	require.NoError(t, err)
+	require.Equal(t, 200, resp.StatusCode)
+
+	var parsed struct {
+		Results []json.RawMessage `json:"results"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&parsed))
+	require.Len(t, parsed.Results, len(points))
+
+	for i, raw := range parsed.Results {
+		p := points[i]
+		query := fmt.Sprintf("/nearest?lat=%g&lon=%g", p.lat, p.lon)
+		if p.rank != "" {
+			query += "&rank=" + p.rank
+		}
+		if p.include != "" {
+			query += "&include=" + p.include
+		}
+		st, bodyStr := get(t, app, query)
+		require.Equal(t, 200, st, "point %d: %s", i, query)
+		assert.JSONEq(t, bodyStr, string(raw),
+			"point %d must equal the GET response for the same query", i)
+	}
 }

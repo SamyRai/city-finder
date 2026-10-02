@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -187,6 +188,12 @@ func executeNearest(f *finder.Finder, lat, lon float64, rank coordinates.Rank, i
 // population-gated lookups would hold a connection far longer than the
 // equivalent parallel GETs, so larger batches are a 400, not a slowdown.
 const maxBatchPoints = 100
+
+// maxBatchWorkers bounds the POST /nearest/batch fan-out. CPU-bound lookups
+// gain nothing beyond core count, and the population gate independently caps
+// the expensive class, so one worker per P (capped by the batch size) is the
+// honest ceiling.
+var maxBatchWorkers = runtime.GOMAXPROCS(0)
 
 // batchRequest is the POST /nearest/batch body: one point per lookup.
 type batchRequest struct {
@@ -409,9 +416,42 @@ func SetupRoutesWithMetrics(app *fiber.App, mainFinder *finder.Finder, reg *metr
 			queries = append(queries, query)
 		}
 
+		// Execute the points concurrently: lookups are independent, and a
+		// sequential batch of far-from-land rank=population points would run
+		// for minutes (each scan takes seconds). Fan-out is bounded by
+		// maxBatchWorkers; the expensive class stays additionally bounded by
+		// the populationGate inside executeNearest, exactly like parallel
+		// GETs would be. Results land at each point's index, so the response
+		// array stays parallel to the request regardless of completion
+		// order; the first saturated/error outcome in REQUEST order still
+		// fails the whole request.
+		responses := make([]nearestCityResponse, len(queries))
+		outcomes := make([]nearestOutcome, len(queries))
+		work := make(chan int)
+		workers := len(queries)
+		if workers > maxBatchWorkers {
+			workers = maxBatchWorkers
+		}
+		var wg sync.WaitGroup
+		wg.Add(workers)
+		for w := 0; w < workers; w++ {
+			go func() {
+				defer wg.Done()
+				for i := range work {
+					responses[i], outcomes[i] = executeNearest(
+						mainFinder, queries[i].lat, queries[i].lon,
+						queries[i].rank, queries[i].includeAdmin)
+				}
+			}()
+		}
+		for i := range queries {
+			work <- i
+		}
+		close(work)
+		wg.Wait()
+
 		results := make([]*nearestCityResponse, 0, len(queries))
-		for _, query := range queries {
-			response, outcome := executeNearest(mainFinder, query.lat, query.lon, query.rank, query.includeAdmin)
+		for i, outcome := range outcomes {
 			switch outcome {
 			case nearestSaturated:
 				// A saturated gate mid-batch fails the whole request. Slots
@@ -425,6 +465,7 @@ func SetupRoutesWithMetrics(app *fiber.App, mainFinder *finder.Finder, reg *metr
 			case nearestNotFound:
 				results = append(results, nil) // the batch form of GET's 404
 			default: // nearestOK
+				response := responses[i]
 				results = append(results, &response)
 			}
 		}
