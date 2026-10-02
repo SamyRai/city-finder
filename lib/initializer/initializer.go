@@ -488,6 +488,7 @@ func ensureFinders(cfg *config.Config, admin1NamesPath string) (*finder.Finder, 
 			nameRes.err = attachNameIndex(nameIndexPath, nameRes.finder, s2Res.finder.Cities)
 		}
 		if s2Res.err == nil && nameRes.err == nil && postalRes.err == nil {
+			migratePostalIndex(postalCodeIndexPath, postalRes.finder)
 			s2Finder := s2Res.finder
 			// Names are attached on every boot (warm or cold): the map is
 			// ~120 KB and deliberately not serialized with the index, so
@@ -712,7 +713,23 @@ func ensurePostalCodeIndex(postalCodeIndexPath string, data *datasetSource) (*po
 		}
 		return buildAndSerializePostalCodeIndex(postalCodeIndexPath, data)
 	}
+	migratePostalIndex(postalCodeIndexPath, postalCodeFinder)
 	return postalCodeFinder, nil
+}
+
+// migratePostalIndex rewrites a postal index loaded from a legacy file in
+// the current format (a one-time, in-place conversion; the loaded finder is
+// already in the compact layout). A failed write is logged and ignored: the
+// next boot retries.
+func migratePostalIndex(path string, f *postalCode.Finder) {
+	if !f.LegacyFormat() {
+		return
+	}
+	if err := f.SerializeIndex(path); err != nil {
+		log.Printf("Warning: migrating postal code index %s to the current format failed (will retry next boot): %v", path, err)
+		return
+	}
+	log.Printf("migrated postal code index %s to the current format", path)
 }
 
 func buildAndSerializePostalCodeIndex(postalCodeIndexPath string, data *datasetSource) (*postalCode.Finder, error) {

@@ -47,8 +47,7 @@ var testPostalCodeEntries = []dataLoader.PostalCodeEntry{
 func TestNewPostalCodeFinder(t *testing.T) {
 	finder := NewPostalCodeFinder()
 	assert.NotNil(t, finder)
-	assert.NotNil(t, finder.PostalCode)
-	assert.Empty(t, finder.PostalCode)
+	assert.Zero(t, finder.Len())
 }
 
 func TestAddPostalCode(t *testing.T) {
