@@ -152,7 +152,11 @@ func TestFuzzyDisabledOverThreshold(t *testing.T) {
 	if got := finder.CityByName("Pars", "FR"); got != nil {
 		t.Fatalf("typo lookup over the threshold must return nil, got %q", got.Name)
 	}
-	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+	// Generous wall: this only catches "did heavy work per miss" (a real
+	// regression is seconds-class); a single lookup's wall time on a shared
+	// runner is otherwise scheduling noise. The per-miss no-lock contract is
+	// asserted directly in the calibrated concurrency section below.
+	if elapsed := time.Since(start); elapsed > 1*time.Second {
 		t.Fatalf("disabled typo lookup must be a fast nil, took %v", elapsed)
 	}
 
@@ -192,7 +196,32 @@ func TestFuzzyDisabledOverThreshold(t *testing.T) {
 	}
 
 	// Concurrent exact lookups during typo misses must not block: the
-	// disabled path never takes the write lock.
+	// disabled path never takes the write lock (ensureFuzzyBuilt returns on
+	// the atomic state load alone, no mutex).
+	//
+	// The bound self-calibrates against a control run measured immediately
+	// below under identical conditions WITHOUT the miss goroutine. A shared
+	// CI runner can deschedule this goroutine for tens of milliseconds (one
+	// observed 59.6 ms outlier with a fixed 50 ms bound) — that is CPU
+	// starvation, not the blocking this gate hunts. A real regression — the
+	// miss path grabbing the write lock or running work per miss — shows up
+	// as worst ≫ control on every machine, quiet or loaded.
+	var worstControl atomic.Int64
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		s := time.Now()
+		if finder.CityByName("Paris", "FR") == nil {
+			t.Fatal("exact lookup must keep hitting with fuzzy disabled")
+		}
+		if d := int64(time.Since(s)); d > worstControl.Load() {
+			worstControl.Store(d)
+		}
+	}
+	bound := 5 * time.Duration(worstControl.Load())
+	if bound < 50*time.Millisecond {
+		bound = 50 * time.Millisecond // quiet machines keep today's sensitivity
+	}
+
 	stop := make(chan struct{})
 	missDone := make(chan struct{})
 	go func() {
@@ -207,7 +236,7 @@ func TestFuzzyDisabledOverThreshold(t *testing.T) {
 		}
 	}()
 	var worstExact atomic.Int64
-	deadline := time.Now().Add(200 * time.Millisecond)
+	deadline = time.Now().Add(200 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		s := time.Now()
 		if finder.CityByName("Paris", "FR") == nil {
@@ -219,9 +248,12 @@ func TestFuzzyDisabledOverThreshold(t *testing.T) {
 	}
 	close(stop)
 	<-missDone
-	if worst := time.Duration(worstExact.Load()); worst > 50*time.Millisecond {
-		t.Fatalf("exact lookups stalled behind a disabled typo miss: worst %v", worst)
+	if worst := time.Duration(worstExact.Load()); worst > bound {
+		t.Fatalf("exact lookups stalled behind a disabled typo miss: worst %v > bound %v (control worst %v)",
+			worst, bound, time.Duration(worstControl.Load()))
 	}
+	t.Logf("disabled-miss concurrency: control worst %v, worst alongside misses %v, bound %v",
+		time.Duration(worstControl.Load()), time.Duration(worstExact.Load()), bound)
 }
 
 // TestFuzzyMissDuringBuildIsNotCached pins the building-window contract: while
