@@ -1,0 +1,65 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/SamyRai/cityFinder/lib/finder/name
+cpu: Apple M2
+BenchmarkCityByName-8        	 5035546	       242.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCityByName-8        	 4371175	       279.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCityByName-8        	 4251627	       278.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCityByName-8        	 4203854	       279.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCityByName-8        	 4936660	       238.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCityByName-8        	 5085610	       255.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCityByName-8        	 4740991	       239.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCityByName-8        	 5258756	       236.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCityByName-8        	 5414012	       221.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCityByName-8        	 4851921	       227.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCityByNameFuzzy-8   	    8624	    135952 ns/op	   47159 B/op	      55 allocs/op
+BenchmarkCityByNameFuzzy-8   	    9256	    128925 ns/op	   46949 B/op	      55 allocs/op
+BenchmarkCityByNameFuzzy-8   	    7662	    156184 ns/op	   47140 B/op	      55 allocs/op
+BenchmarkCityByNameFuzzy-8   	    7881	    153066 ns/op	   47160 B/op	      55 allocs/op
+BenchmarkCityByNameFuzzy-8   	    7543	    155346 ns/op	   47241 B/op	      55 allocs/op
+BenchmarkCityByNameFuzzy-8   	    8643	    143099 ns/op	   47138 B/op	      55 allocs/op
+BenchmarkCityByNameFuzzy-8   	    7664	    155621 ns/op	   47239 B/op	      55 allocs/op
+BenchmarkCityByNameFuzzy-8   	    9037	    130903 ns/op	   47076 B/op	      55 allocs/op
+BenchmarkCityByNameFuzzy-8   	    8638	    137513 ns/op	   47195 B/op	      55 allocs/op
+BenchmarkCityByNameFuzzy-8   	    9324	    131060 ns/op	   47122 B/op	      55 allocs/op
+BenchmarkNGramSearch-8       	      44	  24601138 ns/op	 2438844 B/op	     569 allocs/op
+BenchmarkNGramSearch-8       	      45	  26148625 ns/op	 2438826 B/op	     569 allocs/op
+BenchmarkNGramSearch-8       	      46	  25660891 ns/op	 2438810 B/op	     569 allocs/op
+BenchmarkNGramSearch-8       	      46	  22065051 ns/op	 2438806 B/op	     569 allocs/op
+BenchmarkNGramSearch-8       	      50	  22911338 ns/op	 2438808 B/op	     569 allocs/op
+BenchmarkNGramSearch-8       	      50	  22108208 ns/op	 2438805 B/op	     569 allocs/op
+BenchmarkNGramSearch-8       	      50	  24596830 ns/op	 2438805 B/op	     569 allocs/op
+BenchmarkNGramSearch-8       	      50	  22905589 ns/op	 2438835 B/op	     569 allocs/op
+BenchmarkNGramSearch-8       	      49	  22138509 ns/op	 2438812 B/op	     569 allocs/op
+BenchmarkNGramSearch-8       	      50	  22270982 ns/op	 2438804 B/op	     569 allocs/op
+BenchmarkPrefixNames/sparse-hit-8         	 3410762	       359.4 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/sparse-hit-8         	 3070558	       375.0 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/sparse-hit-8         	 3257436	       366.9 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/sparse-hit-8         	 3061435	       384.3 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/sparse-hit-8         	 3271214	       356.8 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/sparse-hit-8         	 3297276	       355.4 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/sparse-hit-8         	 3373218	       353.1 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/sparse-hit-8         	 3373461	       358.7 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/sparse-hit-8         	 3287528	       350.9 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/sparse-hit-8         	 3387993	       354.8 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/dense-hit-8          	 5441920	       216.4 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/dense-hit-8          	 5389784	       217.2 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/dense-hit-8          	 5142975	       235.8 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/dense-hit-8          	 4898862	       231.9 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/dense-hit-8          	 5474550	       220.6 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/dense-hit-8          	 5332404	       216.0 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/dense-hit-8          	 5452603	       214.4 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/dense-hit-8          	 5546192	       214.0 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/dense-hit-8          	 5605392	       213.0 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/dense-hit-8          	 5514848	       219.9 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/miss-8               	 7789426	       149.6 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/miss-8               	 7656908	       151.9 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/miss-8               	 6899397	       154.8 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/miss-8               	 8164275	       149.8 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/miss-8               	 7716392	       149.1 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/miss-8               	 7871964	       148.5 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/miss-8               	 7832716	       149.0 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/miss-8               	 8030898	       153.4 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/miss-8               	 7415776	       151.0 ns/op	     240 B/op	       1 allocs/op
+BenchmarkPrefixNames/miss-8               	 7448523	       150.9 ns/op	     240 B/op	       1 allocs/op
+PASS

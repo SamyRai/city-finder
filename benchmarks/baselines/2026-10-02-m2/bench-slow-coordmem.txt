@@ -1,0 +1,8 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/SamyRai/cityFinder/lib/finder/coordinates
+cpu: Apple M2
+BenchmarkMemoryUsage/10K-8         	       1	   9224834 ns/op	         0.9799 MB/op	        14.38 MB_total/op	15081672 B/op	   79308 allocs/op
+BenchmarkMemoryUsage/100K-8        	       1	  41177458 ns/op	         9.258 MB/op	       135.8 MB_total/op	142430160 B/op	  198168 allocs/op
+BenchmarkMemoryUsage/1M-8          	       1	 386099250 ns/op	        92.69 MB/op	      1666 MB_total/op	1746542264 B/op	 1146651 allocs/op
+PASS

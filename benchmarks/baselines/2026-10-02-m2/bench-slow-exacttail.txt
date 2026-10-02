@@ -1,0 +1,18 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/SamyRai/cityFinder/lib/finder/name
+cpu: Apple M2
+BenchmarkCityByNameExactTail-8           	 1699933	       700.3 ns/op	       667.0 p50-ns	      1291 p99-ns	      7958 p999-ns	       0 B/op	       0 allocs/op
+--- BENCH: BenchmarkCityByNameExactTail-8
+    exact_tail_bench_test.go:67: building index (untimed)
+BenchmarkCityByNameExactTailParallel-8   	 8361506	       166.5 ns/op	       0 B/op	       0 allocs/op
+--- BENCH: BenchmarkCityByNameExactTailParallel-8
+    exact_tail_bench_test.go:115: building index (untimed)
+    exact_tail_bench_test.go:115: building index (untimed)
+    exact_tail_bench_test.go:115: building index (untimed)
+    exact_tail_bench_test.go:115: building index (untimed)
+    exact_tail_bench_test.go:115: building index (untimed)
+BenchmarkMemoryUsage/10K-8               	1000000000	         0.02229 ns/op	         0.002937 MB/op	        20.69 MB_total/op	       0 B/op	       0 allocs/op
+BenchmarkMemoryUsage/100K-8              	1000000000	         0.1882 ns/op	         0.002617 MB/op	        80.28 MB_total/op	       0 B/op	       0 allocs/op
+BenchmarkMemoryUsage/1M-8                	       1	2083713084 ns/op	         0.005821 MB/op	       772.4 MB_total/op	809924136 B/op	12295784 allocs/op
+PASS
