@@ -18,7 +18,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -63,76 +62,55 @@ func ensureDatasetsFolder(cfg *config.Config) error {
 // initLockName is the lock file serializing initializers per datasets folder.
 const initLockName = ".cityfinder-init.lock"
 
+// errLockHeld reports that another live process holds the init lock.
+var errLockHeld = errors.New("init lock held by another process")
+
 // acquireInitLock guards a datasets folder against concurrent boots. Two
 // cold-booting processes otherwise write the same fixed "<index>.gob.part"
 // paths: the second os.Create truncates the first's in-flight part file and
-// both rename, leaving interleaved garbage that only self-heals via the
-// corrupt-index rebuild after thrashing both boots (a real scenario under a
-// rolling update with maxSurge, where two pods share one PVC). The lock is an
-// O_EXCL-created file holding the owning pid; a lock whose owner is provably
-// dead (crashed process) is stolen. Living owner → fail fast: the caller
-// exits and the orchestrator restarts it once the first boot finishes.
+// both rename, leaving interleaved garbage (a real scenario under a rolling
+// update with maxSurge, where two pods share one PVC).
+//
+// The lock is an exclusive flock on the lock file (see lockExclusive): the
+// kernel releases it when the holder dies, so there is no stale-lock
+// detection to get wrong. (The previous pid-file lock refused forever after
+// an OOM-killed cold build: the restarted container is PID 1 again, and its
+// own pid in the file looked like a live foreign owner.) The file stays in
+// place between boots and holds the owner's pid as a diagnostic hint only.
+// Living holder → fail fast: the caller exits and the orchestrator restarts
+// it once the first boot finishes.
 func acquireInitLock(datasetsFolder string) (release func(), err error) {
 	lockPath := filepath.Join(datasetsFolder, initLockName)
-	for attempt := 0; ; attempt++ {
-		f, createErr := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if createErr == nil {
-			_, writeErr := fmt.Fprintf(f, "%d\n", os.Getpid())
-			closeErr := f.Close()
-			if writeErr != nil || closeErr != nil {
-				_ = os.Remove(lockPath)
-				return nil, fmt.Errorf("failed to write init lock %s: %v", lockPath, errors.Join(writeErr, closeErr))
-			}
-			return func() { _ = os.Remove(lockPath) }, nil
-		}
-		if !os.IsExist(createErr) {
-			return nil, fmt.Errorf("failed to create init lock %s: %w", lockPath, createErr)
-		}
-
-		pid, _ := readLockPID(lockPath)
-		if pid > 0 && processAlive(pid) {
-			return nil, fmt.Errorf("another initializer (pid %d) is running against datasets folder %s; refusing to race it (delete %s if this is stale)", pid, datasetsFolder, lockPath)
-		}
-		if attempt >= 1 {
-			// The stale lock could not be stolen on the first try (another
-			// process raced us to it) — surface instead of spinning.
-			return nil, fmt.Errorf("cannot acquire init lock %s: acquire raced after stale-lock removal", lockPath)
-		}
-		log.Printf("removing stale init lock %s (pid %d is not running)", lockPath, pid)
-		if rmErr := os.Remove(lockPath); rmErr != nil {
-			return nil, fmt.Errorf("failed to remove stale init lock %s: %w", lockPath, rmErr)
-		}
+	f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open init lock %s: %w", lockPath, err)
 	}
+	if err := lockExclusive(f); err != nil {
+		_ = f.Close()
+		if errors.Is(err, errLockHeld) {
+			holder := "unknown pid"
+			if pid, perr := readLockPID(lockPath); perr == nil {
+				holder = fmt.Sprintf("pid %d", pid)
+			}
+			return nil, fmt.Errorf("another initializer (%s) is running against datasets folder %s; refusing to race it", holder, datasetsFolder)
+		}
+		return nil, fmt.Errorf("failed to lock %s: %w", lockPath, err)
+	}
+	// Best-effort pid hint for the error message above; the lock itself is
+	// the flock, not this content.
+	if err := f.Truncate(0); err == nil {
+		_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
+	}
+	return func() { _ = f.Close() }, nil // closing the descriptor releases the flock
 }
 
-// readLockPID parses the pid stored in the lock file; any read/parse error
-// yields pid 0, which acquireInitLock treats as not-alive (stale).
+// readLockPID parses the pid hint stored in the lock file.
 func readLockPID(lockPath string) (int, error) {
 	data, err := os.ReadFile(lockPath)
 	if err != nil {
 		return 0, err
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		return 0, err
-	}
-	return pid, nil
-}
-
-// processAlive reports whether pid names a running process. Signal 0 checks
-// existence without delivering anything; EPERM means the process exists but
-// belongs to another user. (Unix semantics — the server targets Linux
-// containers and darwin development.)
-func processAlive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	sigErr := proc.Signal(syscall.Signal(0))
-	return sigErr == nil || errors.Is(sigErr, syscall.EPERM)
+	return strconv.Atoi(strings.TrimSpace(string(data)))
 }
 
 // ensureAdmin1NamesPath resolves the OPTIONAL admin1-names dataset path
