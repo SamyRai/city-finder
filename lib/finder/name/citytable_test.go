@@ -88,6 +88,9 @@ func TestSharedIndexSerializesWithoutCitiesAndReattaches(t *testing.T) {
 	detached, err := DeserializeIndex(externalPath)
 	require.NoError(t, err)
 	assert.Nil(t, detached.CityByName("Place 5", "US"), "a detached index must not resolve ids")
+	for _, m := range detached.PrefixNames("US", "Place", 10) {
+		assert.NotNil(t, m.City, "a detached index must never return a match without a city")
+	}
 	assert.Error(t, detached.SerializeIndex(filepath.Join(dir, "x.gob")), "a detached index cannot be re-serialized")
 
 	wrong := rowTable(cities)

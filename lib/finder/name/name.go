@@ -950,7 +950,9 @@ func (nf *Finder) PrefixNames(countryCode, prefix string, maxNames int) []Prefix
 			if len(ids) == 0 {
 				continue // zero-ref keys carry no city to pair
 			}
-			matches = append(matches, PrefixMatch{Name: t.names[i], City: nf.cities.at(ids[0])})
+			if c := nf.cities.at(ids[0]); c != nil { // nil only while detached
+				matches = append(matches, PrefixMatch{Name: t.names[i], City: c})
+			}
 		}
 	}
 
@@ -967,7 +969,9 @@ func (nf *Finder) PrefixNames(countryCode, prefix string, maxNames int) []Prefix
 			if len(ids) == 0 {
 				continue
 			}
-			matches = append(matches, PrefixMatch{Name: name, City: nf.cities.at(ids[0])})
+			if c := nf.cities.at(ids[0]); c != nil {
+				matches = append(matches, PrefixMatch{Name: name, City: c})
+			}
 		}
 	}
 	return matches
