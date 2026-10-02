@@ -8,6 +8,13 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- `/metrics` scrapes no longer race on a shared `runtime/metrics` sample
+  slice (the heap-gauge read is per-scrape now); pinned by a concurrent-
+  scrape test under `-race`. Found by the 2026-10-02 correctness review;
+  introduced with the gauges in 1.3.1. Gauge values unchanged.
+
 ## [1.3.1] - 2026-10-02
 
 ### Fixed
