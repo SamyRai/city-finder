@@ -69,19 +69,19 @@ func uniformSphereQueries(n int, seed int64) []benchQueryPoint {
 }
 
 // silenceIndexLogs discards the package's log output (BuildIndex logs
-// progress, (de)serialization logs timings) for the rest of the benchmark.
+// progress, (de)serialization logs timings) for the rest of the test or benchmark.
 // The log calls still format their messages — only the terminal write is
 // dropped — so measured ops keep their logging CPU while the output stays
 // parseable by benchstat.
-func silenceIndexLogs(b *testing.B) {
+func silenceIndexLogs(b testing.TB) {
 	b.Helper()
 	old := log.Writer()
 	log.SetOutput(io.Discard)
 	b.Cleanup(func() { log.SetOutput(old) })
 }
 
-// buildBenchIndex builds an index over cities, failing the benchmark on error.
-func buildBenchIndex(b *testing.B, cities []city.SpatialCity) *S2Finder {
+// buildBenchIndex builds an index over cities, failing the test or benchmark on error.
+func buildBenchIndex(b testing.TB, cities []city.SpatialCity) *S2Finder {
 	b.Helper()
 	finder, err := BuildIndex(cities)
 	if err != nil {

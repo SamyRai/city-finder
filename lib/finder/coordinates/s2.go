@@ -525,6 +525,22 @@ func (f *S2Finder) nearest(lat, lon float64, rank Rank) (*city.City, int, float6
 	return &nearestCity, int(cityIndex), distanceKm, nil
 }
 
+// chordBoundSlack shrinks chordLowerBoundKm by a relative margin far above
+// the rounding error of the asin path (~1e-16), so the computed lower bound
+// never exceeds the computed true distance.
+const chordBoundSlack = 1e-9
+
+// chordLowerBoundKm is a cheap lower bound on the great-circle distance a
+// chord spans: a chord is never longer than its arc (2*asin(c/2) >= c), so
+// sqrt(length2) on the unit sphere bounds the angle from below without the
+// asin. Scoring an entry at this distance gives an upper bound on its exact
+// gravity score; float division and multiplication are monotone, so when
+// that upper bound cannot beat a running maximum, neither can the exact
+// score, and the entry is skipped with no change to any answer.
+func chordLowerBoundKm(chord s1.ChordAngle) float64 {
+	return math.Sqrt(float64(chord)) * earthRadiusKm * (1 - chordBoundSlack)
+}
+
 // kmToChordAngle converts a great-circle kilometer radius on the finder's
 // sphere into the ChordAngle distance the s2 query API uses.
 func kmToChordAngle(km float64) s1.ChordAngle {
@@ -578,7 +594,11 @@ func (f *S2Finder) populationOutsideBound(radiusKm float64, targetPoint s2.Point
 			// Outside the disc (strictly beyond chord(R), which the query's
 			// successor-epsilon limit treats as excluded): score it exactly
 			// through the same chord->angle->km path the query's own results
-			// are scored by.
+			// are scored by — unless its score at the chord lower bound
+			// already cannot raise the bound (the common case: far entries).
+			if lower := chordLowerBoundKm(chord); float64(entry.population)/(lower*lower+1.0) <= bound {
+				continue
+			}
 			distanceKm := chord.Angle().Radians() * earthRadiusKm
 			if score := float64(entry.population) / (distanceKm*distanceKm + 1.0); score > bound {
 				bound = score
@@ -768,23 +788,7 @@ func (f *S2Finder) anchoredByPopulation(targetPoint s2.Point, queryAll func(radi
 		return none, 0, false
 	}
 
-	// W = argmax gravity score over the table, exactly scored at true chord
-	// distances through the same chord->angle->km path the query's own results
-	// are scored by. The table is population-descending, so once an entry's
-	// raw population cannot beat the best score found, no later entry can
-	// either (score <= population) and the scan stops.
-	sW := 0.0
-	dW := 0.0
-	for _, entry := range f.topPopulations {
-		if float64(entry.population) <= sW {
-			break
-		}
-		chord := s2.ChordAngleBetweenPoints(entry.point, targetPoint)
-		distanceKm := chord.Angle().Radians() * earthRadiusKm
-		if score := float64(entry.population) / (distanceKm*distanceKm + 1.0); score > sW {
-			sW, dW = score, distanceKm
-		}
-	}
+	sW, dW := f.tableAnchor(targetPoint)
 	if sW <= 0 {
 		return none, 0, false // unreachable: table entries carry population > 0
 	}
@@ -812,6 +816,30 @@ func (f *S2Finder) anchoredByPopulation(targetPoint s2.Point, queryAll func(radi
 		return none, 0, false
 	}
 	return f.bestPopulationRank(results), radiusKm, true
+}
+
+// tableAnchor returns W of anchoredByPopulation: the best gravity score over
+// the top-K table (sW) and that city's distance (dW), exactly scored at true
+// chord distances through the same chord->angle->km path the query's own
+// results are scored by. The table is population-descending, so once an
+// entry's raw population cannot beat the best score found, no later entry
+// can either (score <= population) and the scan stops. Entries that cannot
+// beat sW even at their chord lower bound skip the asin (chordLowerBoundKm).
+func (f *S2Finder) tableAnchor(targetPoint s2.Point) (sW, dW float64) {
+	for _, entry := range f.topPopulations {
+		if float64(entry.population) <= sW {
+			break
+		}
+		chord := s2.ChordAngleBetweenPoints(entry.point, targetPoint)
+		if lower := chordLowerBoundKm(chord); float64(entry.population)/(lower*lower+1.0) <= sW {
+			continue
+		}
+		distanceKm := chord.Angle().Radians() * earthRadiusKm
+		if score := float64(entry.population) / (distanceKm*distanceKm + 1.0); score > sW {
+			sW, dW = score, distanceKm
+		}
+	}
+	return sW, dW
 }
 
 // bestPopulationRank returns the result with the highest gravity-model score
