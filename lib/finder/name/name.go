@@ -3,6 +3,7 @@ package name
 import (
 	"bufio"
 	"bytes"
+	"container/list"
 	"encoding/gob"
 	"errors"
 	"fmt"
@@ -35,6 +36,9 @@ func internString(s string) string {
 type fuzzySearchResult struct {
 	candidates []string
 	timestamp  time.Time
+	// age is this entry's element in Finder.fuzzyCacheAge, which orders
+	// entries oldest-first so eviction is O(1) instead of a full-map scan.
+	age *list.Element
 }
 
 const (
@@ -180,7 +184,8 @@ type Finder struct {
 	ngrams        *ngramIndex                   // Immutable q-gram fuzzy index (lazy-built, never serialized)
 	fuzzyOverflow []string                      // Names added after the last fuzzy build; linearly scanned until the next build folds them in
 	fuzzyCache    map[string]*fuzzySearchResult // Cache for fuzzy search results
-	cacheMutex    sync.RWMutex                  // Mutex for fuzzy search cache
+	fuzzyCacheAge list.List                     // fuzzyCache keys, oldest insertion first (values are string keys)
+	cacheMutex    sync.RWMutex                  // Mutex for fuzzy search cache and fuzzyCacheAge
 	mutex         sync.RWMutex                  // Mutex for thread-safe operations
 	fuzzyState    atomic.Int32                  // Lazy fuzzy-index state (fuzzyNotBuilt*, above); runtime-only, not serialized
 }
@@ -509,7 +514,12 @@ func (nf *Finder) buildFromIndexMap(index map[string]map[string][]*city.City) {
 
 // AddCity adds a city to the NameFinder (thread-safe)
 func (nf *Finder) AddCity(spatialCity city.SpatialCity) {
-	names := append(spatialCity.AltNames, spatialCity.Name)
+	// A fresh slice, never append(spatialCity.AltNames, ...): when the
+	// caller's AltNames has spare capacity, that append would write the
+	// primary name into the caller's backing array.
+	names := make([]string, 0, len(spatialCity.AltNames)+1)
+	names = append(names, spatialCity.AltNames...)
+	names = append(names, spatialCity.Name)
 	nf.mutex.Lock()
 	nf.addOverflowLocked(spatialCity.Country, names, spatialCity.City)
 	nf.mutex.Unlock()
@@ -857,43 +867,43 @@ func (nf *Finder) getCachedFuzzySearch(query string, maxDistance int) []string {
 
 	// Cache the result
 	nf.cacheMutex.Lock()
-	if len(nf.fuzzyCache) >= maxFuzzyCacheEntries {
-		nf.evictFuzzyCacheLocked()
-	}
-	nf.fuzzyCache[cacheKey] = &fuzzySearchResult{
-		candidates: candidates,
-		timestamp:  time.Now(),
-	}
+	nf.storeFuzzyCacheLocked(cacheKey, candidates, time.Now())
 	nf.cacheMutex.Unlock()
 
 	return candidates
 }
 
-// evictFuzzyCacheLocked makes room for one new cache entry. Expired entries
-// are dropped first; if the cache is still at capacity the oldest entry is
-// evicted (linear scan, bounded by maxFuzzyCacheEntries). The caller must
-// hold cacheMutex for writing.
-func (nf *Finder) evictFuzzyCacheLocked() {
-	now := time.Now()
-	for key, cached := range nf.fuzzyCache {
-		if now.Sub(cached.timestamp) >= fuzzyCacheTTL {
-			delete(nf.fuzzyCache, key)
+// storeFuzzyCacheLocked inserts (or replaces) one cache entry and keeps the
+// cache bounded at maxFuzzyCacheEntries. The caller must hold cacheMutex for
+// writing.
+//
+// Entries are never refreshed in place — a key is only (re)written after a
+// miss — so insertion order is age order, and fuzzyCacheAge's front is always
+// the oldest live entry. That makes both eviction rules O(1) per removal:
+// expired entries are dropped from the front, then the oldest entry if the
+// cache is still at its cap. The previous implementation scanned the whole
+// map (twice) on every insert at capacity, which at the 10k cap cost more
+// than the fuzzy search it was caching under a churning typo workload (see
+// BenchmarkCityByNameFuzzy/cache-churn).
+func (nf *Finder) storeFuzzyCacheLocked(key string, candidates []string, now time.Time) {
+	if prev, exists := nf.fuzzyCache[key]; exists {
+		// An expired entry being recomputed: drop its stale age slot.
+		nf.fuzzyCacheAge.Remove(prev.age)
+		delete(nf.fuzzyCache, key)
+	}
+	for front := nf.fuzzyCacheAge.Front(); front != nil; front = nf.fuzzyCacheAge.Front() {
+		oldestKey := front.Value.(string)
+		expired := now.Sub(nf.fuzzyCache[oldestKey].timestamp) >= fuzzyCacheTTL
+		if !expired && len(nf.fuzzyCache) < maxFuzzyCacheEntries {
+			break
 		}
-	}
-	if len(nf.fuzzyCache) < maxFuzzyCacheEntries {
-		return
-	}
-
-	oldestKey := ""
-	var oldest time.Time
-	found := false
-	for key, cached := range nf.fuzzyCache {
-		if !found || cached.timestamp.Before(oldest) {
-			oldestKey, oldest, found = key, cached.timestamp, true
-		}
-	}
-	if found {
+		nf.fuzzyCacheAge.Remove(front)
 		delete(nf.fuzzyCache, oldestKey)
+	}
+	nf.fuzzyCache[key] = &fuzzySearchResult{
+		candidates: candidates,
+		timestamp:  now,
+		age:        nf.fuzzyCacheAge.PushBack(key),
 	}
 }
 

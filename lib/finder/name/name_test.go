@@ -51,3 +51,20 @@ func TestFinder_SerializeDeserialize(t *testing.T) {
 		assert.Equal(t, "Test City", got.Name)
 	}
 }
+
+// TestAddCityDoesNotWriteCallerAltNames pins that AddCity never appends into
+// the caller's AltNames backing array: with spare capacity, a plain
+// append(AltNames, Name) would overwrite the element past len.
+func TestAddCityDoesNotWriteCallerAltNames(t *testing.T) {
+	backing := make([]string, 1, 2)
+	backing[0] = "Alt"
+	spare := backing[:2]
+	spare[1] = "caller-owned"
+
+	finder := NewNameFinder()
+	finder.AddCity(city.SpatialCity{City: city.City{Name: "Primary", Country: "TC"}, AltNames: backing})
+
+	assert.Equal(t, "caller-owned", spare[1], "AddCity must not write past the caller's AltNames length")
+	assert.NotNil(t, finder.CityByName("Primary", "TC"))
+	assert.NotNil(t, finder.CityByName("Alt", "TC"))
+}
