@@ -5,9 +5,12 @@ description: |
   Public, read-only API: no secrets, no service accounts with token mount,
   no external auth.
 type: application
-# Chart version tracks the deployment packaging; appVersion tracks the server.
-version: 1.0.0
-appVersion: "1.0.0"
+# Chart version tracks the deployment packaging; appVersion tracks the server
+# and MUST equal the latest released version in CHANGELOG.md (the image tag
+# defaults to it). CI fails on drift; the release job fails on a tag that
+# does not match.
+version: 1.0.1
+appVersion: "1.3.1"
 home: https://github.com/SamyRai/cityFinder
 sources:
   - https://github.com/SamyRai/cityFinder
