@@ -8,6 +8,19 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `include_feature_classes` config key (default `""` = no filter): a
+  comma-separated GeoNames feature-class allowlist (`"P"` = populated
+  places only, `"P,A"` = places + admin divisions; valid letters
+  A P H L R S T U V, invalid entries fail config load). Complements
+  `exclude_admin_divisions`; applies at dataset load/index rebuild and is
+  honored by both the initializer and `cmd/build-index`.
+- `POST /nearest/batch` now executes points concurrently (bounded by
+  GOMAXPROCS; the population gate still caps the expensive class per
+  point). A batch of far-from-land `rank=population` points that ran for
+  minutes sequentially now completes in roughly its slowest single point.
+
 ## [1.2.0] - 2026-10-01
 
 ### Added
