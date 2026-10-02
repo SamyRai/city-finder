@@ -28,12 +28,13 @@ Before writing a benchmark, write the experiment down:
 ## 2. Layers: what each kind of measurement can claim
 
 ```
-production pass ─► HTTP app (core / production) ─► lib micro-benchmarks ─► pprof / trace
- (full GeoNames)      (cmd/server/app)               (lib/...)
+load test ─► production pass ─► HTTP app (core / production) ─► lib micro-benchmarks ─► pprof / trace
+(cmd/loadgen)  (full GeoNames)     (cmd/server/app)               (lib/...)
 ```
 
 | Layer | Where | Can claim | Cannot claim |
 |---|---|---|---|
+| **Load test** | `cmd/loadgen` against a running server: open model, constant arrival rate, rate sweep | saturation curve on that deployment — offered vs achieved, errors, p50…p99.9 per rate; the knee | anything about another deployment, hardware, network path or route mix |
 | **Production pass** | one-off harness over the full 13.47M-row dump: `initializer.Initialize` timed in-process, 10k random global points, 1k real name/postal keys | per-version latency distributions, boot time, heap, RSS at real scale on that machine | network latency, behaviour under load |
 | **HTTP app** | `cmd/server/app` benchmarks, `core` and `production` variants | per-request in-process cost of handlers + middleware (production − core = middleware cost) | TCP/TLS/kernel cost, throughput under load, tail latency at saturation |
 | **Micro** | `lib/...` benchmarks | relative change of one operation on synthetic fixtures, on one machine | production latency, absolute numbers, anything about another machine |
@@ -48,8 +49,7 @@ The rules that follow from this table:
   test (constant arrival rate, so a stalled server is not hidden by a client
   that politely waits — *coordinated omission*). Report offered load,
   achieved throughput, errors and p50/p95/p99 together, as a curve up to the
-  saturation knee. No such load test is committed yet. Until one is, nothing
-  in this repo supports a claim about latency under load.
+  saturation knee — `cmd/loadgen` does exactly this (§4, "Load testing").
 - Name experiments after what they include. `BenchmarkNGramSearch` measures a
   cache-bypassed, maximal-skew d2 walk. It is not "fuzzy search performance".
 
@@ -150,6 +150,52 @@ What the script guarantees:
   `BENCHSTAT`).
 
 Results land in `bench-out/` (gitignored).
+
+### Load testing
+
+`cmd/loadgen` measures the service under load with an **open workload
+model**:
+
+- **Arrivals are independent of responses.** Requests arrive at a constant
+  rate and keep arriving while the server stalls, as real traffic does.
+- **Latency starts at the intended send time** (`start + i/rate`), so any
+  backlog lands in the distribution instead of disappearing. A closed loop
+  (send, wait, send) stops generating load during a stall and reports a
+  flattering distribution; this is *coordinated omission*.
+- **Each rate is held for a fixed window**, and a sweep of rates produces the
+  saturation curve. The sweep stops once a step's error rate passes
+  `-stop-error-rate`, because you are past the knee.
+
+```bash
+make loadtest URL=http://127.0.0.1:3000 RATES=500,1000,2000,4000 WORKLOAD=mixed
+# or: go run ./cmd/loadgen -url ... -rates ... -window 30s -json sweep.json
+```
+
+| Column | Meaning |
+|---|---|
+| offered/s | the arrival rate held for the window |
+| achieved/s | served responses (2xx + 404) per second; below offered = the server is not keeping up |
+| err% | (non-2xx/404 responses + transport errors/timeouts + drops) / scheduled. `503` from the population gate counts here |
+| dropped | arrivals not sent because `-max-inflight` was reached (counted as errors, never skipped) |
+| 404s | served "no such city" answers; many of them mean the workload does not match the loaded dataset |
+| p50…max | latency of served responses, from intended send time |
+
+How to read it, and its limits:
+
+- **Report the knee**, the highest rate where achieved ≈ offered and p99
+  stays within the objective. Do not report the maximum throughput.
+- **Run the client on a separate machine** from the server. A client that
+  starves for CPU delays arrivals and inflates every number. Record both
+  machines, server `GOMAXPROCS`/`GOMEMLIMIT`, the container limits and the
+  network path along with the sweep.
+- **Workloads are seeded** (`-seed`) and pregenerated. `nearest*` uses
+  uniformly random global points, like the production pass.
+  `coordinates`/`postal` use real names (with typos) and real codes. `mixed`
+  is an *assumed* 80/5/10/5 blend: replace it with the production route mix
+  before you treat its knee as capacity.
+- **Warm-up** (`-warmup`, unrecorded) runs at the first rate. On a fresh boot
+  at full scale, wait for `fuzzy_build_state` = 2 before starting, otherwise
+  typo lookups are measured while the fuzzy index is still building.
 
 ### Profiling
 
@@ -268,6 +314,7 @@ supports.
 | dataLoader `LoadGeoNamesCSV`, `MemLiveLoad_Synthetic100k` | dump parsing | 10-row fixture / 100k synthetic rows | warm page cache: parse cost, not I/O |
 | metrics `Render`, `ObserveRequest` | /metrics serialization, per-request observation | populated registry | |
 | app `HTTP*/{core,production}` | one in-process request per route | 10k-city app, seeded random paths | no TCP/TLS; production − core = middleware cost |
+| `cmd/loadgen` (not a `go test` benchmark) | open-model rate sweep against a running server | seeded workloads (§4) | the knee on that deployment only |
 
 ## 8. Baselines and corrections
 

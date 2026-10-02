@@ -18,7 +18,7 @@ Measured on the full dataset (Apple Silicon, in-process, v1.3): nearest by
 distance p50 9.4 µs / p99 78 µs; exact name ~3 µs; postal < 1 µs; ~4.5 GB
 heap. The method, per-version history and limits are in
 [docs/performance.md](docs/performance.md). These are single-client library
-latencies, not latency under load.
+latencies, not latency under load (measure that with `make loadtest`).
 
 ## Quick start
 
@@ -90,6 +90,7 @@ make test          # go test ./...
 make test-race     # with the race detector (what CI runs)
 make bench-smoke   # every benchmark once — correctness, not numbers
 make bench-ab BASE=origin/main PKG=./lib/finder/name BENCH=CityByName
+make loadtest URL=http://127.0.0.1:3000 RATES=500,1000,2000   # open-model load sweep
 make build-test    # build indexes from the small test fixture
 ```
 

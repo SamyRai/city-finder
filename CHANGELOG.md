@@ -55,6 +55,12 @@ and this project adheres to
   CI runs `bench.sh smoke` (every benchmark once, correctness only).
 - New benchmarks: `NearestDistance` (land-clustered world, random global
   queries), `NearestDistanceScaling/N=1K…1M`, `NearestDistanceParallel`.
+- `cmd/loadgen` (`make loadtest`): an open-model load generator. Requests
+  arrive at a constant rate independent of responses, latency is measured
+  from the intended send time (coordinated-omission correct), and a rate
+  sweep reports offered vs achieved throughput, errors, drops, 404s and
+  p50–p99.9 per step, stopping past the knee. Seeded workloads: `nearest`,
+  `nearest-admin`, `nearest-population`, `coordinates`, `postal`, `mixed`.
 
 ### Removed
 
