@@ -22,9 +22,10 @@ Consequences:
 - These are **in-process** latencies of the library call. HTTP framing,
   middleware, the network and queueing come on top (see the `app` benchmarks
   for the in-process HTTP share).
-- They are single-client numbers, **not latency under load**. No committed
-  open-model load test exists yet, so no claim here covers p99 at a given
-  request rate.
+- They are single-client numbers, **not latency under load**. Nothing here
+  covers p99 at a given request rate. That takes a `cmd/loadgen` sweep against
+  a deployed server (see [benchmarking.md](benchmarking.md#load-testing)), and
+  no such sweep is recorded on this page yet.
 - One machine, single runs per pass. Treat differences under ~10 % between
   columns as unresolved.
 

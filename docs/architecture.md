@@ -9,6 +9,8 @@ cmd/server        HTTP server: main (process lifecycle, signals, PPROF_ADDR)
   metrics         Prometheus text registry
   diag            opt-in net/http/pprof listener
 cmd/build-index   offline index builder (test / prod datasets)
+cmd/loadgen       open-model load generator (thin CLI over internal/loadgen)
+internal/loadgen  constant-arrival scheduler, outcome classification, sweep summaries
 lib/initializer   download → extract → load → build/deserialize the three indexes
 lib/config        config file loading and validation
 lib/dataLoader    GeoNames dump and postal parsers
