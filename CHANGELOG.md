@@ -8,6 +8,21 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-10-02
+
+### Fixed
+
+- `TestFuzzyDisabledOverThreshold` no longer fails on shared CI runners
+  whose scheduler deschedules the timing goroutine (one observed 59.6 ms
+  outlier against the fixed 50 ms bound; the disabled typo-miss path takes
+  no lock at all, so the outlier was starvation, not blocking). The
+  no-stall gate now measures a control run under identical conditions and
+  asserts worst-alongside-misses ≤ max(50 ms, 5× control) — quiet machines
+  keep the same sensitivity, and a real regression (the miss path grabbing
+  the write lock or doing per-miss work) still fails by an order of
+  magnitude. The one-shot "fast nil" bound widens 100 ms → 1 s for the
+  same reason.
+
 ### Added
 
 - Missing benchmarks, one per public query path: `PrefixNames`
@@ -34,6 +49,11 @@ and this project adheres to
   production caveats, and a trust assessment of the cross-engine
   comparison and of the in-process numbers. docs/sprint/baseline-v1.md
   gained the v1.3 validation section.
+- README synced with the shipped surface: the `/metrics` bullet lists
+  `fuzzy_build_state` and the runtime gauges, the v1.3 performance column
+  is marked as the current re-measured baseline, and the memory-floor
+  paragraph quotes the flattened 4.49 GB heap instead of the pre-v1.2
+  figure.
 
 ## [1.3.0] - 2026-10-02
 
