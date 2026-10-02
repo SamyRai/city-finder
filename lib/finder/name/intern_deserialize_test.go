@@ -68,22 +68,15 @@ func decodeUninterned(t *testing.T, path string) (*Finder, []city.City) {
 	payloadBytes, err := decodeZstdFrame(compressed)
 	assert.NoError(t, err)
 
-	var payload nameIndexPayloadV2
+	var payload nameIndexPayloadV3
 	assert.NoError(t, gob.NewDecoder(bytes.NewReader(payloadBytes)).Decode(&payload))
-
-	ptrs := make([]*city.City, len(payload.Cities))
-	for i := range payload.Cities {
-		ptrs[i] = &payload.Cities[i]
-	}
 
 	// Rehydrate into the flat tables exactly the way DeserializeIndex does,
 	// minus the intern pass under measurement.
 	finder := NewNameFinder()
-	finder.cities = ptrs
+	finder.cities = cityTable{base: payload.Cities, baseCount: payload.CityCount}
 	for country, refs := range payload.Refs {
-		tbl, err := buildTableFromRefs(refs, len(ptrs))
-		assert.NoError(t, err)
-		finder.countries[country] = tbl
+		finder.countries[country] = buildTable(refs)
 	}
 	return finder, payload.Cities
 }
@@ -125,9 +118,10 @@ func TestDeserializeInterningSavesMemory(t *testing.T) {
 	// staging map, then flatten into the finder's tables (BuildIndex's
 	// sequence without its logging and GC).
 	fixture := internFixtureCities(scale)
-	index := make(map[string]map[string][]*city.City, estimateCapacity(fixture))
-	processBatchStreamlined(index, fixture)
+	index := make(map[string]map[string][]int32, estimateCapacity(fixture))
+	processBatchStreamlined(index, fixture, 0)
 	f := NewNameFinder()
+	f.cities = ownedCityTable(fixture)
 	f.buildFromIndexMap(index)
 
 	path := t.TempDir() + "/intern_measure.gob"

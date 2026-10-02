@@ -75,13 +75,13 @@ func refsSnapshot(f *Finder) map[string]map[string][]*city.City {
 			// with no references is a present-but-empty key.
 			cityList := make([]*city.City, 0, t.starts[i+1]-t.starts[i])
 			for _, id := range t.ids[t.starts[i]:t.starts[i+1]] {
-				cityList = append(cityList, f.cities[id])
+				cityList = append(cityList, f.cities.at(id))
 			}
 			refs[name] = cityList
 		}
 		for name, ids := range f.overflow[country] {
 			for _, id := range ids {
-				refs[name] = append(refs[name], f.cities[id])
+				refs[name] = append(refs[name], f.cities.at(id))
 			}
 		}
 		out[country] = refs
@@ -93,7 +93,7 @@ func refsSnapshot(f *Finder) map[string]map[string][]*city.City {
 		refs := make(map[string][]*city.City, len(countryOverflow))
 		for name, ids := range countryOverflow {
 			for _, id := range ids {
-				refs[name] = append(refs[name], f.cities[id])
+				refs[name] = append(refs[name], f.cities.at(id))
 			}
 		}
 		out[country] = refs
@@ -106,29 +106,29 @@ func refsSnapshot(f *Finder) map[string]map[string][]*city.City {
 // under two different countries — the shape the v2 id table must dedupe by
 // pointer identity across both names and countries.
 func sharedCityFixture() (*Finder, []*city.City) {
-	paris := &city.City{Name: "Paris", Country: "FR", Latitude: 48.85, Longitude: 2.35, Population: 2_161_000}
-	london := &city.City{Name: "London", Country: "GB", Latitude: 51.50, Longitude: -0.12, Population: 8_982_000}
-
 	f := NewNameFinder()
-	// The staging shape the fixture always described, flattened through the
-	// same path BuildIndex uses — buildFromIndexMap dedupes by pointer
-	// identity and preserves the empty-ref key as a zero-width CSR range.
-	f.buildFromIndexMap(map[string]map[string][]*city.City{
+	// Row ids: 0 = Paris, 1 = London.
+	f.cities = cityTable{base: []city.City{
+		{Name: "Paris", Country: "FR", Latitude: 48.85, Longitude: 2.35, Population: 2_161_000},
+		{Name: "London", Country: "GB", Latitude: 51.50, Longitude: -0.12, Population: 8_982_000},
+	}, baseCount: 2}
+	// Flattened through the same path BuildIndex uses; the empty-ref key is
+	// preserved as a zero-width CSR range.
+	f.buildFromIndexMap(map[string]map[string][]int32{
 		"FR": {
-			"Paris": {paris, london}, // cross-country sharing: the SAME pointer under two countries. Real
-			// builders never produce this, but the format must not corrupt it —
-			// identity, not equality, defines a distinct city.
-			"Lutèce": {paris}, // cross-name sharing within one country
-			"Paname": {paris},
+			"Paris": {0, 1}, // cross-country sharing: the SAME row under two countries. Real
+			// builders never produce this, but the format must not corrupt it.
+			"Lutèce": {0}, // cross-name sharing within one country
+			"Paname": {0},
 			"Orly":   {}, // empty ref list: preserved as a key with no ids
 		},
 		"GB": {
-			"London":    {london},
-			"Londres":   {london},
-			"Big Smoke": {london, paris},
+			"London":    {1},
+			"Londres":   {1},
+			"Big Smoke": {1, 0},
 		},
 	})
-	return f, []*city.City{paris, london}
+	return f, []*city.City{f.cities.at(0), f.cities.at(1)}
 }
 
 // indexStats captures the quantities the count-validation gate compares.
@@ -245,7 +245,7 @@ func TestSerializeV2FileDoesNotContainRuntimeState(t *testing.T) {
 	_, payloadBytes := readV2File(t, path)
 
 	payloadDec := gob.NewDecoder(bytes.NewReader(payloadBytes))
-	var payload nameIndexPayloadV2
+	var payload nameIndexPayloadV3
 	require.NoError(t, payloadDec.Decode(&payload))
 
 	// Decode into the type v1 wrote next (bool isBKTreeBuilt): a clean v2
@@ -262,7 +262,7 @@ func TestSerializeV2FileDoesNotContainRuntimeState(t *testing.T) {
 func TestDeserializeV2HeaderCountMismatch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bad_count.gob")
 	writeV2File(t, path,
-		indexHeader{Magic: nameIndexMagic, Version: nameIndexVersion, Count: 7},
+		indexHeader{Magic: nameIndexMagic, Version: nameIndexVersionV2, Count: 7},
 		nameIndexPayloadV2{
 			Cities: []city.City{{Name: "Paris", Country: "FR"}},
 			Refs:   map[string]map[string][]int32{"FR": {"Paris": {0}}},
@@ -279,7 +279,7 @@ func TestDeserializeV2HeaderCountMismatch(t *testing.T) {
 func TestDeserializeV2RefOutsideCityTable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bad_ref.gob")
 	writeV2File(t, path,
-		indexHeader{Magic: nameIndexMagic, Version: nameIndexVersion, Count: 1},
+		indexHeader{Magic: nameIndexMagic, Version: nameIndexVersionV2, Count: 1},
 		nameIndexPayloadV2{
 			Cities: []city.City{{Name: "Paris", Country: "FR"}},
 			Refs:   map[string]map[string][]int32{"FR": {"Paris": {0, 99}}},

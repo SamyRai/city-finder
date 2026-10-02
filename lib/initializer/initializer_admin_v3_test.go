@@ -152,12 +152,10 @@ func TestEnsureFinders_RebuildsV2PostalIndexAsV3(t *testing.T) {
 	assert.Equal(t, uint32(3), readFileVersion(t, postalPath), "the corrupt file must be rewritten as v3")
 }
 
-// TestEnsureFinders_NameIndexStaysV2 pins the untouched-format invariant of
-// this lane: city.City does not change, so the name index format must NOT
-// bump — after a cold build the on-disk header still says version 2, and no
-// mixed-version state across the three files breaks initialization (each
-// header validates and rebuilds independently).
-func TestEnsureFinders_NameIndexStaysV2(t *testing.T) {
+// TestEnsureFinders_IndexFormatVersions pins the on-disk versions a cold
+// build writes: S2 v3, postal v3, and name v3 (row-number ids into the S2
+// city table, which the name file references instead of embedding).
+func TestEnsureFinders_IndexFormatVersions(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
 	writeTinyDatasets(t, cfg)
@@ -167,8 +165,8 @@ func TestEnsureFinders_NameIndexStaysV2(t *testing.T) {
 	require.NotNil(t, f)
 
 	namePath := filepath.Join(dir, cfg.NameIndexFile)
-	assert.Equal(t, uint32(2), readFileVersion(t, namePath),
-		"the name index format must stay v2: City did not change in the admin-attribution lane")
+	assert.Equal(t, uint32(3), readFileVersion(t, namePath),
+		"the name index is v3: ids are row numbers into the shared S2 city table")
 	assert.Equal(t, uint32(3), readFileVersion(t, filepath.Join(dir, cfg.S2.IndexFile)))
 	assert.Equal(t, uint32(3), readFileVersion(t, filepath.Join(dir, cfg.PostalCodeIndexFile)))
 }

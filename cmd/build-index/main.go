@@ -331,6 +331,12 @@ func main() {
 	var nameFinder *name.Finder
 	nameResult := measureOperation("4. Building Name Index", len(cities), func() {
 		nameFinder = name.BuildIndex(cities)
+		// Same rows as the S2 index: share its city table so the name index
+		// file references it instead of embedding a second copy (the server
+		// attaches the two the same way at boot).
+		if err := nameFinder.ShareCities(s2Finder.Cities); err != nil {
+			log.Fatalf("Failed to share the S2 city table with the name index: %v", err)
+		}
 	})
 	printResult(nameResult)
 

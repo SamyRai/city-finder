@@ -481,6 +481,12 @@ func ensureFinders(cfg *config.Config, admin1NamesPath string) (*finder.Finder, 
 			postalCh <- postalResult{f, err}
 		}()
 		s2Res, nameRes, postalRes := <-s2Ch, <-nameCh, <-postalCh
+		if s2Res.err == nil && nameRes.err == nil {
+			// The name index resolves its ids through the S2 index's city
+			// table; an index that cannot attach is rebuilt by the
+			// sequential path below.
+			nameRes.err = attachNameIndex(nameIndexPath, nameRes.finder, s2Res.finder.Cities)
+		}
 		if s2Res.err == nil && nameRes.err == nil && postalRes.err == nil {
 			s2Finder := s2Res.finder
 			// Names are attached on every boot (warm or cold): the map is
@@ -508,7 +514,7 @@ func ensureFinders(cfg *config.Config, admin1NamesPath string) (*finder.Finder, 
 	// names file never invalidates it.
 	s2Finder.Admin1Names = ensureAdmin1Names(admin1NamesPath)
 
-	nameFinder, err := ensureNameIndex(nameIndexPath, data)
+	nameFinder, err := ensureNameIndex(nameIndexPath, data, s2Finder.Cities)
 	if err != nil {
 		return nil, err
 	}
@@ -606,39 +612,76 @@ func buildAndSerializeS2Index(s2IndexPath string, cfg *config.Config, data *data
 	return s2Finder, nil
 }
 
-// ensureNameIndex returns the name index, building and serializing it when
-// the file is missing. A file that exists but fails to decode with
-// name.ErrCorruptIndex (truncated by a crash mid-write, legacy format, or a
-// future version mismatch) is logged and rebuilt once from the source data,
-// re-serializing over the bad file. Any other error — for example a wrapped
-// fs error from an unreadable file — is fatal, exactly as it is for the S2
-// and postal code indexes.
-func ensureNameIndex(nameIndexPath string, data *datasetSource) (*name.Finder, error) {
+// ensureNameIndex returns the name index attached to the S2 index's city
+// table (cities), building and serializing it when the file is missing. A
+// file that exists but fails to decode with name.ErrCorruptIndex (truncated
+// by a crash mid-write, legacy format, or a future version mismatch), or that
+// cannot attach to cities (it was built against a different S2 index), is
+// logged and rebuilt once from the source data, re-serializing over the bad
+// file. Any other error — for example a wrapped fs error from an unreadable
+// file — is fatal, exactly as it is for the S2 and postal code indexes.
+func ensureNameIndex(nameIndexPath string, data *datasetSource, cities []city.City) (*name.Finder, error) {
 	log.Printf("Ensuring name index is built and serialized in %s", nameIndexPath)
 	if _, errStat := os.Stat(nameIndexPath); os.IsNotExist(errStat) {
 		if err := data.load(); err != nil {
 			return nil, fmt.Errorf("failed to load datasets to build name index: %v", err)
 		}
-		return buildAndSerializeNameIndex(nameIndexPath, data)
+		return buildAndSerializeNameIndex(nameIndexPath, data, cities)
 	}
 
 	nameFinder, err := name.DeserializeIndex(nameIndexPath)
+	if err == nil {
+		err = attachNameIndex(nameIndexPath, nameFinder, cities)
+	}
 	if err != nil {
-		if !errors.Is(err, name.ErrCorruptIndex) {
+		if !errors.Is(err, name.ErrCorruptIndex) && !errors.Is(err, name.ErrCityTableMismatch) {
 			return nil, fmt.Errorf("failed to deserialize name index: %v", err)
 		}
 		log.Printf("Warning: %v", err)
 		if err := data.load(); err != nil {
 			return nil, fmt.Errorf("failed to load datasets needed to rebuild the name index: %v", err)
 		}
-		return buildAndSerializeNameIndex(nameIndexPath, data)
+		return buildAndSerializeNameIndex(nameIndexPath, data, cities)
 	}
 	return nameFinder, nil
 }
 
-func buildAndSerializeNameIndex(nameIndexPath string, data *datasetSource) (*name.Finder, error) {
+// attachNameIndex makes a loaded name index resolve through the S2 index's
+// city table, so every city is held once per process. A file that embeds its
+// own copy (the legacy v2 format, or a standalone v3 file) and matches is
+// re-serialized in the compact format that only references the table — a
+// one-time, in-place migration that needs no dataset download. A failed
+// migration write is logged and ignored: the attached index is already
+// correct, and the next boot retries.
+//
+// It returns an error wrapping name.ErrCityTableMismatch when the index was
+// built against a different table. An embedding index stays usable on its
+// own copy in that case, but it is still reported, because the pair of index
+// files disagrees and the caller rebuilds.
+func attachNameIndex(nameIndexPath string, nameFinder *name.Finder, cities []city.City) error {
+	embedded := nameFinder.OwnsCityTable()
+	if err := nameFinder.ShareCities(cities); err != nil {
+		return fmt.Errorf("name index %s does not match the S2 index: %w", nameIndexPath, err)
+	}
+	if embedded {
+		if err := nameFinder.SerializeIndex(nameIndexPath); err != nil {
+			log.Printf("Warning: migrating name index %s to the shared-table format failed (will retry next boot): %v", nameIndexPath, err)
+		} else {
+			log.Printf("migrated name index %s to the shared-table format", nameIndexPath)
+		}
+	}
+	return nil
+}
+
+func buildAndSerializeNameIndex(nameIndexPath string, data *datasetSource, cities []city.City) (*name.Finder, error) {
 	log.Printf("Building name index at %s", nameIndexPath)
 	nameFinder := name.BuildIndex(data.cities)
+	// Both indexes are built from the same rows, so the tables are identical
+	// and sharing cannot fail; if it ever did, the index keeps (and
+	// serializes) its own copy — larger, never wrong.
+	if err := nameFinder.ShareCities(cities); err != nil {
+		log.Printf("Warning: name index keeps its own city table: %v", err)
+	}
 	if err := nameFinder.SerializeIndex(nameIndexPath); err != nil {
 		return nil, fmt.Errorf("failed to serialize name index: %v", err)
 	}
