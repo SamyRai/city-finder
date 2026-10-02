@@ -1,47 +1,65 @@
+# Developer entry points. Benchmark targets wrap benchmarks/bench.sh, which
+# owns the measurement protocol (see docs/benchmarking.md).
+
+PKG   ?= ./lib/finder/coordinates
+BENCH ?= .
+BASE  ?= origin/main
+COUNT ?= 10
+TIME  ?= 1s
+
+.PHONY: test test-race build build-pgo build-test build-prod rebuild-test-indexes \
+	bench bench-ab bench-smoke bench-env
+
 test:
 	go test ./...
 
-# Build with Profile-Guided Optimization (PGO)
-# First collect a profile: go run -cpuprofile=cpu.prof ./cmd/server/main.go
-# Then build: make build-pgo
+# Correctness under the race detector. Never benchmark a -race binary: the
+# instrumentation costs 2-20x CPU and 5-10x memory.
+test-race:
+	go test -race ./...
+
+build:
+	go build -o nearestcityserver ./cmd/server
+
+# Profile-guided build. cmd/server/default.pgo must be a CPU profile of a
+# REPRESENTATIVE production workload — e.g. 60 s from a live server started
+# with PPROF_ADDR=127.0.0.1:6060:
+#   curl -o cmd/server/default.pgo 'http://127.0.0.1:6060/debug/pprof/profile?seconds=60'
+# Never use a microbenchmark profile: PGO would optimize for that one loop.
 build-pgo:
-	@if [ ! -f cmd/server/default.pgo ]; then \
-		echo "Error: PGO profile not found. Place cpu.prof as cmd/server/default.pgo"; \
-		exit 1; \
-	fi
-	go build -pgo=auto ./cmd/server
+	@test -f cmd/server/default.pgo || { echo "cmd/server/default.pgo not found (see Makefile comment)"; exit 1; }
+	go build -pgo=auto -o nearestcityserver ./cmd/server
 
-# Build with Green Tea GC (experimental, Go 1.25+)
-build-greentea:
-	GOEXPERIMENT=greenteagc go build ./cmd/server
-
-# Run benchmarks with standard GC
+# Benchmarks: capture COUNT samples for PKG (filtered by BENCH) on this tree.
+#   make bench PKG=./lib/finder/name BENCH='CityByName$$'
 bench:
-	go run benchmarks/run_benchmarks.go comprehensive
+	benchmarks/bench.sh run -n $(COUNT) -t $(TIME) -r '$(BENCH)' $(PKG)
 
-# Run benchmarks with Green Tea GC
-bench-greentea:
-	go run benchmarks/run_benchmarks.go greentea
+# Interleaved A/B of BASE against the working tree for one package.
+#   make bench-ab BASE=main PKG=./lib/finder/name BENCH='CityByNameFuzzy'
+bench-ab:
+	benchmarks/bench.sh ab -b $(BASE) -n $(COUNT) -t $(TIME) -r '$(BENCH)' $(PKG)
 
-# Collect PGO profile
-profile:
-	go run -cpuprofile=cpu.prof ./cmd/server/main.go
-	@echo "Profile saved to cpu.prof"
-	@echo "To use for PGO, copy to: cp cpu.prof cmd/server/default.pgo"
+# Every benchmark once: proves they build and pass their own assertions.
+bench-smoke:
+	benchmarks/bench.sh smoke
+
+bench-env:
+	benchmarks/bench.sh env
 
 # Build indexes with test data (small dataset)
 build-test:
 	@echo "Building indexes with test data..."
-	go run cmd/build-index/main.go test
+	go run ./cmd/build-index test
 	@echo "Test indexes built successfully!"
 	@ls -lh testdata/*.gob
 
 # Build indexes with production data (full dataset)
 build-prod:
 	@echo "Building indexes with production data (this may take several minutes)..."
-	go run cmd/build-index/main.go prod
+	go run ./cmd/build-index prod
 	@echo "Production indexes built successfully!"
 	@ls -lh datasets/*.gob
 
-# Rebuild test indexes from real data (legacy alias)
+# Legacy alias
 rebuild-test-indexes: build-test

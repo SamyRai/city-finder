@@ -20,10 +20,10 @@ worktrees
 cf-lane-*
 out
 
-# Docs, benchmarks, article drafts, logs and profiles (not needed to compile)
+# Docs, benchmark tooling and outputs, logs and profiles (not needed to compile)
 docs
 benchmarks
-article.md
+bench-out
 *.log
 *.pprof
 *.prof
