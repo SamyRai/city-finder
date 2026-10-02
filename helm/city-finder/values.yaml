@@ -15,8 +15,8 @@
 #   - cold start, empty volume (downloads ~420 MB, builds indexes): ~6-8 min
 #     The default probe budget covers BOTH (see probes.startup below); a
 #     cold start is still discouraged in-cluster — mount a volume with
-#     pre-built indexes instead (see persistence below and README
-#     "Deployment").
+#     pre-built indexes instead (see persistence below and docs/deployment.md
+#     "Datasets volume").
 #
 # ArgoCD: the chart encodes exactly one ordering constraint via
 # argocd.argoproj.io/sync-wave annotations on resource metadata: the datasets
@@ -63,6 +63,16 @@ server:
   # Additional env vars, e.g.:
   #   - name: GOMEMLIMIT
   #     value: "9GiB"
+  #   # No CPU limit is set (see resources), so the Go runtime sizes
+  #   # GOMAXPROCS to every core of the node; pin it for reproducible
+  #   # throughput across node types (the population-rank gate is
+  #   # min(GOMAXPROCS, 8), batch fan-out is GOMAXPROCS).
+  #   - name: GOMAXPROCS
+  #     value: "4"
+  #   # Opt-in pprof listener for CPU/heap profiles and PGO input; keep it on
+  #   # loopback and reach it with `kubectl port-forward`.
+  #   - name: PPROF_ADDR
+  #     value: "127.0.0.1:6060"
   extraEnv: []
 
 podAnnotations: {}
@@ -132,7 +142,7 @@ resources:
 # start re-downloads and re-builds unless the volume happens to survive).
 # Production: set enabled: true for a PVC (created by the chart unless
 # existingClaim is set) and mount a volume that already contains pre-built
-# *.gob indexes (see README "Deployment" for how to warm it).
+# *.gob indexes (see docs/deployment.md "Datasets volume" for how to warm it).
 persistence:
   enabled: false
   # Use an already-existing claim instead of creating one.

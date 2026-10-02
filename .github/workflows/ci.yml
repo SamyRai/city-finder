@@ -84,6 +84,17 @@ jobs:
       - name: Lint chart
         run: helm lint helm/city-finder
 
+      # The image tag defaults to appVersion, so a stale appVersion silently
+      # deploys an old server. It must equal the newest released version in
+      # CHANGELOG.md (the first "## [x.y.z]" heading after [Unreleased]).
+      - name: Check chart appVersion matches the latest release
+        shell: bash
+        run: |
+          app="$(sed -n 's/^appVersion: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' helm/city-finder/Chart.yaml)"
+          rel="$(grep -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+[^]]*\]' CHANGELOG.md | head -1 | tr -d '#[] ')"
+          echo "Chart appVersion=${app} latest CHANGELOG release=${rel}"
+          [ -n "${app}" ] && [ "${app}" = "${rel}" ]
+
       # shell: bash gives -eo pipefail: without pipefail a failing
       # `helm template` would hand kubeconform an empty stream and exit 0.
       - name: Validate rendered manifests (default values)

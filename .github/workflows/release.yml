@@ -87,6 +87,18 @@ jobs:
             echo "TAGS=${TAGS}"
           } >> "${GITHUB_ENV}"
 
+      # Fail before publishing anything if the chart would default to a
+      # different image tag than the one this release pushes.
+      - name: Check chart appVersion matches the tag
+        run: |
+          #!/bin/bash
+          set -euo pipefail
+          APP="$(sed -n 's/^appVersion: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' helm/city-finder/Chart.yaml)"
+          if [ "${APP}" != "${VERSION}" ]; then
+            echo "helm/city-finder/Chart.yaml appVersion=${APP} but tag is ${VERSION}" >&2
+            exit 1
+          fi
+
       - name: Set up QEMU (arm64 emulation)
         uses: docker/setup-qemu-action@v3
 
