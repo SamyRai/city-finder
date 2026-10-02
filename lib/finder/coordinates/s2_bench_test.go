@@ -70,6 +70,35 @@ func BenchmarkNearestPlace(b *testing.B) {
 	}
 }
 
+// BenchmarkNearestByPopulationOceanQuery benchmarks the mid-ocean
+// population-ranked query on the 200k-city clustered synthetic world: the
+// cheap escalation discs are near-empty over open water, so the cost is
+// dominated by whatever strategy resolves the query after them. The populated
+// control point (same fixture) shows the land-query path for comparison.
+func BenchmarkNearestByPopulationOceanQuery(b *testing.B) {
+	cities := anchoredOceanFixture(b)
+	finder, err := BuildIndex(cities)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.Run("mid-ocean", func(b *testing.B) {
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_, _, _ = finder.NearestPlace(0.0, -140.0, RankPopulation)
+		}
+	})
+
+	b.Run("populated", func(b *testing.B) {
+		b.ResetTimer()
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_, _, _ = finder.NearestPlace(35.0, 100.0, RankPopulation)
+		}
+	})
+}
+
 // BenchmarkSerializeIndex benchmarks index serialization
 func BenchmarkSerializeIndex(b *testing.B) {
 	cities := generateTestCities(100000)
