@@ -10,6 +10,69 @@ and this project adheres to
 
 ### Fixed
 
+- Fuzzy result cache eviction is O(1) FIFO instead of two full-map scans
+  per insert at capacity (10k entries). Under a churning distinct-typo
+  workload, the scan cost more than the search it cached:
+  `BenchmarkCityByNameFuzzy/cache-churn` 641 µs → 296 µs (−54 %, p=0.000,
+  n=8 interleaved, 4-vCPU cloud host); cache hits unchanged; +2 allocs/op.
+  Same eviction order (oldest first, expired first).
+- `name.Finder.AddCity` no longer writes into the caller's `AltNames`
+  backing array (`append(AltNames, Name)` aliased spare capacity). Pinned
+  by a regression test.
+- Helm chart `appVersion` was still `1.0.0`. Because the image tag defaults
+  to it, a default install deployed the v1.0 server. Now `1.3.1` (chart
+  `1.0.1`). CI fails when it drifts from the latest CHANGELOG release, and
+  the release job fails on a tag that does not match.
+- Benchmarks (full review against the measurement protocol now in
+  `docs/benchmarking.md`): `b.Fatalf` called from `RunParallel` workers;
+  workers sweeping keys in lockstep; `AddCity`/`AddPostalCode` measuring
+  growth or overwrite of one key instead of inserts; a `b.TempDir()` per
+  iteration in every serialize benchmark; `Sprintf` inside timed loops;
+  `MemoryUsage` ignoring b.N and timing fixture generation; ignored errors
+  and results; legacy `b.N` loops migrated to `b.Loop`; nearest queries
+  cycling three hot points (now 4096 seeded global points on a
+  land-clustered world); a fuzzy benchmark mixing cache misses, evictions
+  and hits (now `cache-churn` / `cache-hit`); duplicated-point S2 fixtures.
+  Redundant benchmarks removed (`BuildIndexConcurrent`,
+  `ConcurrentOperations`, `MemLiveLoad_TestData`, legacy `NearestPlace`).
+- `make profile`, `make build-greentea` and `make bench*` no longer exist
+  in broken form (`go run -cpuprofile` is not a flag; Green Tea is the
+  default GC since Go 1.26).
+
+### Added
+
+- `cmd/server/app`: the single owner of the production HTTP stack (fiber
+  config, recover, access log, metrics, routes), used by `main` and the
+  HTTP benchmarks. HTTP benchmarks now run `core` and `production`
+  variants: the old ones measured a bare `fiber.New()` without ETag,
+  recovery, access log or metrics.
+- `PPROF_ADDR`: an opt-in `net/http/pprof` listener on its own address and
+  mux, never the API port. Used for profiling a live workload and for
+  representative PGO profiles (`make build-pgo`).
+- `benchmarks/bench.sh` (`env` / `run` / `ab` / `smoke`) with Makefile
+  wrappers. It compiles once, pins one toolchain for both A/B sides,
+  interleaves rounds, records the environment, and uses a pinned benchstat.
+  CI runs `bench.sh smoke` (every benchmark once, correctness only).
+- New benchmarks: `NearestDistance` (land-clustered world, random global
+  queries), `NearestDistanceScaling/N=1K…1M`, `NearestDistanceParallel`.
+
+### Removed
+
+- The `benchmarks/` Go harness (`run_benchmarks.go`, `cmd`, `suite`,
+  `reporters`, `profilers`, `types`). It ran a 10-row fixture under
+  "1K–250K scaling" labels and its `greentea` mode set `GOEXPERIMENT` at run
+  time, which has no effect on a compiled binary.
+
+### Changed
+
+- Documentation consolidated under `docs/` (`api`, `configuration`,
+  `deployment`, `architecture`, `performance`, `benchmarking`). The README
+  is rewritten as an entry point. `article.md` moved to
+  `docs/design/narrative.md`. Corrected readings of the 2026-10-02 M2
+  baseline are listed in `docs/benchmarking.md` §8. That baseline was
+  captured with Go 1.27.1 while the module builds with 1.26, and is marked
+  historical.
+
 - `/metrics` scrapes no longer race on a shared `runtime/metrics` sample
   slice (the heap-gauge read is per-scrape now); pinned by a concurrent-
   scrape test under `-race`. Found by the 2026-10-02 correctness review;

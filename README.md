@@ -1,275 +1,112 @@
-# Nearest City Finder for Go
+# cityFinder
 
-A high-performance Go library to find the nearest city based on geographical coordinates using the S2 Geometry Library.
+Nearest-city lookup over the full [GeoNames](https://www.geonames.org/) dataset
+(13.47M places), as a Go library and a small HTTP service. Geometry is
+[S2](https://github.com/golang/geo): geodesic distances on the sphere, with
+nearest-neighbour queries checked against a brute-force oracle.
 
-## Features
+- **Nearest city** to a coordinate, ranked by distance or by a
+  population-weighted gravity model (exact over the whole dataset).
+- **Administrative region** of the winning city (admin1/admin2 codes and
+  names).
+- **City by name**: exact, then fuzzy (≤ 2 edits), plus prefix autocomplete.
+- **City by postal code.**
+- Batch queries, Prometheus metrics, graceful shutdown, container image and
+  Helm chart.
 
-- **Efficient Nearest City Search**: Uses the S2 Geometry Library to provide fast and accurate nearest city searches.
-- **Low Memory Consumption**: Optimized for low memory usage.
-- **Easy Integration**: Simple API for integrating into your Go projects.
-- **Support for Postal Codes**: Find cities based on postal codes.
+Measured on the full dataset (Apple Silicon, in-process, v1.3): nearest by
+distance p50 9.4 µs / p99 78 µs; exact name ~3 µs; postal < 1 µs; ~4.5 GB
+heap. The method, per-version history and limits are in
+[docs/performance.md](docs/performance.md). These are single-client library
+latencies, not latency under load.
 
-## Why S2?
+## Quick start
 
-The S2 Geometry Library is chosen for its superior performance and efficiency in handling geographical data. This library uses `s2.ShapeIndex` to store geographical points as a `s2.PointVector`, which allows for highly efficient spatial indexing.
+### HTTP service (Docker)
 
-Nearest neighbor searches are performed using `s2.NewClosestEdgeQuery`, which leverages the spatial index to find the closest points with remarkable speed. This approach provides:
-- **Hierarchical Spatial Indexing**: Efficiently manages and queries large sets of geographical points.
-- **High Precision**: Ensures accurate results by calculating geodesic distances on the sphere.
-- **Low Memory Footprint**: Uses memory efficiently, making it suitable for applications with limited resources.
+```bash
+docker build -t city-finder .
+docker run -d -p 3000:3000 -v city-finder-data:/data --memory 14g city-finder
+# first boot downloads ~420 MB and builds indexes (~6–8 min); later boots ~20–25 s
+curl 'http://localhost:3000/nearest?lat=48.8566&lon=2.3522'
+curl 'http://localhost:3000/coordinates?name=Pars&country-code=FR'   # typo → Paris
+```
 
-## Performance
+### From source
 
-Nearest-neighbor queries are bounded by `s2.ClosestEdgeQuery` with `MaxResults(1)`, which prunes the search instead of collecting a result for every indexed point. Results are validated against a brute-force great-circle oracle in `s2_oracle_test.go`, and the ShapeIndex is built eagerly at startup so the first query after boot pays no construction cost.
+```bash
+go build -o nearestcityserver ./cmd/server
+./nearestcityserver            # reads ./config.json (or $CONFIG_PATH), listens on $PORT (3000)
+```
 
-**Production scale** — v1.2, measured on the full GeoNames dump (13.47M cities, 17.7M unique names; Apple Silicon):
-
-| Metric | v1.2 | v1.1 | pre-v1.0 (v1 indexes) |
-|---|---|---|---|
-| Warm start (indexes on disk, datasets not re-parsed) | **23.3 s** (decode is concurrent; includes the flatten sort at deserialize) | 19.4–20.9 s | 43–61 s |
-| Heap after warm start (post-GC) | **4.49 GB** (name index flattened) | 5.7 GB | 6.3–7.5 GB |
-| Cold rebuild (datasets present) | **2 m 26 s, peak RSS 9.25 GB** | ~3 min, ≈12.6 GB peak | — |
-| Fuzzy n-gram build | **29 s, background at boot — no request pays it** | ~30–90 s, in-request on first typo query | disabled at this scale |
-| `FindNearestCity` (rank=distance) | v1.3 (pooled queries): p50 9.4 µs, p99 78 µs (10k); v1.2: p50 11.9 µs, p99 103 µs | p50 10 µs, p99 ~76–95 µs | p50 20 µs, p99 177–619 µs |
-| `FindNearestCity` rank=population (random global, ocean-heavy) | v1.3: ocean points 1.0–9.5 s (n=5, anchored disc); v1.2 baseline was 8.5–14.3 s — the terminal full-sphere scan and the wide escalation tiers are gone for certified queries; land is ms-class; concurrent queries bounded by the HTTP gate | land 0.3–40 ms; ocean ~10 s | n/a |
-| `CityByName` exact, real keys | p50 ~3 µs, max ~13 µs (1k real keys, warm; binary search over the flat sorted tables — ~10× the v1.1 hash-map lookup, the flattening's latency tradeoff) | p50 0.33 µs, p99 1.8 µs | p50 0.67–9 µs |
-| `CityByName` fuzzy (1–2-edit typos) | p50 5.1 ms, p99 101 ms, max 614 ms; 1000/1000 typos resolved | p50 7–21 ms, 1000/1000 typos resolved | disabled at this scale |
-| `PrefixNames` (autocomplete) | p50 10.5 µs, p99 94 µs (1k 3-char prefixes, real countries) | n/a | n/a |
-| `CityByPostalCode` | p50 0.79 µs (141 real keys) | p50 0.4 µs | p50 0.5 µs |
-| Index files | **531 MB (name v2)** / **279 MB (S2 v3)** / **26 MB (postal v3)** | 559 / 280–293 / 26–28 MB | 1.6 GB (name) / 519 MB / 98 MB |
-
-Cold build (parse + all three indexes, no download) takes ~3 min on the same machine (zstd encoding adds ~1 min over v1.0); a first boot also downloads ~420 MB of GeoNames archives plus the optional ~120 KB admin1-names file. Upgrading from v1.0's on-disk indexes rebuilds them once automatically on first boot (v2 s2/postal files are rejected and regenerated as v3). Peak RSS is workload-dependent: a warm start alone peaks ≈9 GB; the fuzzy index adds ~1.2 GB resident once built (the server starts the build in the background right after initialization — no request ever pays it in-flight; typo lookups issued while it builds, roughly the first ~30–90 s after boot at this scale, get exact-only results; the build state is exported as the `fuzzy_build_state` gauge on `/metrics`); population-ranked queries are bounded by a CPU-sized concurrency gate (saturation returns 503) and can transiently allocate several hundred MB per scan. The Helm chart's defaults (10 Gi request / 14 Gi limit) cover this with headroom.
-
-The in-memory name index is flattened (per-country sorted names + int32 CSR postings over one distinct-city pointer table, mirroring the on-disk v2 layout): measured at full scale the resident heap after warm start drops 5.7 → 4.49 GB, the one-time build pays ~38 s extra for the flattening sort, warm start pays ~3 s for the deserialize-time sort, and exact lookups move from a 0.33 µs hash-map hit to a ~3 µs binary search (the flattening's latency tradeoff; zero allocations either way).
-
-Since v1.1 the three index deserializations run concurrently on warm starts (name decode dominates at ~14 s; S2 and postal overlap inside its window) and the population-rank anytime bound is tightened by a top-4096 population table, which keeps mid-ocean queries off the full-sphere scan. Both changes alter the measured profile: the v1.3 column above is the re-measured baseline (2026-10-02 pass — the population-tail row additionally reflects the v1.3 top-K-anchored disc), superseding the pre-v1.3 figures in docs/sprint/baseline-v1.md.
-
-Micro-benchmark context (100k distinct synthetic points): ~3–5 µs per nearest query — query cost grows with index size, so the production numbers above are the authoritative ones.
-
-Fuzzy name matching (edit distance ≤ 2) works at the full 17.7M-name scale via a q-gram inverted index with length filter and banded Levenshtein verification. It is built lazily on the first fuzzy lookup; `name.FuzzyMaxNames` (default 25M keys) bounds it against unmeasured scales. A documented completeness boundary applies to very short names (≤1 rune at distance 1, ≤4 runes at distance 2); exact matches are always found first regardless. Per-query work is capped by `name.FuzzyMaxCandidates` (default 4,000,000) so degenerate short queries cannot walk unbounded posting lists; a capped query returns the matches verified so far (best-effort, never cached as complete), and `name.FuzzyBudgetTrips()` counts trips. Lower it to ~500k for harder latency clamping at the cost of partial results on a few percent of typo queries — see `docs/design/index-format-v2.md` for the measured tradeoff.
-
-Data scope — feature classes: two knobs shape which GeoNames rows are indexed (both apply at dataset load, i.e. when an index is (re)built; warm boots are unaffected until you delete an index file to force a rebuild). `exclude_admin_divisions` (default `false`) drops feature-class-A rows — countries/states/provinces whose huge synthetic populations win mid-ocean `rank=population` queries. `include_feature_classes` (default `""` = everything) is the stricter allowlist: e.g. `"P"` indexes only populated places, which also removes class-L "regions" like the 49M-population "HHS Region 9" that dominates population ranking across the western US. Invalid class letters fail config load loudly. When enabled, excluded names no longer resolve through `/coordinates`, and population-rank winners change accordingly — that is the point.
-
-Data scope — administrative divisions (the finer-grained knob above supersedes it for most uses): GeoNames rows of feature class A (countries, states, provinces, districts) carry huge synthetic populations and, when indexed, win mid-ocean `rank=population` queries under the gravity model (a whole country can be returned as the nearest "city"). The optional config key `exclude_admin_divisions` (default `false`) drops those rows at dataset load for "real place" semantics. The filter applies when an index is (re)built — warm boots with existing serialized indexes are unaffected until you delete an index file to force a rebuild, and when enabled, admin-division names ("California" as an ADM1 row) no longer resolve through `/coordinates`.
-
-Administrative-region attribution: `/nearest?include=admin` adds `admin1_code`, `admin1_name` (when the optional admin1-names dataset is loaded; codes-only otherwise), and `admin2_code` (when present) to the response. Attribution follows the winning city — near administrative boundaries the reported region is that of the nearest (or population-ranked) city, not polygon containment.
-
-## Installation
-
-To install the library, use `go get`:
+### As a library
 
 ```bash
 go get github.com/SamyRai/cityFinder
 ```
 
-## Building Indexes
-
-The library requires pre-built indexes for optimal performance. Two modes are available:
-
-### Test Mode (Small Dataset)
-For development and testing with a small dataset:
-```bash
-make build-test
-# or
-go run cmd/build-index/main.go test
-```
-
-### Production Mode (Full Dataset)
-For production use with the complete GeoNames dataset:
-```bash
-make build-prod
-# or
-go run cmd/build-index/main.go prod
-```
-
-**Note**: Production mode processes ~13.5 million cities and may take several minutes to complete. Prod mode resolves the dataset filenames from the same config the initializer uses — `CONFIG_PATH` is honored exactly as the server honors it, defaulting to `config.json` — and writes its three outputs to the config's index-file keys (the same paths the initializer reads). If no config is found it falls back to the legacy literals with a warning.
-
-## Usage
-
-### Finding the Nearest City
-
-To find the nearest city based on latitude and longitude:
-
 ```go
-package main
-
-import (
-    "fmt"
-    "log"
-
-    "github.com/SamyRai/cityFinder/lib/finder"
-    "github.com/SamyRai/cityFinder/lib/finder/coordinates"
-    "github.com/SamyRai/cityFinder/lib/config"
-    "github.com/SamyRai/cityFinder/lib/initializer"
-)
-
-func main() {
-    cfg, err := config.LoadConfig("config.json")
-    if err != nil {
-        log.Fatalf("Failed to load config: %v", err)
-    }
-
-    cityFinder, err := initializer.Initialize(cfg)
-    if err != nil {
-        log.Fatalf("Initialization failed: %v", err)
-    }
-	
-    // Find the nearest city
-    nearestCity, distance, err := cityFinder.FindNearestCity(40.7128, -74.0060, coordinates.RankDistance) // New York coordinates
-    if err != nil {
-        log.Fatalf("Failed to find nearest city: %v", err)
-    }
-
-    fmt.Printf("Nearest city: %s, %s\n", nearestCity.Name, nearestCity.Country)
-    fmt.Printf("Distance: %.2f km\n", distance)
+cfg, err := config.LoadConfig("config.json")
+if err != nil {
+    log.Fatal(err)
 }
-```
-
-### Finding a City by Postal Code
-
-To find a city based on postal code:
-
-```go
-// Assuming cityFinder is initialized as shown above
-nearestCity := cityFinder.FindCityByPostalCode("10001", "US")
-
-if nearestCity != nil {
-    fmt.Printf("City for postal code: %s, %s\n", nearestCity.Name, nearestCity.Country)
-} else {
-    log.Println("No city found for the given postal code")
+f, err := initializer.Initialize(cfg) // downloads datasets / builds indexes on first use
+if err != nil {
+    log.Fatal(err)
 }
+f.WarmFuzzy() // optional: build the typo index in the background now
+
+c, km, err := f.FindNearestCity(40.7128, -74.0060, coordinates.RankDistance)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("%s, %s (%.1f km)\n", c.Name, c.Country, km)
+
+if c := f.FindCityByName("Pars", "FR"); c != nil { /* Paris */ }
+if c := f.FindCityByPostalCode("10001", "US"); c != nil { /* New York */ }
 ```
 
-## Running the Server
+Packages: `lib/config`, `lib/initializer`, `lib/finder`,
+`lib/finder/coordinates`.
 
-The package also includes a server that provides an API for finding the nearest city and querying cities by name or postal code.
+## API
 
-### Building the Server
+| Endpoint | |
+|---|---|
+| `GET /nearest?lat&lon[&rank=distance\|population][&include=admin]` | nearest city |
+| `POST /nearest/batch` | 1–100 points |
+| `GET /coordinates?name&country-code` | city by name (exact, then fuzzy) |
+| `GET /autocomplete?name&country-code[&limit]` | name prefix search |
+| `GET /postalCode?code&country-code` | city by postal code |
+| `GET /healthz`, `GET /metrics` | liveness, Prometheus metrics |
 
-To build the server, use the following command:
+Full reference: [docs/api.md](docs/api.md) and
+[docs/openapi.yaml](docs/openapi.yaml).
+
+## Development
 
 ```bash
-go build -o nearestcityserver cmd/server/main.go
+make test          # go test ./...
+make test-race     # with the race detector (what CI runs)
+make bench-smoke   # every benchmark once — correctness, not numbers
+make bench-ab BASE=origin/main PKG=./lib/finder/name BENCH=CityByName
+make build-test    # build indexes from the small test fixture
 ```
 
-### Running the Server
+CI also runs gofmt, `go vet`, staticcheck, govulncheck, `go mod tidy -diff`,
+and helm lint + kubeconform. Any performance claim in a PR follows the
+protocol in [docs/benchmarking.md](docs/benchmarking.md): interleaved A/B on
+one machine, benchstat, a pinned toolchain, and validation at the layer the
+claim is about.
 
-To run the server, execute the built binary:
+## Documentation
 
-```bash
-./nearestcityserver
-```
-
-By default, the server will listen on port 3000; set the `PORT` environment variable to override. The server enforces read/write/idle timeouts (15s/15s/60s), a 1 MB body limit, a 1024-connection concurrency cap, and recovers from handler panics.
-
-### API Endpoints
-
-- **Health Check**: `/healthz` — returns `{"status":"ok"}`; cheap, never touches the indexes.
-- **Metrics**: `/metrics` — Prometheus text format: request counters and latency histograms per route and status code, plus `fuzzy_budget_trips_total` (how many fuzzy searches returned budget-truncated partial results), the `fuzzy_build_state` gauge (0 not built / 1 building / 2 built / 3 disabled), and the per-scrape runtime gauges `go_goroutines` and `go_heap_alloc_bytes`.
-- **Find Nearest City**: `/nearest?lat=<latitude>&lon=<longitude>&rank=distance|population>` — lat/lon must be finite and in range (`[-90, 90]` / `[-180, 180]`); anything else returns 400. `rank` is optional (default `distance`; any other value returns 400). `rank=population` applies weighted semantics: cities are scored by the gravity model `population / (d² + 1)` (d = great-circle km) and the highest score wins — exactly, over the whole dataset — via a radius that escalates from 10 km until no city outside it can mathematically beat the in-radius best (a top-4096 population table tightens that bound and removes the terminal full-sphere scan). A nearby big city beats the closest village. Such responses also carry the winner's `Population`. Land queries resolve in microseconds-to-milliseconds; far-from-land (ocean) points remain multi-second at prod scale — measured 8–14 s in the v1.2 baseline, improved to 1–9.5 s by the top-K-anchored disc (v1.3), still dominated by the winning city's own distance. Concurrent population-ranked queries are gated by a CPU-sized semaphore; saturation returns `503` with `Retry-After: 1` rather than queueing unbounded scans. Returns the city plus `distance_km` (great-circle, 2 decimals). An optional `include=admin` (any other value returns 400) appends the winning city's administrative region — `admin1_code`, `admin1_name` (when the optional admin1-names dataset is loaded; codes-only deployments omit it), and `admin2_code` (when the city has one); attribution follows the nearest city, not polygon containment, so near a boundary it may report the region across the line.
-- **Batch Nearest**: `POST /nearest/batch` — JSON body `{"points":[{"lat":..,"lon":..,"rank":"distance|population","include":"admin"}, ...]}` (1–100 points; per-point optional fields with the same semantics as GET). Returns `{"results":[...]}` — a parallel array of the same objects GET `/nearest` returns, `null` for a point with no indexed city. `Content-Type: application/json` required; unknown JSON fields and invalid points are rejected with the offending index; the population-rank concurrency gate applies per point (a saturated gate mid-batch fails the whole request with 503 + `Retry-After`).
-- **Name Autocomplete**: `/autocomplete?name=<prefix>&country-code=<country_code>&limit=<1-50>` — indexed names starting with the prefix, sorted, each with its first city; default limit 10, empty `matches` array on no hit or unknown country.
-- **Find City by Name**: `/coordinates?name=<city_name>&country-code=<country_code>` — both parameters required. The name is matched exactly first, then fuzzily (edit distance ≤ 2), so typos like `Pars` still resolve. Surrounding whitespace is trimmed; names longer than 200 runes return 400 (bounds the fuzzy path's query cost).
-- **Find City by Postal Code**: `/postalCode?code=<postal_code>&country-code=<country_code>` — both parameters required. Inner spaces in postal codes are significant; only surrounding whitespace is trimmed. Note the data's form: the current GeoNames dump keys GB rows on the outward code (`SW1A`), not the full `SW1A 1AA` — query the form the dump holds.
-
-The server shuts down gracefully on SIGINT/SIGTERM (10s drain).
-
-## Testing
-
-```bash
-go test ./...
-```
-
-The S2 finder includes a brute-force oracle test, the initializer/download layer is covered by `httptest`-based tests, and the concurrency behavior is exercised by stress suites (run with `-race` for the race detector).
-
-## Initialization and Datasets
-
-This project requires datasets from the [GeoNames](http://www.geonames.org/) database. Specifically, you need `allCountries_dump.txt` for city data (extracted from the downloaded `allCountries.zip` archive) and `allCountries_zip.txt` for postal code data (extracted from `zipCodes.zip`). These files should be placed in the `datasets` folder.
-
-During initialization, the application checks if these datasets and the three pre-built indexes are available. If they are not, it downloads and extracts the required datasets and builds whichever of the three indexes is missing. Downloads are verified (HTTP status checked, streamed to a temporary file and renamed atomically), extraction is equally atomic (a crash mid-extract cannot leave a truncated dataset that a later boot would bake into the indexes), a pre-existing archive that fails to extract is re-downloaded once instead of blocking every later startup, and archives are deleted after a successful extraction. When all three pre-built indexes are present, the raw datasets are not even downloaded (a rebuild that needs them fetches them on demand) and the three indexes decode concurrently, which makes warm starts fast. One initializer per datasets folder is enforced with a lock file, so two cold-booting processes (e.g. a rolling update sharing a volume) cannot truncate each other's index writes.
-
-### Using the Server
-
-The server can be started using the following command:
-
-```bash
-go run cmd/server/main.go
-```
-
-## Contributing
-
-Contributions are welcome! Please fork the repository and submit pull requests for any improvements or bug fixes.
+[docs/](docs/README.md): [configuration](docs/configuration.md) ·
+[deployment](docs/deployment.md) · [architecture](docs/architecture.md) ·
+[performance](docs/performance.md) · [benchmarking](docs/benchmarking.md) ·
+[changelog](CHANGELOG.md)
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-
-## Acknowledgements
-
-- The [S2 Geometry Library](https://github.com/golang/geo) for providing the efficient spatial indexing and search capabilities.
-- [GeoNames](http://www.geonames.org/) for providing the geographical data used in this project.
-
-## Deployment
-
-The service ships as a container image built from the repo-root `Dockerfile` (multi-stage: `golang:1.26` builder → `gcr.io/distroless/static-debian12:nonroot` runtime; static binary, non-root user, no shell, no package manager). Pushed `v*` tags publish it to `ghcr.io/<owner>/city-finder` (lowercase owner) for `linux/amd64` and `linux/arm64` — see `.github/workflows/release.yml`.
-
-### Running the container
-
-```bash
-docker build -t city-finder .
-docker volume create city-finder-data
-
-docker run -d --name city-finder \
-  -p 3000:3000 \
-  -v city-finder-data:/data \
-  --memory 14g \
-  city-finder
-
-curl http://localhost:3000/healthz
-```
-
-The memory floor matters: a cold start on an empty volume peaks around 9 GB RSS while building indexes, and a warm server holds a 4.49 GB live heap after GC (RSS stays workload- and GOGC-dependent — a warm boot alone peaks ≈9 GB RSS; see the performance table above for the per-version figures).
-
-### Image environment variables
-
-| Variable | Default in image | Purpose |
-|---|---|---|
-| `PORT` | `3000` | HTTP listen port. |
-| `CONFIG_PATH` | `/etc/cityfinder/config.json` | Config file to load. Absolute paths are opened as-is; a relative path resolves against the container's working directory (`/app`), and a relative `datasets_folder` inside the config resolves against the config file's directory. |
-
-To run with your own config, mount it and point `CONFIG_PATH` at it (`docker run -v "$PWD/my-config.json:/etc/cityfinder/config.json:ro" ...`). The shipped default config keeps all GeoNames URLs and file names from the repo-root `config.json` but pins `datasets_folder` to `/data/datasets`.
-
-### Datasets storage (`/data`)
-
-Everything the server downloads and builds lives under `/data` — mount a volume there. Three options, in increasing order of boot speed:
-
-1. **Empty volume, download on boot.** First start downloads ~420 MB of GeoNames archives and builds all indexes: ~6 minutes and a multi-GB RAM spike. Fine for a trial, slow for every restart.
-2. **Raw datasets mounted.** Pre-place the extracted GeoNames dump files in the volume's `datasets/` folder; boot skips the download but still builds the indexes.
-3. **Pre-built indexes mounted (recommended).** Place `s2index.gob`, `name_index.gob` and `postal_code_index.gob` in the volume's `datasets/` folder; boot warm-starts in well under a minute.
-
-Seed a named volume with pre-built indexes from a local `datasets/` directory:
-
-```bash
-docker run --rm \
-  -v city-finder-data:/data \
-  -v "$PWD/datasets:/seed:ro" \
-  alpine sh -c 'mkdir -p /data/datasets && cp /seed/*.gob /data/datasets/'
-```
-
-### Helm chart
-
-`helm/city-finder` deploys the service (Deployment with rolling updates, Service, optional PVC and Ingress, probes on `GET /healthz`):
-
-```bash
-helm install city-finder ./helm/city-finder \
-  --namespace city-finder --create-namespace \
-  --set image.repository=ghcr.io/<owner>/city-finder \
-  --set image.tag=1.0.0 \
-  --set persistence.enabled=true
-```
-
-Defaults are sized for the v1.0 memory profile (memory request `10Gi`, limit `14Gi`, startup-probe budget 600 s). A single replica rolls without an outage window (`maxUnavailable: 0`, `maxSurge: 1`); scale to two or more replicas before enabling the (default-off) PodDisruptionBudget. Memory and startup-probe values are the two knobs to re-check whenever the index format changes. Validate any local customization with `helm lint` and `helm template ... | kubeconform -strict -summary`.
-
-### Cluster adoption (Harbor / ArgoCD)
-
-Registering the image in Harbor and creating the ArgoCD `Application` (auto-sync policy; the chart's manifests already carry `argocd.argoproj.io/sync-wave` annotations) is an operations handoff documented outside this repo. This repository ships the image and the chart, and intentionally contains nothing that talks to a cluster.
+MIT, see [LICENSE](LICENSE). Data: [GeoNames](https://www.geonames.org/)
+(CC BY 4.0). Geometry: [golang/geo](https://github.com/golang/geo).
