@@ -197,6 +197,30 @@ How to read it, and its limits:
   at full scale, wait for `fuzzy_build_state` = 2 before starting, otherwise
   typo lookups are measured while the fuzzy index is still building.
 
+### Footprint and answer-preservation (memreport)
+
+A change to index layout or formats must show both a footprint change and
+that no answer changed:
+
+```bash
+go build -o /tmp/memreport ./cmd/memreport          # once per side (base, head)
+/tmp/memreport gen -dir /data/ds -n 4000000          # same dataset for both sides
+/tmp/memreport measure -config /data/ds/config.json  # cold build (no indexes yet)
+/tmp/memreport measure -config /data/ds/config.json -dump answers.txt -profile heap.pprof
+```
+
+- Run each `measure` in a fresh process, and give each side its own copy of
+  the dataset directory. `config.json` holds an absolute `datasets_folder`;
+  point each copy at itself.
+- The transcript covers nearest (both ranks, with admin attribution),
+  exact, alternate-name and typo lookups, prefixes and postal codes, from
+  seeded queries. Compare the two sides with `cmp`. Run the head side twice
+  as well: two head transcripts must be identical too, which proves the
+  answers are deterministic.
+- Typo answers can legitimately differ only when a change fixes fuzzy
+  ranking. Classify every differing line (is the query an indexed key? did
+  a hit become a miss?) instead of accepting the difference wholesale.
+
 ### Profiling
 
 ```bash
@@ -315,6 +339,7 @@ supports.
 | metrics `Render`, `ObserveRequest` | /metrics serialization, per-request observation | populated registry | |
 | app `HTTP*/{core,production}` | one in-process request per route | 10k-city app, seeded random paths | no TCP/TLS; production − core = middleware cost |
 | `cmd/loadgen` (not a `go test` benchmark) | open-model rate sweep against a running server | seeded workloads (§4) | the knee on that deployment only |
+| `cmd/memreport` (not a `go test` benchmark) | end-to-end index footprint: cold build and warm start through `initializer.Initialize` (live heap with/without fuzzy, peak RSS, file sizes, timings) + an answer transcript | synthetic production-shaped GeoNames dump (`memreport gen`), or the real one | footprint changes on that dataset; byte-identical transcripts prove a layout change preserved every answer |
 
 ## 8. Baselines and corrections
 

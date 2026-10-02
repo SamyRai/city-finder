@@ -62,8 +62,13 @@ How initialization behaves:
 - **Index presence:** when all three indexes exist, the raw datasets are not
   downloaded at all and the indexes decode concurrently. A missing index is
   rebuilt on its own, fetching the datasets on demand.
-- **Old formats:** index files from older format versions are rejected and
-  rebuilt once, automatically.
+- **Old formats:** a name index in the previous format (v2) and a postal
+  index in v3 are loaded and rewritten in the current format on the first
+  boot, in place: no rebuild, no dataset download. The name file then shrinks
+  substantially, because it stops embedding a copy of the city table. Files
+  from formats older than that (name v1, postal v2) are rejected and rebuilt
+  once, automatically. So is a name index that does not match the S2 index
+  next to it.
 - **Concurrent boots:** a lock file allows one initializer per datasets
   folder, so two cold-booting pods sharing a volume cannot truncate each
   other's writes.
