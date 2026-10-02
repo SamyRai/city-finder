@@ -10,6 +10,20 @@ and this project adheres to
 
 ### Fixed
 
+- **Homonym resolution was nondeterministic.** The concurrent name-index
+  build merged worker results in completion order, so for a name shared by
+  several cities `FindCityByName` could return a different city after each
+  rebuild (100 winner changes across 6 identical builds of a 200k fixture).
+  It now always resolves in load order, as documented.
+- **Ambiguous typos resolved randomly.** When a typo matched several names,
+  the winner depended on map-iteration order in the fuzzy index (different
+  per process), and a distance-2 match could beat a distance-1 match.
+  Candidates are now ordered by edit distance, then name.
+- A cold-built server kept every source line of the GeoNames dump in
+  memory: the loader stored `City.Name`/`Country` as substrings of the line.
+  Name is now cloned and Country interned (test: 24 MB → < 4 MB retained
+  for 20k rows with 1 KiB of alternate names).
+
 - Fuzzy result cache eviction is O(1) FIFO instead of two full-map scans
   per insert at capacity (10k entries). Under a churning distinct-typo
   workload, the scan cost more than the search it cached:

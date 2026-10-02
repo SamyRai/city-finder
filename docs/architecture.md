@@ -10,6 +10,7 @@ cmd/server        HTTP server: main (process lifecycle, signals, PPROF_ADDR)
   diag            opt-in net/http/pprof listener
 cmd/build-index   offline index builder (test / prod datasets)
 cmd/loadgen       open-model load generator (thin CLI over internal/loadgen)
+cmd/memreport     end-to-end footprint measurement + answer transcript (before/after proofs)
 internal/loadgen  constant-arrival scheduler, outcome classification, sweep summaries
 lib/initializer   download → extract → load → build/deserialize the three indexes
 lib/config        config file loading and validation
@@ -22,6 +23,27 @@ lib/city          shared city types
 benchmarks        bench.sh (measurement protocol) + committed baseline outputs
 helm, deploy      Helm chart, image config
 ```
+
+## Data ownership
+
+Every city record exists once per process. The S2 index owns the city table
+(`S2Finder.Cities`, one contiguous `[]city.City` in loader row order). The
+name index stores **row numbers**, and the initializer attaches it to that
+same table with `ShareCities`. The attach is only accepted after proving the
+table identical: element-wise, by `city.Fingerprint`, or (for a legacy file
+numbered in another order) value-for-value with an id remap. Sharing can
+therefore never change an answer. Primary-name keys share their bytes with
+`City.Name`. The postal index keeps only the fields a lookup returns.
+
+| Index file | Format | Content |
+|---|---|---|
+| S2 | v3 | city table, admin ids/codes |
+| name | v3 | per-country name → row ids; references the S2 table by row count + fingerprint (a standalone index embeds its own table instead) |
+| postal | v4 | per country: sorted codes + latitude / longitude / place-name columns |
+
+The previous formats (name v2, postal v3) still load. The initializer
+rewrites them in the current format on the first boot, with no rebuild and
+no dataset download. An index that does not match the S2 index is rebuilt.
 
 ## Why S2
 
