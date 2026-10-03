@@ -10,6 +10,42 @@ and this project adheres to
 
 ### Fixed
 
+- **A cached fuzzy result hid cities added later.** After `AddCity`, a
+  typo whose result was already cached kept returning the old candidates
+  for the full one-hour TTL. Cache entries now carry a generation that
+  `AddCity` bumps. This also makes empty results safe to cache.
+- **Restart loop after an OOM kill.** The init lock was a pid file, and the
+  server runs as PID 1 in its container, so a restarted container found its
+  own pid in the leftover file and refused to start. The lock is now a
+  `flock`, which the kernel releases when the holder dies.
+- **Metrics and access log recorded errors as 200.** Router 404/405s and
+  handler errors were logged with the default status, because fiber writes
+  the error response after the middleware chain unwinds. They are now
+  logged with their real status, and unrouted requests are labelled
+  `(unrouted)` instead of `/`. Handler panics are now counted as 500s.
+- **A population batch could 503 itself.** On hosts with more than 8 cores
+  a single batch fanned out wider than the population gate. Batches with
+  population points now cap their fan-out at the gate size.
+- Dataset zips that ship a `readme.txt` next to the data file (GeoNames
+  postal archives) were rejected. Extraction now skips readme entries and
+  directories; downloaded and extracted files are fsynced before they are
+  renamed into place.
+- Index files were renamed into place without an fsync, so a power loss
+  could leave an empty or partial index under the final name. Writes are
+  now fsynced, and the directory is synced after the rename.
+- `NearestPlace` with a NaN, infinite or past-the-pole point now returns
+  `coordinates.ErrInvalidCoordinate`. Before, a population query escalated
+  to the full-sphere scan (seconds at production scale). The HTTP layer
+  already validated input.
+- Config files: content after the JSON object is now a load error (it was
+  silently ignored). Unknown keys are logged at startup. Startup fails with
+  a clear message when a dataset or index file name is missing, or when two
+  keys name the same file.
+- `PrefixNames` on a name index loaded detached from its city table could
+  return a match with a nil city.
+- Bad `lat`/`lon` parameters are no longer logged per request (a log
+  amplification path).
+
 - **Homonym resolution was nondeterministic.** The concurrent name-index
   build merged worker results in completion order, so for a name shared by
   several cities `FindCityByName` could return a different city after each
@@ -55,6 +91,10 @@ and this project adheres to
 
 ### Added
 
+- `cmd/memreport`: a synthetic GeoNames generator plus an end-to-end
+  measurement of heap, peak RSS, index file sizes and init time, with an
+  answer transcript for before/after comparison.
+- Fuzz targets for the three index deserializers.
 - `cmd/server/app`: the single owner of the production HTTP stack (fiber
   config, recover, access log, metrics, routes), used by `main` and the
   HTTP benchmarks. HTTP benchmarks now run `core` and `production`
@@ -84,6 +124,53 @@ and this project adheres to
   time, which has no effect on a compiled binary.
 
 ### Changed
+
+- **Index footprint.** Measured with `cmd/memreport` on a 4M-city synthetic
+  GeoNames dataset (answer transcripts byte-identical for nearest, prefix
+  and postal lookups):
+
+  | | before | after |
+  |---|---|---|
+  | heap after warm boot | 1234 MB | 724 MB (−41%) |
+  | heap with fuzzy index | 1497 MB | 856 MB (−43%) |
+  | fuzzy index | 263 MB | 132 MB (−50%) |
+  | heap after cold build | 1510 MB | 734 MB (−51%) |
+  | index files | 286 MB | 183 MB (−36%) |
+  | cold init | 58.8 s | 46.3 s |
+
+  The changes behind these numbers:
+  - The name index shares the S2 index's city table instead of holding a
+    second copy (name format v3).
+  - The postal index keeps only the fields a lookup returns (postal format
+    v4).
+  - Fuzzy posting lists are delta-varint encoded.
+  - Cities no longer pin their source lines.
+  - Country codes are interned.
+
+  Old index files still load and are rewritten in the new format on first
+  boot, with no rebuild. See `docs/performance.md`.
+- Index files are decoded by streaming (file → zstd → gob) instead of
+  decompressing whole-file buffers. The framing now lives in one package,
+  `lib/indexfile`, instead of three copies. S2 decode is 15% faster with
+  16% less allocation. At 4M cities, warm-boot peak RSS dropped by 130–200 MB
+  and warm init by ~1 s (two interleaved pairs).
+- Population-ranked queries skip the exact distance for top-K cities that
+  cannot change the bound (−70% on land queries), and reuse a pooled
+  query. The top-K table is selected with a bounded heap instead of
+  sorting every populated city (1M cities: 314 ms → 7 ms per boot).
+- Fuzzy search dedups with a pooled bitset and runs the length filter
+  first (typo lookups −41%, worst-case walk −31%, 2.3 MB → 6 KB allocated).
+  Cache hits no longer format a key (−19%, zero allocations).
+- ETag is computed by the server's own middleware. It produces the same
+  tags as fiber's, without rebuilding a CRC table per response
+  (`/autocomplete` and `/postalCode` −11–12%).
+- Batch requests stop executing points after the first failing one; the
+  reported failure is unchanged. `/healthz` serves fixed bytes.
+- The cold-build loader no longer pins each row's source line through
+  alternate names and admin codes. The row slice is sized from the file's
+  line count instead of a bytes-per-line guess that overshot by ~8%.
+- **Library API:** the exported `postalCode.Finder.PostalCode` map is gone
+  (use `Len()`).
 
 - Documentation consolidated under `docs/` (`api`, `configuration`,
   `deployment`, `architecture`, `performance`, `benchmarking`). The README
