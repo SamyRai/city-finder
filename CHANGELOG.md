@@ -30,6 +30,10 @@ and this project adheres to
   postal archives) were rejected. Extraction now skips readme entries and
   directories; downloaded and extracted files are fsynced before they are
   renamed into place.
+- A single network blip during the cold-boot dataset download failed
+  startup. Connection errors, dropped transfers, 5xx and 429 are now
+  retried up to 3 attempts with backoff (2 s, then 4 s). Other 4xx
+  responses and client timeouts still fail at once.
 - Index files were renamed into place without an fsync, so a power loss
   could leave an empty or partial index under the final name. Writes are
   now fsynced, and the directory is synced after the rename.
