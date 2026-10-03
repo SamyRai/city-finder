@@ -193,3 +193,19 @@ func BenchmarkMemoryUsage(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkTopPopulationsOf measures the boot-time top-K table construction
+// over 1M cities where every city is populated (the selection's worst case).
+func BenchmarkTopPopulationsOf(b *testing.B) {
+	rng := rand.New(rand.NewSource(1))
+	cities := make([]city.City, 1_000_000)
+	for i := range cities {
+		cities[i] = city.City{Latitude: rng.Float64()*180 - 90, Longitude: rng.Float64()*360 - 180, Population: int32(rng.Intn(10_000_000) + 1)}
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if len(topPopulationsOf(cities)) != topPopulationK {
+			b.Fatal("short table")
+		}
+	}
+}

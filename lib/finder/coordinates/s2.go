@@ -10,7 +10,7 @@ import (
 	"log"
 	"math"
 	"os"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -213,33 +213,83 @@ type topPopulationEntry struct {
 // simply holds them all, which leaves the K-th-largest population at 0 —
 // populationOutsideBound then relies on exact scores alone.
 func topPopulationsOf(cities []city.City) []topPopulationEntry {
-	type ref struct {
-		population int32
-		index      int
-	}
-	refs := make([]ref, 0, min(topPopulationK, len(cities)))
-	for i := range cities {
-		if cities[i].Population > 0 {
-			refs = append(refs, ref{population: cities[i].Population, index: i})
-		}
-	}
-	sort.Slice(refs, func(a, b int) bool {
-		if refs[a].population != refs[b].population {
-			return refs[a].population > refs[b].population
-		}
-		return refs[a].index < refs[b].index
-	})
-	if len(refs) > topPopulationK {
-		refs = refs[:topPopulationK]
-	}
-	entries := make([]topPopulationEntry, len(refs))
-	for i, r := range refs {
+	top := topPopulationRefs(cities, topPopulationK)
+	entries := make([]topPopulationEntry, len(top))
+	for i, r := range top {
 		entries[i] = topPopulationEntry{
 			population: r.population,
 			point:      s2.PointFromLatLng(s2.LatLngFromDegrees(cities[r.index].Latitude, cities[r.index].Longitude)),
 		}
 	}
 	return entries
+}
+
+// populationRef is a candidate row of the top-K table.
+type populationRef struct {
+	population int32
+	index      int
+}
+
+// outranks is the table order: larger population first, then lower index.
+func (r populationRef) outranks(o populationRef) bool {
+	if r.population != o.population {
+		return r.population > o.population
+	}
+	return r.index < o.index
+}
+
+// topPopulationRefs selects the k best positive-population rows in table
+// order with a size-k heap whose root is the weakest kept row: O(n log k)
+// time and O(k) memory, where sorting every populated row was O(n log n)
+// time and O(n) memory on each boot.
+func topPopulationRefs(cities []city.City, k int) []populationRef {
+	heap := make([]populationRef, 0, min(k, len(cities)))
+	// siftDown restores the heap below i; a parent never outranks a child.
+	siftDown := func(i int) {
+		for {
+			weakest, l, r := i, 2*i+1, 2*i+2
+			if l < len(heap) && heap[weakest].outranks(heap[l]) {
+				weakest = l
+			}
+			if r < len(heap) && heap[weakest].outranks(heap[r]) {
+				weakest = r
+			}
+			if weakest == i {
+				return
+			}
+			heap[i], heap[weakest] = heap[weakest], heap[i]
+			i = weakest
+		}
+	}
+	for i := range cities {
+		if cities[i].Population <= 0 || k == 0 {
+			continue
+		}
+		ref := populationRef{population: cities[i].Population, index: i}
+		if len(heap) < k {
+			heap = append(heap, ref)
+			for c := len(heap) - 1; c > 0; {
+				p := (c - 1) / 2
+				if !heap[p].outranks(heap[c]) {
+					break
+				}
+				heap[p], heap[c] = heap[c], heap[p]
+				c = p
+			}
+			continue
+		}
+		if ref.outranks(heap[0]) {
+			heap[0] = ref
+			siftDown(0)
+		}
+	}
+	slices.SortFunc(heap, func(a, b populationRef) int {
+		if a.outranks(b) {
+			return -1
+		}
+		return 1 // distinct indexes: never equal
+	})
+	return heap
 }
 
 // SerializableS2Finder is the v3 on-disk payload: the city table plus the
