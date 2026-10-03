@@ -52,11 +52,7 @@ const (
 )
 
 // indexHeader is the first gob value of every serialized S2 index.
-type indexHeader struct {
-	Magic   string
-	Version uint32
-	Count   int
-}
+type indexHeader = indexfile.Header
 
 // payloadBounds relates the header's city count to the file, so a bomb is
 // rejected before it inflates (see indexfile.EntryBounds). Measured on the
@@ -77,6 +73,9 @@ var payloadBounds = indexfile.EntryBounds{MaxBytesPerEntry: 2 << 10, MaxEntriesP
 // undecodable, or written by an incompatible format version. Detect it with
 // errors.Is to decide whether a rebuild from source data is possible.
 var ErrCorruptIndex = errors.New("s2 index file is corrupt or incompatible")
+
+// indexSpec is what indexfile.OpenIndex checks a file against.
+var indexSpec = indexfile.Spec{Magic: indexMagic, Versions: []uint32{indexVersion}, Corrupt: ErrCorruptIndex, Bounds: &payloadBounds}
 
 // SerializeIndex saves the finder's data to a file in the format described
 // above, atomically and durably (lib/indexfile.Write).
@@ -106,31 +105,13 @@ func (f *S2Finder) SerializeIndex(filepath string) error {
 // (lib/indexfile), so no whole-file buffer is held next to the decoded
 // cities.
 func DeserializeIndex(filepath string) (*S2Finder, error) {
-	file, err := indexfile.Open(filepath)
+	file, header, err := indexfile.OpenIndex(filepath, indexSpec)
 	if err != nil {
-		return nil, fmt.Errorf("error opening file: %w", err)
+		return nil, err
 	}
 	defer file.Close()
+	corrupt := func(format string, args ...any) error { return indexSpec.Corruptf(filepath, format, args...) }
 
-	corrupt := func(format string, args ...any) error {
-		return fmt.Errorf("%w: index file %s appears truncated or from an incompatible version; delete %s or rebuild the index: "+format,
-			append([]any{ErrCorruptIndex, filepath, filepath}, args...)...)
-	}
-
-	var header indexHeader
-	if err := file.Header(&header); err != nil {
-		return nil, corrupt("%v", err)
-	}
-	if header.Magic != indexMagic {
-		return nil, corrupt("bad magic %q (want %q)", header.Magic, indexMagic)
-	}
-	if header.Version != indexVersion {
-		return nil, corrupt("unsupported version %d (want %d)", header.Version, indexVersion)
-	}
-
-	if err := file.BoundByEntries(header.Count, payloadBounds); err != nil {
-		return nil, corrupt("%v", err)
-	}
 	var payload SerializableS2Finder
 	if err := file.Payload(&payload); err != nil {
 		return nil, corrupt("%v", err)
