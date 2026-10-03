@@ -368,27 +368,33 @@ func containsName(names []string, s string) bool {
 }
 
 // TestWarmFuzzyIdempotentNonBlocking pins the WarmFuzzy contract: the call
-// arranges the background build and returns immediately (well under the
-// build's wall time), further calls are no-ops that leave the built state
-// intact, and on an empty index it settles back to fuzzyNotBuilt (nothing to
-// build; later AddCity growth can still trigger a fresh build).
+// arranges the background build and returns without waiting on the index
+// lock (checked deterministically by holding the write lock, not by timing),
+// further calls are no-ops that leave the built state intact, and on an empty
+// index it settles back to fuzzyNotBuilt (nothing to build; later AddCity
+// growth can still trigger a fresh build).
 func TestWarmFuzzyIdempotentNonBlocking(t *testing.T) {
-	finder := BuildIndex(gateCities(50_000)) // build measurably outlasts the call
+	finder := BuildIndex(gateCities(50_000))
 
-	start := time.Now()
-	finder.WarmFuzzy()
-	callElapsed := time.Since(start)
-	if st := finder.fuzzyState.Load(); st != fuzzyBuilding && st != fuzzyBuilt {
-		t.Fatalf("after WarmFuzzy the state must be fuzzyBuilding (or already fuzzyBuilt), got %d", st)
+	finder.mutex.Lock()
+	returned := make(chan struct{})
+	go func() {
+		finder.WarmFuzzy()
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		finder.mutex.Unlock()
+		t.Fatal("WarmFuzzy blocked while the index write lock was held")
 	}
+	if st := finder.fuzzyState.Load(); st != fuzzyBuilding {
+		finder.mutex.Unlock()
+		t.Fatalf("after WarmFuzzy the state must be fuzzyBuilding, got %d", st)
+	}
+	finder.mutex.Unlock()
 
 	waitFuzzyBuilt(t, finder)
-	buildElapsed := time.Since(start)
-	if callElapsed >= buildElapsed/2 {
-		t.Fatalf("WarmFuzzy blocked on the build: call took %v vs build wall time %v (must be well under half)",
-			callElapsed, buildElapsed)
-	}
-	t.Logf("WarmFuzzy call: %v; background build wall time: %v", callElapsed, buildElapsed)
 
 	// Idempotent: calls from the built state are no-ops.
 	for i := 0; i < 3; i++ {
