@@ -128,6 +128,12 @@ type S2Finder struct {
 	// finder serves. Never serialized. S2Finder must stay pointer-only (the
 	// pool makes it nocopy; both constructors already return pointers).
 	distanceQueryPool sync.Pool
+
+	// populationQueryPool recycles the unbounded-result query of the
+	// population path (nearestByPopulation), which runs several discs per
+	// request; each disc sets its own distance limit on the pooled options.
+	// Same reuse-safety reading as distanceQueryPool.
+	populationQueryPool sync.Pool
 }
 
 // pooledDistanceQuery bundles the per-finder-reusable objects of the
@@ -159,6 +165,20 @@ func (f *S2Finder) distanceQuery() *pooledDistanceQuery {
 		return pq
 	}
 	options := s2.NewClosestEdgeQueryOptions().MaxResults(1)
+	return &pooledDistanceQuery{
+		options: options,
+		query:   s2.NewClosestEdgeQuery(f.Index, options),
+	}
+}
+
+// populationQuery acquires a population-path query bundle from the pool (or
+// builds one bound to this finder's index on first use). The options carry
+// no MaxResults: a disc must return every city inside it.
+func (f *S2Finder) populationQuery() *pooledDistanceQuery {
+	if pq, ok := f.populationQueryPool.Get().(*pooledDistanceQuery); ok {
+		return pq
+	}
+	options := s2.NewClosestEdgeQueryOptions()
 	return &pooledDistanceQuery{
 		options: options,
 		query:   s2.NewClosestEdgeQuery(f.Index, options),
@@ -662,13 +682,20 @@ func (f *S2Finder) populationOutsideBound(radiusKm float64, targetPoint s2.Point
 // With no population data anywhere (maxPopulation == 0), every score is 0
 // and the gravity winner is simply the nearest city.
 func (f *S2Finder) nearestByPopulation(targetPoint s2.Point) (s2.EdgeQueryResult, float64, error) {
+	// Every disc of this request runs on one pooled query: the options are
+	// shared with the query by pointer, so setting the limit reconfigures it,
+	// and each FindEdges returns a freshly allocated results slice, so earlier
+	// discs' results stay valid after later calls and after the Put.
+	pq := f.populationQuery()
+	defer f.populationQueryPool.Put(pq)
+	target := s2.NewMinDistanceToPointTarget(targetPoint)
 	queryAll := func(radiusKm float64, limited bool) []s2.EdgeQueryResult {
-		options := s2.NewClosestEdgeQueryOptions()
+		limit := s1.InfChordAngle() // the options' default: no limit
 		if limited {
-			options = options.DistanceLimit(kmToChordAngle(radiusKm).Successor())
+			limit = kmToChordAngle(radiusKm).Successor()
 		}
-		query := s2.NewClosestEdgeQuery(f.Index, options)
-		return query.FindEdges(s2.NewMinDistanceToPointTarget(targetPoint))
+		pq.options.DistanceLimit(limit)
+		return pq.query.FindEdges(target)
 	}
 
 	var none s2.EdgeQueryResult
