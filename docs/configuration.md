@@ -25,8 +25,19 @@ file's directory**, so the repo-root `config.json` (`"datasets"`) points at
 | `include_feature_classes` | `""` (everything) | Comma-separated GeoNames feature-class allowlist, e.g. `"P"` (populated places only). Invalid letters fail config load. |
 | `exclude_admin_divisions` | `false` | Drop feature-class `A` rows (countries, states, districts) |
 
-Unknown keys are ignored. The v1.1 `s2.min_level`/`max_level`/`max_cells`
-keys were removed in v1.2 because nothing consumed them.
+Unknown keys still load, but the server logs them once at startup
+(`ignoring unknown keys ...`), so a misspelled key does not silently fall
+back to its zero value. The v1.1 `s2.min_level`/`max_level`/`max_cells` keys
+were removed in v1.2 because nothing consumed them. A file holding anything
+after the JSON object fails to load.
+
+At startup the server also checks that the dataset and index file names
+(`all_cities_file`, `postal_codes_file`, `s2.index_file`, `name_index_file`,
+`postal_code_index_file`) are set. It also checks that no two keys,
+including the zips and the admin1 file, name the same file, since one
+download or index would overwrite the other. The zips and the admin1 file
+may be left empty: the zips are only used when a dataset must be
+downloaded.
 
 ### Data scope knobs
 

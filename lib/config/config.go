@@ -1,10 +1,16 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/SamyRai/cityFinder/lib/dataLoader"
@@ -203,15 +209,28 @@ func LoadConfig(configPath string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open config file: %v", err)
 	}
-	decoder := json.NewDecoder(file)
-	decodeErr := decoder.Decode(cfg)
+	data, readErr := io.ReadAll(file)
 	closeErr := file.Close()
-
-	if decodeErr != nil {
-		return nil, fmt.Errorf("failed to decode config file: %v", decodeErr)
+	if readErr != nil {
+		return nil, fmt.Errorf("failed to read config file: %v", readErr)
 	}
 	if closeErr != nil {
 		return nil, fmt.Errorf("failed to close config file: %v", closeErr)
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(cfg); err != nil {
+		return nil, fmt.Errorf("failed to decode config file: %v", err)
+	}
+	// One JSON document per file: anything after it (a second object, a
+	// botched merge) would otherwise be silently ignored.
+	if _, err := decoder.Token(); err != io.EOF {
+		return nil, fmt.Errorf("failed to decode config file: unexpected content after the JSON object")
+	}
+	// Unknown keys still load (old files carry removed keys, see S2), but a
+	// misspelled key would silently fall back to its zero value, so say so.
+	if unknown := unknownKeys(data); len(unknown) > 0 {
+		log.Printf("config %s: ignoring unknown keys %s", configPath, strings.Join(unknown, ", "))
 	}
 
 	// Relative datasets_folder values resolve against the config file's
@@ -224,4 +243,90 @@ func LoadConfig(configPath string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// unknownKeys lists the keys of a config document that no Config field
+// decodes (top level and inside "s2"), sorted. A document that is not an
+// object yields nothing: Decode has already reported it.
+func unknownKeys(data []byte) []string {
+	var top map[string]json.RawMessage
+	if json.Unmarshal(data, &top) != nil {
+		return nil
+	}
+	var unknown []string
+	known := jsonKeys(reflect.TypeOf(Config{}))
+	for key, raw := range top {
+		if !known[key] {
+			unknown = append(unknown, key)
+			continue
+		}
+		if key == "s2" {
+			var nested map[string]json.RawMessage
+			if json.Unmarshal(raw, &nested) == nil {
+				s2Known := jsonKeys(reflect.TypeOf(S2{}))
+				for k := range nested {
+					if !s2Known[k] {
+						unknown = append(unknown, "s2."+k)
+					}
+				}
+			}
+		}
+	}
+	slices.Sort(unknown)
+	return unknown
+}
+
+// jsonKeys returns the json tag names of t's fields.
+func jsonKeys(t reflect.Type) map[string]bool {
+	keys := make(map[string]bool, t.NumField())
+	for i := range t.NumField() {
+		if name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ","); name != "" && name != "-" {
+			keys[name] = true
+		}
+	}
+	return keys
+}
+
+// Validate checks what Initialize needs from a config: every dataset and
+// index file name is set, and no two of them name the same file — a shared
+// name would make one download or index overwrite another. LoadConfig
+// applies no defaults and accepts partial configs, so this runs where the
+// files are used, not at load.
+func (c *Config) Validate() error {
+	// The zips are only touched when a dataset must be downloaded, and the
+	// admin1 names file is optional, so those may be empty; every name that
+	// is set takes part in the collision check.
+	files := []struct {
+		key, value string
+		required   bool
+	}{
+		{"all_cities_file", c.AllCitiesFile, true},
+		{"postal_codes_file", c.PostalCodesFile, true},
+		{"name_index_file", c.NameIndexFile, true},
+		{"postal_code_index_file", c.PostalCodeIndexFile, true},
+		{"s2.index_file", c.S2.IndexFile, true},
+		{"all_cities_zip", c.AllCitiesZip, false},
+		{"postal_codes_zip", c.PostalCodesZip, false},
+		{"admin1_codes_file", c.Admin1CodesFile, false},
+	}
+	var errs []error
+	owner := make(map[string]string, len(files))
+	for _, f := range files {
+		if f.value == "" {
+			if f.required {
+				errs = append(errs, fmt.Errorf("%s is required", f.key))
+			}
+			continue
+		}
+		name := filepath.Clean(f.value)
+		if prev, dup := owner[name]; dup {
+			errs = append(errs, fmt.Errorf("%s and %s both name %q", prev, f.key, f.value))
+			continue
+		}
+		owner[name] = f.key
+	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
+	return nil
 }
