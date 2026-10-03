@@ -169,6 +169,10 @@ and this project adheres to
 - The cold-build loader no longer pins each row's source line through
   alternate names and admin codes. The row slice is sized from the file's
   line count instead of a bytes-per-line guess that overshot by ~8%.
+- The server returns boot garbage to the OS once init finishes. On the 4M
+  dataset, RSS right after init goes from 2.4 GB to 0.87 GB (warm) and from
+  3.5 GB to 1.3 GB (cold), instead of sitting near the boot peak until the
+  scavenger catches up. `cmd/memreport` reports both values.
 - **Library API:** the exported `postalCode.Finder.PostalCode` map is gone
   (use `Len()`).
 

@@ -136,6 +136,29 @@ profile (`PPROF_ADDR`) on the real dump.
 - The ~1.2 GB fuzzy index should land around 0.6 GB.
 - The name file (531 MB) should lose most of its 546 MB-raw city table.
 
+### Boot path follow-ups (same dataset and machine)
+
+Later changes target the boot path:
+- streaming index decode;
+- the loader no longer pinning lines through alternate names and admin
+  codes, and its row slice sized exactly;
+- top-K selection with a heap;
+- the server returning boot garbage to the OS (`debug.FreeOSMemory`) once
+  init finishes.
+
+| Metric (4M cities) | Before | After |
+|---|---|---|
+| Warm start: init time / peak RSS | 11.1–11.3 s / 2,915–3,084 MB | 10.0–10.3 s / 2,781–2,882 MB |
+| Warm start: RSS right after init → after the release | — | 2,415 → **870 MB** |
+| Cold build: init time / peak RSS | 46.3 s / 4,580 MB | 36.4 s / 4,453 MB |
+| Cold build: RSS right after init → after the release | — | 3,491 → **1,341 MB** |
+
+The warm rows are two interleaved before/after pairs, with transcripts
+byte-identical across all four runs. The cold row and the release rows are
+single runs. Without the release, the resident set stays near the boot peak
+until the background scavenger returns the pages, which takes minutes. A
+container's memory metric then reports the boot peak, not the working set.
+
 ## Memory sizing
 
 Figures below are the v1.3 production measurements. See the reduction above
