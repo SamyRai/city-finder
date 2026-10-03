@@ -15,72 +15,73 @@ const (
 )
 
 // ensureFuzzyBuilt lazily brings the fuzzy index toward a terminal state:
-// built, or disabled when the index exceeds Options.FuzzyMaxNames. It is safe to
-// call from any lookup path — the common case is one atomic load — and no
-// caller ever waits on a build: the goroutine that wins the fuzzyNotBuilt ->
-// fuzzyBuilding CAS only ARRANGES the work, spawning buildFuzzyIndex in a
-// background goroutine and returning immediately. The triggering lookup then
-// takes the same degraded exact-only path concurrent lookups always did
-// (previously it blocked for the full 30-90 s in-request build), and every
-// later fuzzy lookup observes the finished index once the build lands.
+// built, or disabled when the index exceeds Options.FuzzyMaxNames. It is safe
+// to call from any lookup path — the common case is one atomic load — and no
+// caller ever waits on a build or even on the index lock: the goroutine that
+// wins the fuzzyNotBuilt -> fuzzyBuilding CAS spawns buildFuzzyIndex and
+// returns immediately, and every other caller sees fuzzyBuilding and returns.
+// The triggering lookup then takes the degraded exact-only path concurrent
+// lookups always did, and every later fuzzy lookup observes the finished
+// index once the build lands.
 //
-// The build itself deliberately holds NO lock. Only the name snapshot (RLock)
-// and the final pointer swap (Lock, microseconds) take the mutex, so exact
-// lookups keep flowing while the n-gram index is under construction.
+// Everything that reads the index — the key-total gate, the name snapshot —
+// runs inside the build goroutine, so the CAS is the only work on the
+// caller's path and exactly one snapshot is ever taken per attempt.
 func (nf *Finder) ensureFuzzyBuilt() {
-	switch nf.fuzzyState.Load() {
-	case fuzzyBuilt, fuzzyDisabled, fuzzyBuilding:
+	if nf.fuzzyState.Load() != fuzzyNotBuilt {
 		return
 	}
-
-	// Snapshot under the read lock: the key total gates the build, the name
-	// list seeds it, and both must come from one consistent view of the index.
-	nf.mutex.RLock()
-	totalKeys := nf.totalIndexKeys()
-	if totalKeys > nf.opts.FuzzyMaxNames {
-		nf.mutex.RUnlock()
-		// Terminal, logged exactly once by the goroutine that flips the state.
-		if nf.fuzzyState.CompareAndSwap(fuzzyNotBuilt, fuzzyDisabled) {
-			log.Printf("name index has %d keys over fuzzy threshold %d; fuzzy matching disabled (exact-only) — raise Options.FuzzyMaxNames to override",
-				totalKeys, nf.opts.FuzzyMaxNames)
-		}
-		return
+	if nf.fuzzyState.CompareAndSwap(fuzzyNotBuilt, fuzzyBuilding) {
+		// The goroutine owns the state machine from here (building ->
+		// built/notBuilt/disabled). A discarded build resets to
+		// fuzzyNotBuilt and is retried by the next ensureFuzzyBuilt call —
+		// WarmFuzzy gives initializers an explicit way to trigger that retry.
+		go nf.buildFuzzyIndex()
 	}
-	names := nf.namesFromIndex()
-	nf.mutex.RUnlock()
-
-	if !nf.fuzzyState.CompareAndSwap(fuzzyNotBuilt, fuzzyBuilding) {
-		return // lost the race to another builder; it publishes the index
-	}
-
-	// Spawn and return: the goroutine owns the state machine from here
-	// (building -> built/notBuilt/disabled), and no lookup path ever blocks
-	// on it. A discarded build resets to fuzzyNotBuilt and is retried by the
-	// next ensureFuzzyBuilt call — WarmFuzzy gives initializers an explicit
-	// way to trigger that retry loop.
-	go nf.buildFuzzyIndex(names, totalKeys)
 }
 
-// buildFuzzyIndex is the background half of ensureFuzzyBuilt; it runs in its
-// own goroutine on the snapshot (names, totalKeys) the triggering caller
-// took. The goroutine is owned by the Finder, terminates on its own after
-// exactly one build, and never holds nf.mutex across the construction.
+// snapshotNames takes the build's consistent view of the index under the
+// read lock: the key total gates the build and seeds the commit check, the
+// name list seeds the n-gram index. Over Options.FuzzyMaxNames it returns
+// ok=false after moving the state to the terminal fuzzyDisabled (logged
+// exactly once, because only the goroutine that won the fuzzyBuilding CAS
+// gets here).
+func (nf *Finder) snapshotNames() (names []string, totalKeys int, ok bool) {
+	nf.mutex.RLock()
+	defer nf.mutex.RUnlock()
+	nf.fuzzyStats.snapshots.Add(1)
+	totalKeys = nf.totalIndexKeys()
+	if totalKeys > nf.opts.FuzzyMaxNames {
+		log.Printf("name index has %d keys over fuzzy threshold %d; fuzzy matching disabled (exact-only) — raise Options.FuzzyMaxNames to override",
+			totalKeys, nf.opts.FuzzyMaxNames)
+		nf.fuzzyState.Store(fuzzyDisabled) // after the log: a settled state implies the line is out
+		return nil, totalKeys, false
+	}
+	return nf.namesFromIndex(), totalKeys, true
+}
+
+// buildFuzzyIndex is the background half of ensureFuzzyBuilt. It runs in its
+// own goroutine, terminates on its own after exactly one build attempt, and
+// never holds nf.mutex across the construction.
 //
 // Lock-free construction of an immutable structure: readers can neither
 // observe a half-built index nor be blocked by the build.
-func (nf *Finder) buildFuzzyIndex(names []string, totalKeys int) {
+func (nf *Finder) buildFuzzyIndex() {
+	names, totalKeys, ok := nf.snapshotNames()
+	if !ok {
+		return
+	}
 	index, err := buildNGramIndex(names)
 	if err != nil {
 		// Terminal disable, not a retry: the corpus cannot be indexed within
 		// int32 CSR offsets, so every rebuild would fail identically. Mirrors
-		// the Options.FuzzyMaxNames disable above — exact-only from here on. Only the
-		// goroutine that won the fuzzyBuilding CAS reaches this point, so the
-		// log fires exactly once.
-		nf.fuzzyState.Store(fuzzyDisabled)
+		// the Options.FuzzyMaxNames disable — exact-only from here on. Only
+		// the goroutine that won the fuzzyBuilding CAS reaches this point, so
+		// the log fires exactly once.
 		log.Printf("fuzzy n-gram index build failed; fuzzy matching disabled (exact-only): %v", err)
+		nf.fuzzyState.Store(fuzzyDisabled)
 		return
 	}
-
 	index.bind(nf.opts.FuzzyMaxCandidates, &nf.fuzzyStats)
 
 	// Commit under the write lock. The index only ever grows — every
@@ -118,11 +119,14 @@ func (nf *Finder) FuzzyBuildState() int32 {
 }
 
 // WarmFuzzy triggers the lazy fuzzy (n-gram) index build in the background
-// without blocking the caller. It is idempotent and safe to call from any
-// state: with the index already built, building, or disabled it is a no-op
-// (one atomic load), and on a fresh index it snapshots the inverted index
-// and hands the construction to a background goroutine (see
-// ensureFuzzyBuilt for the state machine).
+// without blocking the caller: it never waits on the index lock, a build, or
+// the name snapshot, all of which belong to the background goroutine. It is
+// idempotent and safe to call from any state: with the index already built,
+// building, or disabled it is a no-op (one atomic load), and on a fresh index
+// it claims the build with one CAS and spawns the goroutine (see
+// ensureFuzzyBuilt for the state machine). Over Options.FuzzyMaxNames the
+// state reads building for a moment before the goroutine settles it at
+// disabled.
 //
 // Call it once after initialization so the first user typo query does not
 // fall into the degraded exact-only window: until the background build

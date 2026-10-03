@@ -163,6 +163,7 @@ func TestFuzzyDisabledOverThreshold(t *testing.T) {
 		t.Fatalf("second typo lookup over the threshold must return nil, got %q", got.Name)
 	}
 
+	waitFuzzySettled(t, finder) // the gate runs in the build goroutine
 	finder.mutex.RLock()
 	ngrams := finder.ngrams
 	finder.mutex.RUnlock()

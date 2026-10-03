@@ -28,6 +28,10 @@ type fuzzyStats struct {
 	// Last-writer-wins across concurrent searches; never used for control
 	// flow.
 	walkedLast, verifiedLast atomic.Int64
+
+	// snapshots counts the name snapshots taken for fuzzy builds: one per
+	// build attempt, never one per caller.
+	snapshots atomic.Int64
 }
 
 // record notes one completed search: its work counters, and (when the walk

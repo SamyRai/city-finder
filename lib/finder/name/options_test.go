@@ -22,6 +22,7 @@ func TestOptionsArePerFinder(t *testing.T) {
 
 	gated.WarmFuzzy()
 	open.WarmFuzzy()
+	waitFuzzySettled(t, gated)
 	assert.EqualValues(t, fuzzyDisabled, gated.FuzzyBuildState())
 	waitFuzzyBuilt(t, open)
 
@@ -41,5 +42,6 @@ func TestDeserializeIndexHonorsOptions(t *testing.T) {
 	assert.Equal(t, opts, loaded.opts)
 
 	loaded.WarmFuzzy()
+	waitFuzzySettled(t, loaded)
 	assert.EqualValues(t, fuzzyDisabled, loaded.FuzzyBuildState(), "5 keys exceed the per-Finder gate of 3")
 }
