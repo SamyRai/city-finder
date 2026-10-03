@@ -60,8 +60,9 @@ file to force a rebuild.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PORT` | `3000` | HTTP listen port |
+| `PORT` | `3000` | HTTP listen port: a decimal number from 1 to 65535. Anything else (`abc`, `0`, `99999`) makes the server exit with status 1 immediately, before the index load. |
 | `PPROF_ADDR` | unset (off) | Opt-in `net/http/pprof` listener on its own address and mux, never on the API port. Bind it to loopback (`127.0.0.1:6060`) and reach it via a port-forward: it exposes goroutine stacks and heap contents. Used for profiling and to collect PGO profiles from a real workload. |
+| `CONFIG_FILE` | unset | Deprecated alias of `CONFIG_PATH`, honored only when `CONFIG_PATH` is set to the empty string (and by `config.LoadConfig("")` in the Go API). Using it logs a deprecation notice; set `CONFIG_PATH` instead. |
 | `GOMAXPROCS` | runtime default | With no container CPU limit the runtime uses every host core. Pin it for reproducible throughput. The population gate is `min(GOMAXPROCS, 8)`, batch fan-out is `GOMAXPROCS`. |
 | `GOMEMLIMIT`, `GOGC` | unset / 100 | GC soft limit and pacing. Set `GOMEMLIMIT` below the container memory limit. |
 

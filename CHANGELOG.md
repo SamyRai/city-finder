@@ -23,6 +23,11 @@ and this project adheres to
 
 ### Fixed
 
+- **A bad `PORT` failed only after the full index load.** `PORT=abc`,
+  `0` or `99999` exited with status 1 after the 20 s (warm) to multi-minute
+  (cold) boot. It is now validated first (decimal, 1-65535) and the server
+  exits immediately with `invalid PORT ...`.
+
 - **A panic inside a `POST /nearest/batch` worker killed the process.**
   Batch points run on their own goroutines, outside the recover middleware
   that protects `GET /nearest`. A panicking point now becomes the same
@@ -164,6 +169,13 @@ and this project adheres to
   time, which has no effect on a compiled binary.
 
 ### Changed
+
+- **Process environment has one owner.** `PORT`, `PPROF_ADDR` and
+  `CONFIG_PATH` are read once, in `config.LoadRuntime`, and passed down;
+  `cmd/server` no longer reads the environment itself. The previously
+  undocumented `CONFIG_FILE` (a fallback used when `CONFIG_PATH` is empty)
+  is now documented as deprecated and logs a notice when used; it keeps
+  working.
 
 - **Server wiring (internal, no wire change).** The population gate, batch
   fan-out limit and per-point query core are owned by a `routes.Handlers`

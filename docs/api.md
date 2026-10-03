@@ -84,7 +84,7 @@ full `SW1A 1AA`.
 
 | Aspect | Value |
 |---|---|
-| Listen port | `PORT` env (default `3000`) |
+| Listen port | `PORT` env (default `3000`; validated at startup, 1-65535) |
 | Timeouts | read 15 s, write 15 s, idle 60 s |
 | Body limit | 1 MB (a 100-point batch is ~6 KB) |
 | Connection cap | 1024 concurrent connections |
