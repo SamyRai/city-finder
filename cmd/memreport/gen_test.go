@@ -11,6 +11,49 @@ import (
 	"github.com/SamyRai/cityFinder/lib/dataLoader"
 )
 
+// TestGenDatasetIsDeterministic pins that one seed always yields the same
+// bytes (a before/after comparison is meaningless otherwise) and that another
+// seed does not.
+func TestGenDatasetIsDeterministic(t *testing.T) {
+	files := []string{"allCountries_dump.txt", "allCountries_zip.txt", "admin1CodesASCII.txt"}
+	read := func(seed int64) map[string][]byte {
+		dir := t.TempDir()
+		if err := genDataset(dir, 500, seed); err != nil {
+			t.Fatal(err)
+		}
+		out := map[string][]byte{}
+		for _, name := range files {
+			b, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			out[name] = b
+		}
+		return out
+	}
+	a, b, c := read(7), read(7), read(8)
+	for _, name := range files {
+		if string(a[name]) != string(b[name]) {
+			t.Errorf("%s differs between runs with the same seed", name)
+		}
+		if string(a[name]) == string(c[name]) {
+			t.Errorf("%s identical across different seeds", name)
+		}
+	}
+}
+
+// TestGenDatasetUnwritableDirFails pins the error path: a regular file where
+// the output directory should be.
+func TestGenDatasetUnwritableDirFails(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(blocker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := genDataset(filepath.Join(blocker, "sub"), 10, 1); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
 // TestGenDatasetIsValidGeoNames pins that generated files are valid UTF-8 and
 // parse with the production loaders.
 func TestGenDatasetIsValidGeoNames(t *testing.T) {
