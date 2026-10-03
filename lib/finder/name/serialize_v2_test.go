@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/city"
+	"github.com/SamyRai/cityFinder/lib/indexfile"
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,24 +23,11 @@ import (
 // the compression layer.
 func writeV2File(t *testing.T, path string, header indexHeader, payload nameIndexPayloadV2) {
 	t.Helper()
-	var raw bytes.Buffer
-	require.NoError(t, gob.NewEncoder(&raw).Encode(&payload))
-
-	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(nameIndexZstdLevel), zstd.WithEncoderCRC(nameIndexZstdCRC))
-	require.NoError(t, err)
-	compressed := enc.EncodeAll(raw.Bytes(), nil)
-
-	f, err := os.Create(path)
-	require.NoError(t, err)
-	require.NoError(t, gob.NewEncoder(f).Encode(&header))
-	_, werr := f.Write(compressed)
-	require.NoError(t, werr)
-	require.NoError(t, f.Close())
+	require.NoError(t, indexfile.Write(path, &header, &payload))
 }
 
-// readV2File decodes a v2 file exactly the way the production reader layers
-// it: the raw gob header first (shared bufio), then the decompressed payload
-// bytes. Tests use it to inspect the decompressed stream.
+// readV2File splits a file into its gob header and the raw decompressed
+// payload bytes, so tests can inspect the payload stream itself.
 func readV2File(t *testing.T, path string) (indexHeader, []byte) {
 	t.Helper()
 	f, err := os.Open(path)
@@ -52,7 +40,10 @@ func readV2File(t *testing.T, path string) (indexHeader, []byte) {
 
 	compressed, err := io.ReadAll(br)
 	require.NoError(t, err)
-	payloadBytes, err := decodeZstdFrame(compressed)
+	zd, err := zstd.NewReader(nil)
+	require.NoError(t, err)
+	defer zd.Close()
+	payloadBytes, err := zd.DecodeAll(compressed, nil)
 	require.NoError(t, err)
 	return header, payloadBytes
 }
