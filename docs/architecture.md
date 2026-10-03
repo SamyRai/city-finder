@@ -13,6 +13,7 @@ cmd/loadgen       open-model load generator (thin CLI over internal/loadgen)
 cmd/memreport     end-to-end footprint measurement + answer transcript (before/after proofs)
 internal/loadgen  constant-arrival scheduler, outcome classification, sweep summaries
 lib/initializer   download → extract → load → build/deserialize the three indexes
+lib/builder       the shared load → S2 → name → postal → write steps (initializer, build-index)
 lib/config        config file loading and validation
 lib/dataLoader    GeoNames dump and postal parsers
 lib/finder        facade over the three finders
@@ -87,6 +88,16 @@ are replaced by atomic rename, so there is nothing to race. A boot that has
 to build an index still fails if the lock cannot be taken. A city load that
 yields zero rows aborts the boot before any index is built or written, so an
 empty or filtered-out dataset can never become a persistent empty index.
+
+Index building has one owner, `lib/builder`: dataset loading with the config
+filters, the three `Build*` steps, and the concurrent `WriteAll`. The
+initializer (first boot, corrupt-index rebuild) and `cmd/build-index` both call
+it, each taking the steps it needs: builds run one after another (they are the
+memory peak), and the files are written concurrently only after every build
+has succeeded. The name index is always built on the S2 index's city table.
+If sharing that table ever failed, the index would keep its own copy and log a
+warning; the same policy applies to both callers. `cmd/build-index` differs
+only in tolerating a missing postal dataset (it writes an empty postal index).
 
 ## Why S2
 

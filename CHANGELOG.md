@@ -25,6 +25,11 @@ and this project adheres to
 
 ### Fixed
 
+- **A `datasets_folder` under a regular file failed late and confusingly.**
+  `ensureDatasetsFolder` only handled a stat error of "does not exist", so
+  ENOTDIR (a parent is a file), a permission error, or a path that is itself a
+  file got through and failed at the init lock. The boot now stops at once and
+  names the folder and the cause.
 - **Oversized and malformed requests were invisible.** 413 (body over
   1 MB) and 431 (headers over the read buffer) are produced by the HTTP
   server before any middleware runs, so `/metrics` and the access log never
@@ -204,6 +209,15 @@ and this project adheres to
 
 ### Changed
 
+- **One owner for the index build sequence.** `cmd/build-index` and the
+  initializer each carried a copy of load, S2, name, share the city table,
+  postal, write, with different handling of a failed share. The steps now live
+  in the new `lib/builder` package; a share that fails keeps a private city
+  table and logs a warning, for both callers. `cmd/build-index` is a thin
+  `main` over `run(args, stdout, stderr)`: errors are returned instead of
+  `log.Fatalf`, usage errors go to stderr, `-h` prints usage and exits 0, and
+  the index files are written concurrently after all builds succeed. Answers
+  are unchanged: indexes built before and after load to the same transcript.
 - **Process environment has one owner.** `PORT`, `PPROF_ADDR` and
   `CONFIG_PATH` are read once, in `config.LoadRuntime`, and passed down;
   `cmd/server` no longer reads the environment itself. The previously
