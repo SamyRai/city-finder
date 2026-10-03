@@ -206,16 +206,23 @@ func DeserializeIndex(filepath string, opts ...Options) (*Finder, error) {
 	for i := range payload.Extra {
 		finder.cities.add(payload.Extra[i])
 	}
-	for country, refs := range payload.Refs {
+	// The id range check rides in the per-country workers: it walks every id
+	// once anyway, and the loop is most of the decode after the zstd stream.
+	size := finder.cities.size()
+	tables, err := buildTables(payload.Refs, tableWorkers(), func(refs map[string][]int32) error {
 		for _, ids := range refs {
 			for _, id := range ids {
-				if id < 0 || int(id) >= finder.cities.size() {
-					return nil, fmt.Errorf("%w: name index %s references id %d outside the %d-city table; delete the file so the index is rebuilt",
-						ErrCorruptIndex, filepath, id, finder.cities.size())
+				if id < 0 || int(id) >= size {
+					return fmt.Errorf("%w: name index %s references id %d outside the %d-city table; delete the file so the index is rebuilt",
+						ErrCorruptIndex, filepath, id, size)
 				}
 			}
 		}
-		finder.countries[country] = buildTable(refs)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
+	finder.countries = tables
 	return finder, nil
 }

@@ -66,9 +66,8 @@ func decodeUninterned(t *testing.T, path string) (*Finder, []city.City) {
 	// minus the intern pass under measurement.
 	finder := NewNameFinder()
 	finder.cities = cityTable{base: payload.Cities, baseCount: payload.CityCount}
-	for country, refs := range payload.Refs {
-		finder.countries[country] = buildTable(refs)
-	}
+	finder.countries, err = buildTables(payload.Refs, tableWorkers(), nil)
+	assert.NoError(t, err)
 	return finder, payload.Cities
 }
 

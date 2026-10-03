@@ -3,7 +3,6 @@ package name
 import (
 	"log"
 	"runtime"
-	"sort"
 	"sync"
 	"time"
 
@@ -161,13 +160,7 @@ func BuildIndex(cities []city.SpatialCity, opts ...Options) *Finder {
 	index := make(map[string]map[string][]int32, estimateCapacity(cities))
 
 	// Use concurrent processing for better CPU utilization
-	numWorkers := runtime.NumCPU()
-	if numWorkers > 8 {
-		numWorkers = 8 // Cap at 8 to avoid excessive contention
-	}
-	if numWorkers < 1 {
-		numWorkers = 1
-	}
+	numWorkers := tableWorkers()
 
 	// For small datasets, use sequential processing to avoid overhead
 	if len(cities) < 10000 {
@@ -203,30 +196,7 @@ func BuildIndex(cities []city.SpatialCity, opts ...Options) *Finder {
 // the insertion-order homonym sequence that CityByName's first-id-wins
 // resolution has always returned.
 func (nf *Finder) buildFromIndexMap(index map[string]map[string][]int32) {
-	nf.countries = make(map[string]*nameTable, len(index))
-	for country, countryMap := range index {
-		nf.countries[country] = buildTable(countryMap)
-	}
-}
-
-// buildTable flattens one country's name -> ids map into a nameTable: names
-// sorted once, ids copied CSR-style in their stored order.
-func buildTable(refs map[string][]int32) *nameTable {
-	t := &nameTable{names: make([]string, 0, len(refs))}
-	for name := range refs {
-		t.names = append(t.names, name)
-	}
-	sort.Strings(t.names)
-	total := 0
-	for _, name := range t.names {
-		total += len(refs[name])
-	}
-	t.starts = make([]int32, len(t.names)+1)
-	t.ids = make([]int32, 0, total)
-	for i, name := range t.names {
-		t.starts[i] = int32(len(t.ids))
-		t.ids = append(t.ids, refs[name]...)
-	}
-	t.starts[len(t.names)] = int32(len(t.ids))
-	return t
+	// No check: the staging ids were generated from the input rows, so an
+	// error is impossible and buildTables only returns one for a check.
+	nf.countries, _ = buildTables(index, tableWorkers(), nil)
 }

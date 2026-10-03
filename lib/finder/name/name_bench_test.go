@@ -181,17 +181,22 @@ func BenchmarkSerializeIndex(b *testing.B) {
 // index. The file is read through a warm OS page cache after the first
 // iteration: this measures decode CPU, not cold disk I/O.
 func BenchmarkDeserializeIndex(b *testing.B) {
-	finder := buildDiverseIndex(b, 10000)
-	path := filepath.Join(b.TempDir(), "test_index.gob")
-	if err := finder.SerializeIndex(path); err != nil {
-		b.Fatal(err)
-	}
+	for _, n := range []int{10_000, 200_000} {
+		b.Run(fmt.Sprintf("cities=%d", n), func(b *testing.B) {
+			finder := buildDiverseIndex(b, n)
+			path := filepath.Join(b.TempDir(), "test_index.gob")
+			if err := finder.SerializeIndex(path); err != nil {
+				b.Fatal(err)
+			}
 
-	b.ReportAllocs()
-	for b.Loop() {
-		if _, err := DeserializeIndex(path); err != nil {
-			b.Fatal(err)
-		}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if _, err := DeserializeIndex(path); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 
