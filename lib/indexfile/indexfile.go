@@ -54,12 +54,19 @@ const zstdLevel = zstd.SpeedFastest
 // it by reading the frame header), so this is 16x headroom.
 const MaxDecoderWindow = 64 << 20
 
+// gobMessageCeiling is encoding/gob's limit for one message, derived the way
+// gob derives its own (tooBig): 1 GiB on 32-bit platforms, 8 GiB on 64-bit.
+const gobMessageCeiling = (1 << 30) << (^uint(0) >> 62)
+
 // DefaultMaxPayloadBytes is the budget for decompressed payload bytes when a
 // caller does not set one with Reader.LimitPayload. It equals gob's own
-// ceiling for one message (1 GiB), so it never rejects a payload gob could
-// decode anyway; production indexes are far below it (a 13M-city S2 index
-// is roughly 0.7 GB decompressed). It is a variable so a deployment or a
-// test can tighten it.
+// ceiling for one message (see gobMessageCeiling), so it never rejects a
+// payload gob could decode anyway: a lower default would reject a large
+// legitimate index as corrupt and rebuild it on every boot. Production
+// indexes are far below it (a 13M-city S2 index is roughly 0.7 GB
+// decompressed), so the default is a backstop; the tight bound comes from
+// the callers' header-derived LimitPayload. It is a variable so a deployment
+// or a test can tighten it.
 //
 // A ratio cap (decompressed/compressed) was measured and rejected: real
 // indexes compress 1.6-2.3x, but legitimate highly repetitive data (200k
@@ -68,7 +75,7 @@ const MaxDecoderWindow = 64 << 20
 // one-byte-per-entry records. Only the caller knows how many entries the
 // header promises, so a caller that wants a tight bound passes it to
 // LimitPayload.
-var DefaultMaxPayloadBytes int64 = 1 << 30
+var DefaultMaxPayloadBytes int64 = gobMessageCeiling
 
 // Write atomically writes header and payload to path (see the package
 // comment). On any failure the .part file is removed and path is untouched.

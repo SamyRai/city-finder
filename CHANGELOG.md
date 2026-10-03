@@ -12,11 +12,12 @@ and this project adheres to
 
 - **A corrupt or hostile index file could cost 512 MB per load attempt.**
   The zstd window a file declares is now capped at 64 MiB (the writer uses
-  4 MiB), and the decompressed payload has a byte budget (1 GiB by default,
+  4 MiB), and the decompressed payload has a byte budget (gob's own
+  per-message ceiling by default, 8 GiB on 64-bit platforms,
   `indexfile.DefaultMaxPayloadBytes`, tightenable per read with
   `Reader.LimitPayload`). A file over either limit is reported as a corrupt
   index, so the initializer rebuilds it. No format change; valid files decode
-  as before. Not covered: a tiny file of one-byte records under the 1 GiB
+  as before. Not covered: a tiny file of one-byte records under the default
   budget still inflates to millions of entries, because legitimate repetitive
   data compresses just as well; closing that needs each index package to pass
   a header-derived limit.

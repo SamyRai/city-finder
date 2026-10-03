@@ -55,7 +55,8 @@ writer's is 4 MiB, a test reads it back from the frame header), because the
 decoder allocates the declared window up front: a 9-byte frame declaring the
 library default of 512 MB used to cost 512 MB per attempt. The decompressed
 payload is also capped by a byte budget, `indexfile.DefaultMaxPayloadBytes`
-(1 GiB, gob's own per-message ceiling; a 13M-city S2 index is about 0.7 GB),
+(gob's own per-message ceiling: 8 GiB on 64-bit platforms, 1 GiB on 32-bit;
+a 13M-city S2 index is about 0.7 GB),
 which a caller can tighten with `Reader.LimitPayload`. A ratio cap was
 measured and rejected: real indexes compress 1.6x (S2), 1.9x (name) and 2.3x
 (postal), but 200k legitimate cities with identical name and coordinates
