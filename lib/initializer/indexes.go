@@ -1,6 +1,7 @@
 package initializer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -32,6 +33,7 @@ func allIndexesPresent(paths ...string) bool {
 // instead of re-parsing for each rebuilt index.
 type datasetSource struct {
 	cfg         *config.Config
+	dl          *downloader
 	cities      []city.SpatialCity
 	postalCodes map[string]map[string]dataLoader.PostalCodeEntry
 	loaded      bool
@@ -41,13 +43,13 @@ type datasetSource struct {
 // failed load retries once after re-running ensureDatasets: a warm start that
 // found all indexes skips the dataset ensure, so a rebuild triggered by a
 // corrupt/legacy index may reach this point with the raw files absent.
-func (s *datasetSource) load() error {
+func (s *datasetSource) load(ctx context.Context) error {
 	if s.loaded {
 		return nil
 	}
 	cities, postalCodes, err := loadData(s.cfg)
 	if err != nil {
-		if ensureErr := ensureDatasets(s.cfg); ensureErr != nil {
+		if ensureErr := ensureDatasets(ctx, s.dl, s.cfg); ensureErr != nil {
 			return fmt.Errorf("%v (additionally, ensuring the missing datasets failed: %v)", err, ensureErr)
 		}
 		if cities, postalCodes, err = loadData(s.cfg); err != nil {
@@ -83,10 +85,10 @@ func loadData(cfg *config.Config) ([]city.SpatialCity, map[string]map[string]dat
 // crash mid-write, or written by an incompatible format version) is logged
 // and rebuilt once from the source data, re-serializing over the bad file;
 // a rebuild that also fails is fatal, exactly as a build failure is.
-func ensureS2Index(s2IndexPath string, cfg *config.Config, data *datasetSource) (*coordinates.S2Finder, error) {
+func ensureS2Index(ctx context.Context, s2IndexPath string, cfg *config.Config, data *datasetSource) (*coordinates.S2Finder, error) {
 	log.Printf("Ensuring S2 index is built and serialized in %s", s2IndexPath)
 	if _, errStat := os.Stat(s2IndexPath); os.IsNotExist(errStat) {
-		if err := data.load(); err != nil {
+		if err := data.load(ctx); err != nil {
 			return nil, fmt.Errorf("failed to load datasets to build S2 index: %v", err)
 		}
 		return buildAndSerializeS2Index(s2IndexPath, cfg, data)
@@ -98,7 +100,7 @@ func ensureS2Index(s2IndexPath string, cfg *config.Config, data *datasetSource) 
 			return nil, fmt.Errorf("failed to deserialize S2 index: %v", err)
 		}
 		log.Printf("Warning: %v", err)
-		if err := data.load(); err != nil {
+		if err := data.load(ctx); err != nil {
 			return nil, fmt.Errorf("failed to load datasets needed to rebuild the S2 index: %v", err)
 		}
 		return buildAndSerializeS2Index(s2IndexPath, cfg, data)
@@ -126,10 +128,10 @@ func buildAndSerializeS2Index(s2IndexPath string, cfg *config.Config, data *data
 // logged and rebuilt once from the source data, re-serializing over the bad
 // file. Any other error — for example a wrapped fs error from an unreadable
 // file — is fatal, exactly as it is for the S2 and postal code indexes.
-func ensureNameIndex(nameIndexPath string, data *datasetSource, cities []city.City) (*name.Finder, error) {
+func ensureNameIndex(ctx context.Context, nameIndexPath string, data *datasetSource, cities []city.City) (*name.Finder, error) {
 	log.Printf("Ensuring name index is built and serialized in %s", nameIndexPath)
 	if _, errStat := os.Stat(nameIndexPath); os.IsNotExist(errStat) {
-		if err := data.load(); err != nil {
+		if err := data.load(ctx); err != nil {
 			return nil, fmt.Errorf("failed to load datasets to build name index: %v", err)
 		}
 		return buildAndSerializeNameIndex(nameIndexPath, data, cities)
@@ -144,7 +146,7 @@ func ensureNameIndex(nameIndexPath string, data *datasetSource, cities []city.Ci
 			return nil, fmt.Errorf("failed to deserialize name index: %v", err)
 		}
 		log.Printf("Warning: %v", err)
-		if err := data.load(); err != nil {
+		if err := data.load(ctx); err != nil {
 			return nil, fmt.Errorf("failed to load datasets needed to rebuild the name index: %v", err)
 		}
 		return buildAndSerializeNameIndex(nameIndexPath, data, cities)
@@ -198,10 +200,10 @@ func buildAndSerializeNameIndex(nameIndexPath string, data *datasetSource, citie
 // serializing it when the file is missing. A file that exists but fails to
 // decode is logged and rebuilt once from the source data, re-serializing
 // over the bad file; a rebuild that also fails is fatal.
-func ensurePostalCodeIndex(postalCodeIndexPath string, data *datasetSource) (*postalCode.Finder, error) {
+func ensurePostalCodeIndex(ctx context.Context, postalCodeIndexPath string, data *datasetSource) (*postalCode.Finder, error) {
 	log.Printf("Ensuring postal code index is built and serialized in %s", postalCodeIndexPath)
 	if _, errStat := os.Stat(postalCodeIndexPath); os.IsNotExist(errStat) {
-		if err := data.load(); err != nil {
+		if err := data.load(ctx); err != nil {
 			return nil, fmt.Errorf("failed to load datasets to build postal code index: %v", err)
 		}
 		return buildAndSerializePostalCodeIndex(postalCodeIndexPath, data)
@@ -213,7 +215,7 @@ func ensurePostalCodeIndex(postalCodeIndexPath string, data *datasetSource) (*po
 			return nil, fmt.Errorf("failed to deserialize postal code index: %v", err)
 		}
 		log.Printf("Warning: %v", err)
-		if err := data.load(); err != nil {
+		if err := data.load(ctx); err != nil {
 			return nil, fmt.Errorf("failed to load datasets needed to rebuild the postal code index: %v", err)
 		}
 		return buildAndSerializePostalCodeIndex(postalCodeIndexPath, data)

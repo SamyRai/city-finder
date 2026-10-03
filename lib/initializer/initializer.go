@@ -1,6 +1,7 @@
 package initializer
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -14,6 +15,13 @@ import (
 
 // Initialize ensures datasets are downloaded and extracted, and the indexes are built
 func Initialize(cfg *config.Config) (*finder.Finder, error) {
+	return InitializeContext(context.Background(), cfg)
+}
+
+// InitializeContext is Initialize with a context: cancelling it aborts a
+// dataset download in flight and the pause between download attempts.
+func InitializeContext(ctx context.Context, cfg *config.Config) (*finder.Finder, error) {
+	dl := newDownloader()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -26,7 +34,7 @@ func Initialize(cfg *config.Config) (*finder.Finder, error) {
 	}
 	defer release()
 
-	admin1NamesPath := ensureAdmin1NamesPath(cfg)
+	admin1NamesPath := ensureAdmin1NamesPath(ctx, dl, cfg)
 
 	s2Path, namePath, postalPath := cfg.IndexFilePaths()
 	if allIndexesPresent(s2Path, namePath, postalPath) {
@@ -36,10 +44,10 @@ func Initialize(cfg *config.Config) (*finder.Finder, error) {
 		// re-extract for volumes seeded with indexes but no datasets (or
 		// after an operator deleted the raw files).
 		log.Printf("all indexes present, skipping dataset ensure (delete an index file to force a refresh)")
-	} else if err := ensureDatasets(cfg); err != nil {
+	} else if err := ensureDatasets(ctx, dl, cfg); err != nil {
 		return nil, err
 	}
-	return ensureFinders(cfg, admin1NamesPath)
+	return ensureFinders(ctx, dl, cfg, admin1NamesPath)
 }
 
 // ensureDatasetsFolder creates the datasets folder when missing. MkdirAll so
@@ -63,8 +71,8 @@ func ensureDatasetsFolder(cfg *config.Config) error {
 // attached on every boot (warm or cold): the map is ~120 KB and deliberately
 // not serialized with the index, so updating the names file never
 // invalidates it.
-func ensureFinders(cfg *config.Config, admin1NamesPath string) (*finder.Finder, error) {
-	f, err := loadOrBuildFinders(cfg)
+func ensureFinders(ctx context.Context, dl *downloader, cfg *config.Config, admin1NamesPath string) (*finder.Finder, error) {
+	f, err := loadOrBuildFinders(ctx, dl, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -78,10 +86,10 @@ func ensureFinders(cfg *config.Config, admin1NamesPath string) (*finder.Finder, 
 // deserializes its index from disk instead. An index that fails to decode
 // is rebuilt once from the source data (see the ensure*Index functions),
 // which re-materializes the datasets on demand.
-func loadOrBuildFinders(cfg *config.Config) (*finder.Finder, error) {
+func loadOrBuildFinders(ctx context.Context, dl *downloader, cfg *config.Config) (*finder.Finder, error) {
 	s2IndexPath, nameIndexPath, postalCodeIndexPath := cfg.IndexFilePaths()
 
-	data := &datasetSource{cfg: cfg}
+	data := &datasetSource{cfg: cfg, dl: dl}
 	if allIndexesPresent(s2IndexPath, nameIndexPath, postalCodeIndexPath) {
 		log.Printf("all indexes present, skipping dataset load")
 
@@ -137,20 +145,20 @@ func loadOrBuildFinders(cfg *config.Config) (*finder.Finder, error) {
 		}
 		log.Printf("warm decode incomplete (s2=%v, name=%v, postal=%v); falling back to sequential ensure",
 			s2Res.err, nameRes.err, postalRes.err)
-	} else if err := data.load(); err != nil {
+	} else if err := data.load(ctx); err != nil {
 		return nil, err
 	}
 
-	s2Finder, err := ensureS2Index(s2IndexPath, cfg, data)
+	s2Finder, err := ensureS2Index(ctx, s2IndexPath, cfg, data)
 	if err != nil {
 		return nil, err
 	}
-	nameFinder, err := ensureNameIndex(nameIndexPath, data, s2Finder.Cities)
+	nameFinder, err := ensureNameIndex(ctx, nameIndexPath, data, s2Finder.Cities)
 	if err != nil {
 		return nil, err
 	}
 
-	postalCodeFinder, err := ensurePostalCodeIndex(postalCodeIndexPath, data)
+	postalCodeFinder, err := ensurePostalCodeIndex(ctx, postalCodeIndexPath, data)
 	if err != nil {
 		return nil, err
 	}

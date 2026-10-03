@@ -161,6 +161,12 @@ and this project adheres to
 
 ### Changed
 
+- **Dataset downloads are owned by one `downloader`.** The HTTP client, the
+  attempt count and the retry delay are fields of a struct instead of
+  package variables that tests patched, and the pause between attempts now
+  ends when the context is cancelled (`initializer.InitializeContext`;
+  `Initialize` keeps its signature). Admin1 names reach the S2 finder
+  through one method, `AttachAdmin1Names`, called once per boot.
 - **Index footprint.** Measured with `cmd/memreport` on a 4M-city synthetic
   GeoNames dataset (answer transcripts byte-identical for nearest, prefix
   and postal lookups):
