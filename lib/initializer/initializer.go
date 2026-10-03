@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/SamyRai/cityFinder/lib/builder"
 	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/SamyRai/cityFinder/lib/finder"
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
@@ -180,7 +181,7 @@ func loadOrBuildFinders(ctx context.Context, dl *downloader, cfg *config.Config)
 	if err != nil {
 		return nil, err
 	}
-	if err := writeAll(ctx, writeS2, writeName, writePostal); err != nil {
+	if err := builder.WriteAll(ctx, writeS2, writeName, writePostal); err != nil {
 		return nil, err
 	}
 

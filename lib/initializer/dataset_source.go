@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/SamyRai/cityFinder/lib/builder"
 	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/SamyRai/cityFinder/lib/config"
 	"github.com/SamyRai/cityFinder/lib/dataLoader"
@@ -18,7 +19,7 @@ type datasetSource struct {
 	cfg         *config.Config
 	dl          *downloader
 	cities      []city.SpatialCity
-	postalCodes map[string]map[string]dataLoader.PostalCodeEntry
+	postalCodes builder.PostalCodes
 	loaded      bool
 }
 
@@ -62,41 +63,15 @@ func (s *datasetSource) errNoCities() error {
 	return fmt.Errorf("no cities loaded from %s (%s); refusing to build empty indexes", path, hint)
 }
 
-// loadData parses the city and postal datasets concurrently: they are
-// independent files, and the postal parse (~1 s at production scale) hides
-// behind the multi-second city parse. Both steps are drained before it
-// returns, so a failure of one never leaves the other running. The city
-// error is reported first when both fail, as it was when the parses ran in
-// sequence.
-func loadData(ctx context.Context, cfg *config.Config) ([]city.SpatialCity, map[string]map[string]dataLoader.PostalCodeEntry, error) {
-	var (
-		cities               []city.SpatialCity
-		postalCodes          map[string]map[string]dataLoader.PostalCodeEntry
-		citiesErr, postalErr error
-	)
-	g := newGroup(ctx)
-	g.Go(func(context.Context) error {
-		cities, citiesErr = dataLoader.LoadGeoNamesCSVWithOptions(
-			filepath.Join(cfg.DatasetsFolder, cfg.AllCitiesFile),
-			dataLoader.LoadOptions{
-				ExcludeAdminDivisions: cfg.ExcludeAdminDivisions,
-				IncludeFeatureClasses: cfg.IncludeFeatureClasses,
-			},
-		)
-		return citiesErr
-	})
-	g.Go(func(context.Context) error {
-		postalCodes, postalErr = dataLoader.LoadPostalCodes(filepath.Join(cfg.DatasetsFolder, cfg.PostalCodesFile))
-		return postalErr
-	})
-	groupErr := g.Wait()
-	switch {
-	case citiesErr != nil:
-		return nil, nil, fmt.Errorf("failed to load GeoNames data from CSV: %v", citiesErr)
-	case postalErr != nil:
-		return nil, nil, fmt.Errorf("failed to load Postal Code data: %v", postalErr)
-	case groupErr != nil:
-		return nil, nil, groupErr // cancelled before a step started
-	}
-	return cities, postalCodes, nil
+// loadData parses the city and postal datasets named by cfg (see
+// builder.Sources.Load).
+func loadData(ctx context.Context, cfg *config.Config) ([]city.SpatialCity, builder.PostalCodes, error) {
+	return builder.Sources{
+		CitiesFile: filepath.Join(cfg.DatasetsFolder, cfg.AllCitiesFile),
+		PostalFile: filepath.Join(cfg.DatasetsFolder, cfg.PostalCodesFile),
+		Options: dataLoader.LoadOptions{
+			ExcludeAdminDivisions: cfg.ExcludeAdminDivisions,
+			IncludeFeatureClasses: cfg.IncludeFeatureClasses,
+		},
+	}.Load(ctx)
 }

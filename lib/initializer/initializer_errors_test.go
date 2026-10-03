@@ -288,38 +288,13 @@ func TestExtractEntryTo_CorruptEntryFailsTheCopy(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to extract")
 }
 
-// --- pending index writes and migrations ---
+// --- index migrations ---
 
 func tinyCities() []city.SpatialCity {
 	return []city.SpatialCity{
 		{City: city.City{Name: "Roc Meler", Latitude: 42.58765, Longitude: 1.7418, Country: "AD"}},
 		{City: city.City{Name: "les Escaldes", Latitude: 42.50729, Longitude: 1.53414, Country: "AD"}},
 	}
-}
-
-func TestPendingWrites_UnwritablePathsFail(t *testing.T) {
-	data := &datasetSource{
-		cities:      tinyCities(),
-		postalCodes: map[string]map[string]dataLoader.PostalCodeEntry{"AD": {"AD100": {PlaceName: "Canillo", Latitude: 42.58, Longitude: 1.66}}},
-	}
-
-	s2Finder, writeS2, err := buildS2Index(underAFile(t, "s2.gob"), data)
-	require.NoError(t, err)
-	err = writeS2()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to serialize S2 index")
-
-	_, writeName, err := buildNameIndex(underAFile(t, "name.gob"), data, s2Finder.Cities)
-	require.NoError(t, err)
-	err = writeName()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to serialize name index")
-
-	_, writePostal, err := buildPostalCodeIndex(underAFile(t, "postal.gob"), data)
-	require.NoError(t, err)
-	err = writePostal()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to serialize postal code index")
 }
 
 // legacyPostalFinder loads a v3 postal file, which reports LegacyFormat.

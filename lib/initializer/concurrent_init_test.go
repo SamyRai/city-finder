@@ -2,7 +2,6 @@ package initializer
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,43 +12,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestWriteAll_RunsWritesConcurrently: two writes that each wait for the
-// other can only finish if they run at the same time.
-func TestWriteAll_RunsWritesConcurrently(t *testing.T) {
-	aReady, bReady := make(chan struct{}), make(chan struct{})
-	rendezvous := func(mine, theirs chan struct{}) pendingWrite {
-		return func() error {
-			close(mine)
-			select {
-			case <-theirs:
-				return nil
-			case <-time.After(5 * time.Second):
-				return errors.New("the other write never started: writes are sequential")
-			}
+// settleGoroutines polls until the goroutine count is back at base, so a
+// leaked step shows up as a failure rather than as flakiness elsewhere.
+func settleGoroutines(t *testing.T, base int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > base {
+		if time.Now().After(deadline) {
+			t.Fatalf("goroutines outlived the boot: %d > %d", runtime.NumGoroutine(), base)
 		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	require.NoError(t, writeAll(context.Background(), rendezvous(aReady, bReady), nil, rendezvous(bReady, aReady)))
-}
-
-// TestWriteAll_ReturnsFirstErrorAfterAllFinish: a failing write does not
-// abandon its siblings, and nothing is still running when writeAll returns.
-func TestWriteAll_ReturnsFirstErrorAfterAllFinish(t *testing.T) {
-	base := runtime.NumGoroutine()
-	boom := errors.New("boom")
-	done := make(chan struct{})
-	slow := func() error {
-		time.Sleep(30 * time.Millisecond)
-		close(done)
-		return nil
-	}
-	err := writeAll(context.Background(), slow, func() error { return boom })
-	require.ErrorIs(t, err, boom)
-	select {
-	case <-done:
-	default:
-		t.Fatal("writeAll returned before the slow write finished")
-	}
-	settleGoroutines(t, base)
 }
 
 // TestEnsureFinders_FailedWriteDrainsSiblings: with the name index's folder
@@ -71,38 +44,4 @@ func TestEnsureFinders_FailedWriteDrainsSiblings(t *testing.T) {
 		_, statErr := os.Stat(filepath.Join(dir, file))
 		assert.NoError(t, statErr, "the sibling write %s must have completed", file)
 	}
-}
-
-// TestLoadData_PostalFailureDrainsAndCitiesErrorWins: the two parses run
-// concurrently; a failing one never leaves the other running, and when both
-// fail the city error is the one reported, as when they ran in sequence.
-func TestLoadData_PostalFailureDrainsAndCitiesErrorWins(t *testing.T) {
-	dir := t.TempDir()
-	cfg := testConfig(dir)
-	writeTinyDatasets(t, cfg)
-	require.NoError(t, os.Remove(filepath.Join(dir, cfg.PostalCodesFile)))
-
-	base := runtime.NumGoroutine()
-	_, _, err := loadData(context.Background(), cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Postal Code")
-	settleGoroutines(t, base)
-
-	require.NoError(t, os.Remove(filepath.Join(dir, cfg.AllCitiesFile)))
-	_, _, err = loadData(context.Background(), cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "GeoNames data")
-	settleGoroutines(t, base)
-}
-
-// TestLoadData_CancelledContextStartsNothing: a cancelled boot does not parse
-// multi-GB files.
-func TestLoadData_CancelledContextStartsNothing(t *testing.T) {
-	dir := t.TempDir()
-	cfg := testConfig(dir)
-	writeTinyDatasets(t, cfg)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, _, err := loadData(ctx, cfg)
-	require.ErrorIs(t, err, context.Canceled)
 }

@@ -1,4 +1,4 @@
-package initializer
+package builder
 
 import (
 	"context"
@@ -8,9 +8,9 @@ import (
 // group runs a small fixed set of steps concurrently and reports the first
 // failure, like golang.org/x/sync/errgroup (not a dependency of this module,
 // and the needs here are small). It differs from errgroup on purpose: a
-// failing step does not cancel its siblings. Every step the initializer runs
-// this way is either an atomic file write or a file parse that cannot be
-// interrupted, and letting siblings finish keeps the outcome deterministic
+// failing step does not cancel its siblings. Every step run this way (the
+// dataset parses and the index writes) is either an atomic file write or a
+// file parse that cannot be interrupted, and letting siblings finish keeps the outcome deterministic
 // (a failed boot leaves the sibling indexes written, so only the failed one
 // is redone next time). Two properties matter:
 //
