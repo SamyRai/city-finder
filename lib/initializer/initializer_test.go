@@ -476,7 +476,7 @@ func TestIndexPaths_Resolution(t *testing.T) {
 		PostalCodeIndexFile: "postal_code_index.gob",
 		S2:                  config.S2{IndexFile: "s2index.gob"},
 	}
-	s2Path, namePath, postalPath := indexFilePaths(cfg)
+	s2Path, namePath, postalPath := cfg.IndexFilePaths()
 
 	root := string(filepath.Separator) + filepath.Join("data", "datasets")
 	assert.Equal(t, filepath.Join(root, "s2index.gob"), s2Path)

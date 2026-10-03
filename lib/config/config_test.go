@@ -231,7 +231,7 @@ func TestLoadConfigRepoRootLayoutPreserved(t *testing.T) {
 }
 
 // TestIndexFilePaths pins the index path resolution shared by index producers
-// (cmd/build-index) and consumers (lib/initializer's indexFilePaths): each
+// (cmd/build-index) and consumers (lib/initializer): each
 // index file key joined with DatasetsFolder, using the folder value the
 // Config carries verbatim. LoadConfig always absolutizes a relative
 // datasets_folder against the config file's directory, so configs that

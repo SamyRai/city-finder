@@ -172,7 +172,7 @@ type buildPaths struct {
 // cmd/server locates it (CONFIG_PATH env var, "config.json" default — see
 // config.LoadFromEnv). The serialized index outputs come from
 // (*config.Config).IndexFilePaths, which joins each index file key with the
-// config's datasets_folder exactly like the initializer's indexFilePaths on
+// config's datasets_folder exactly like the initializer's IndexFilePaths call on
 // the reader side, so a build under any non-default config is the one the
 // initializer will actually load. When no config file can be loaded, prod
 // falls back to the legacy literal names below with a warning — build-index

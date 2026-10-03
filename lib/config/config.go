@@ -135,9 +135,9 @@ func parseIncludeFeatureClasses(raw string) ([]string, error) {
 
 // IndexFilePaths returns the on-disk locations of the three serialized indexes
 // (S2, name, postal code): each index file key joined with DatasetsFolder. It
-// mirrors the initializer's indexFilePaths exactly, so index producers
-// (cmd/build-index) and consumers (lib/initializer) agree on the same paths
-// for any config, not just the shipped default.
+// is the single resolution both index producers (cmd/build-index) and
+// consumers (lib/initializer) use, so they agree on the same paths for any
+// config, not just the shipped default.
 func (c *Config) IndexFilePaths() (s2Path, namePath, postalPath string) {
 	return filepath.Join(c.DatasetsFolder, c.S2.IndexFile),
 		filepath.Join(c.DatasetsFolder, c.NameIndexFile),

@@ -28,7 +28,7 @@ func Initialize(cfg *config.Config) (*finder.Finder, error) {
 
 	admin1NamesPath := ensureAdmin1NamesPath(cfg)
 
-	s2Path, namePath, postalPath := indexFilePaths(cfg)
+	s2Path, namePath, postalPath := cfg.IndexFilePaths()
 	if allIndexesPresent(s2Path, namePath, postalPath) {
 		// Warm start: the raw datasets would only be needed to rebuild an
 		// index, and datasetSource.load re-ensures them on demand in that
@@ -66,7 +66,7 @@ func ensureDatasetsFolder(cfg *config.Config) error {
 // codes-only mode with one log line (responses carry admin1 CODE, no name —
 // the dataset is enhancement data, never a startup requirement).
 func ensureFinders(cfg *config.Config, admin1NamesPath string) (*finder.Finder, error) {
-	s2IndexPath, nameIndexPath, postalCodeIndexPath := indexFilePaths(cfg)
+	s2IndexPath, nameIndexPath, postalCodeIndexPath := cfg.IndexFilePaths()
 
 	data := &datasetSource{cfg: cfg}
 	if allIndexesPresent(s2IndexPath, nameIndexPath, postalCodeIndexPath) {

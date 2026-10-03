@@ -15,14 +15,6 @@ import (
 	"github.com/SamyRai/cityFinder/lib/finder/postalCode"
 )
 
-// indexFilePaths resolves the on-disk locations of the three serialized
-// indexes. The ensure*Index functions receive these precomputed paths so the
-// resolution lives in exactly one place; the method itself is the same one
-// cmd/build-index writes to, so the two binaries cannot drift apart.
-func indexFilePaths(cfg *config.Config) (s2Path, namePath, postalCodePath string) {
-	return cfg.IndexFilePaths()
-}
-
 // allIndexesPresent reports whether every given file exists. Any stat error
 // counts as missing so the caller falls back to the full load-and-build path.
 func allIndexesPresent(paths ...string) bool {
