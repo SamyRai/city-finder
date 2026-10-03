@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -385,4 +387,59 @@ func TestNearestBatch_FailureFirstThenManyPoints(t *testing.T) {
 	sb.WriteString(`]}`)
 	status, _ := post(t, app, "application/json", sb.String())
 	assert.Equal(t, 503, status)
+}
+
+// TestNearestBatch_WorkerPanicIs500: a panic inside a batch worker goroutine
+// (outside fiber's recover middleware) must become the same 500 GET serves,
+// not kill the process; later points are skipped and the app keeps serving.
+func TestNearestBatch_WorkerPanicIs500(t *testing.T) {
+	var calls atomic.Int64
+	app := fiber.New()
+	app.Post("/nearest/batch", batchHandlerWith(&finder.Finder{}, func(_ *finder.Finder, lat, _ float64, _ coordinates.Rank, _ bool) (nearestCityResponse, nearestOutcome) {
+		calls.Add(1)
+		if lat == 1 {
+			panic("poisoned point")
+		}
+		return nearestCityResponse{}, nearestOK
+	}))
+
+	status, body := post(t, app, "application/json",
+		`{"points":[{"lat":0,"lon":0},{"lat":1,"lon":0},{"lat":2,"lon":0}]}`)
+	assert.Equal(t, 500, status)
+	assert.Equal(t, "internal server error", body)
+
+	// The process survived: the same app answers the next request.
+	status, _ = post(t, app, "application/json", `{"points":[{"lat":0,"lon":0}]}`)
+	assert.Equal(t, 200, status)
+}
+
+// TestNearestBatch_WorkerPanicReleasesGateSlot: a population point whose
+// lookup panics (nil S2Finder) must give its gate slot back.
+func TestNearestBatch_WorkerPanicReleasesGateSlot(t *testing.T) {
+	app := fiber.New()
+	SetupRoutes(app, &finder.Finder{})
+
+	status, body := post(t, app, "application/json",
+		`{"points":[{"lat":1,"lon":1,"rank":"population"},{"lat":1,"lon":1,"rank":"population"}]}`)
+	assert.Equal(t, 500, status)
+	assert.Equal(t, "internal server error", body)
+	assert.Zero(t, len(populationGate), "a panicking point must release its population gate slot")
+}
+
+// TestNearestBatch_WorkerPanicLogsStackOnce: several panicking points in one
+// request produce a single log entry carrying the stack.
+func TestNearestBatch_WorkerPanicLogsStackOnce(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	app := fiber.New()
+	app.Post("/nearest/batch", batchHandlerWith(&finder.Finder{}, func(*finder.Finder, float64, float64, coordinates.Rank, bool) (nearestCityResponse, nearestOutcome) {
+		panic("boom")
+	}))
+	status, _ := post(t, app, "application/json",
+		`{"points":[{"lat":0,"lon":0},{"lat":1,"lon":0},{"lat":2,"lon":0},{"lat":3,"lon":0}]}`)
+	assert.Equal(t, 500, status)
+	assert.Equal(t, 1, strings.Count(buf.String(), "panic in /nearest/batch worker"))
+	assert.Contains(t, buf.String(), "goroutine ")
 }

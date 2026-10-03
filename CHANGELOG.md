@@ -23,6 +23,12 @@ and this project adheres to
 
 ### Fixed
 
+- **A panic inside a `POST /nearest/batch` worker killed the process.**
+  Batch points run on their own goroutines, outside the recover middleware
+  that protects `GET /nearest`. A panicking point now becomes the same
+  `500 internal server error` GET serves (later points are skipped, the
+  population gate slot is released, and the stack is logged once per
+  request) and the server keeps running.
 - **Loaders accepted impossible coordinates and negative populations.**
   City and postal rows with a NaN/Inf, `|lat| > 90` or `|lon| > 180`
   coordinate, and city rows with a negative population, are now skipped

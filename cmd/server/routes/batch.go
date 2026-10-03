@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -135,6 +137,30 @@ func lowerFirstFailure(first *atomic.Int64, i int64) {
 // query core (population gate included), so a batch observes the same
 // per-point semantics as the GETs it replaces.
 func batchHandler(mainFinder *finder.Finder) fiber.Handler {
+	return batchHandlerWith(mainFinder, executeNearest)
+}
+
+// nearestExecutor is the per-point query core of the batch handler;
+// executeNearest in production, a stub in tests that need a failing core.
+type nearestExecutor func(f *finder.Finder, lat, lon float64, rank coordinates.Rank, includeAdmin bool) (nearestCityResponse, nearestOutcome)
+
+// runPoint executes one batch point and converts a panic in the executor
+// into nearestError, the outcome GET serves as 500. Worker goroutines are
+// outside fiber's recover middleware, so an unrecovered panic here would
+// terminate the whole process. onPanic runs with the panic value and stack
+// so the caller can log once per request.
+func runPoint(exec nearestExecutor, f *finder.Finder, q validatedPoint, onPanic func(v any, stack []byte)) (resp nearestCityResponse, outcome nearestOutcome) {
+	defer func() {
+		if v := recover(); v != nil {
+			onPanic(v, debug.Stack())
+			resp, outcome = nearestCityResponse{}, nearestError
+		}
+	}()
+	return exec(f, q.lat, q.lon, q.rank, q.includeAdmin)
+}
+
+// batchHandlerWith is batchHandler over an explicit executor.
+func batchHandlerWith(mainFinder *finder.Finder, exec nearestExecutor) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if c.Get(fiber.HeaderContentType) != "application/json" {
 			return c.Status(fiber.StatusBadRequest).
@@ -208,6 +234,11 @@ func batchHandler(mainFinder *finder.Finder) fiber.Handler {
 			hasPopulation = hasPopulation || q.rank == coordinates.RankPopulation
 		}
 		workers := batchWorkerCount(len(queries), hasPopulation)
+		// One log line (with stack) per request, however many points panic.
+		var logPanic sync.Once
+		onPanic := func(v any, stack []byte) {
+			logPanic.Do(func() { log.Printf("panic in /nearest/batch worker: %v\n%s", v, stack) })
+		}
 		var wg sync.WaitGroup
 		wg.Add(workers)
 		for w := 0; w < workers; w++ {
@@ -217,9 +248,7 @@ func batchHandler(mainFinder *finder.Finder) fiber.Handler {
 					if int64(i) > firstFailure.Load() {
 						continue // a result after the first failure is never used
 					}
-					responses[i], outcomes[i] = executeNearest(
-						mainFinder, queries[i].lat, queries[i].lon,
-						queries[i].rank, queries[i].includeAdmin)
+					responses[i], outcomes[i] = runPoint(exec, mainFinder, queries[i], onPanic)
 					if outcomes[i] == nearestSaturated || outcomes[i] == nearestError {
 						lowerFirstFailure(&firstFailure, int64(i))
 					}
