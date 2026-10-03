@@ -25,6 +25,9 @@ import (
 
 // Initialize ensures datasets are downloaded and extracted, and the indexes are built
 func Initialize(cfg *config.Config) (*finder.Finder, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	if err := ensureDatasetsFolder(cfg); err != nil {
 		return nil, err
 	}

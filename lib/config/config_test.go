@@ -442,3 +442,50 @@ func TestLoadFromEnvDefaultsToConfigJSON(t *testing.T) {
 	require.NotNil(t, cfg)
 	assert.Equal(t, filepath.Join(dir, "datasets"), cfg.DatasetsFolder)
 }
+
+// TestLoadConfigRejectsTrailingContent: a file holding more than one JSON
+// document fails to load instead of silently using the first.
+func TestLoadConfigRejectsTrailingContent(t *testing.T) {
+	path := writeConfig(t, t.TempDir(), "config.json", validConfigJSON+`{"datasets_folder": "other"}`)
+	_, err := LoadConfig(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "after the JSON object")
+
+	path = writeConfig(t, t.TempDir(), "config.json", validConfigJSON+"\n\n")
+	_, err = LoadConfig(path)
+	require.NoError(t, err, "trailing whitespace is fine")
+}
+
+// TestUnknownKeysAreReported: misspelled or removed keys are listed (top
+// level and under s2) so LoadConfig can warn; known keys never are.
+func TestUnknownKeysAreReported(t *testing.T) {
+	assert.Empty(t, unknownKeys([]byte(validConfigJSON)))
+	assert.Equal(t, []string{"name_idx_file", "s2.max_cells"},
+		unknownKeys([]byte(`{"name_idx_file": "x", "s2": {"index_file": "s", "max_cells": 8}}`)))
+	assert.Empty(t, unknownKeys([]byte(`[1, 2]`)), "a non-object is Decode's error to report")
+}
+
+// TestValidate: the shipped shape passes; missing required names and two
+// keys naming the same file are reported together.
+func TestValidate(t *testing.T) {
+	path := writeConfig(t, t.TempDir(), "config.json", validConfigJSON)
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+	require.NoError(t, cfg.Validate())
+
+	shipped, err := LoadConfig(filepath.Join("..", "..", "config.json"))
+	require.NoError(t, err)
+	require.NoError(t, shipped.Validate(), "the shipped config.json must validate")
+
+	bad := *cfg
+	bad.NameIndexFile = ""
+	bad.PostalCodesZip = bad.AllCitiesZip
+	err = bad.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "name_index_file is required")
+	assert.Contains(t, err.Error(), `all_cities_zip and postal_codes_zip both name "allCountries.zip"`)
+
+	optional := *cfg
+	optional.AllCitiesZip, optional.PostalCodesZip, optional.Admin1CodesFile = "", "", ""
+	assert.NoError(t, optional.Validate(), "zips and the admin1 file are optional")
+}
