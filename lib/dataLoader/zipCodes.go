@@ -4,7 +4,6 @@ import (
 	"encoding/csv"
 	"errors"
 	"io"
-	"log"
 	"os"
 	"strconv"
 )
@@ -50,8 +49,7 @@ func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, er
 	// Pre-allocate with reasonable capacity based on typical postal code data size
 	postalCodes := make(map[string]map[string]PostalCodeEntry, 200) // ~200 countries
 
-	skippedCoords := 0
-	skippedShort := 0
+	var skipped skipReport
 
 	for {
 		record, err := reader.Read()
@@ -62,25 +60,23 @@ func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, er
 			return nil, err
 		}
 
+		line, _ := reader.FieldPos(0)
+
 		// Skip malformed records
 		if len(record) < 12 {
-			skippedShort++
+			skipped.add(reasonShortRow, line)
 			continue
 		}
 
-		// A row whose latitude or longitude cannot be parsed is not indexed:
-		// silently defaulting it to (0,0) put Null-Island coordinates behind
-		// /postalCode lookups. Accuracy stays lenient on purpose (it is a
-		// 0-6 hint, not a coordinate). One summary line at end of load — no
-		// per-row logging, prod files hold ~14M rows.
-		lat, err := strconv.ParseFloat(record[9], 64)
-		if err != nil {
-			skippedCoords++
-			continue
-		}
-		lon, err := strconv.ParseFloat(record[10], 64)
-		if err != nil {
-			skippedCoords++
+		// A row whose latitude or longitude cannot be parsed, or is not a
+		// finite in-range point, is not indexed: silently defaulting it to
+		// (0,0) put Null-Island coordinates behind /postalCode lookups.
+		// Accuracy stays lenient on purpose (it is a 0-6 hint, not a
+		// coordinate). One summary line at end of load — no per-row
+		// logging, prod files hold ~14M rows.
+		lat, lon, reason := parseCoordinate(record[9], record[10])
+		if reason != "" {
+			skipped.add(reason, line)
 			continue
 		}
 		accuracy, _ := strconv.Atoi(record[11])
@@ -107,12 +103,7 @@ func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, er
 		postalCodes[countryCode][postalCode.PostalCode] = postalCode
 	}
 
-	if skippedCoords > 0 {
-		log.Printf("skipped %d postal rows with unparsable coordinates in %s", skippedCoords, filepath)
-	}
-	if skippedShort > 0 {
-		log.Printf("skipped %d postal rows with fewer than 12 fields in %s", skippedShort, filepath)
-	}
+	skipped.log("postal", filepath)
 
 	return postalCodes, nil
 }

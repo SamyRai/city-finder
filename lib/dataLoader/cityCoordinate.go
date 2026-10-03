@@ -231,6 +231,7 @@ func LoadGeoNamesCSVWithOptions(filepath string, opts LoadOptions) ([]city.Spati
 	lineCount := 0
 	skippedAdminDivisions := 0
 	skippedByClassAllowlist := 0
+	var skipped skipReport
 	for scanner.Scan() {
 		line := scanner.Bytes() // Use Bytes() instead of Text() to avoid string allocation
 		lineCount++
@@ -274,26 +275,28 @@ func LoadGeoNamesCSVWithOptions(filepath string, opts LoadOptions) ([]city.Spati
 		field15 := findField(lineStr, 14, '\t') // population (GeoNames field 14, 0-indexed)
 
 		if field2 == "" || field5 == "" || field6 == "" || field9 == "" {
+			skipped.add(reasonMissingField, lineCount)
 			continue
 		}
 
-		lat, err := strconv.ParseFloat(field5, 64)
-		if err != nil {
-			log.Printf("Error parsing lat: %v on line: %s\n", err, line)
-			continue
-		}
-		lon, err := strconv.ParseFloat(field6, 64)
-		if err != nil {
-			log.Printf("Error parsing lon: %v on line: %s\n", err, line)
+		lat, lon, reason := parseCoordinate(field5, field6)
+		if reason != "" {
+			skipped.add(reason, lineCount)
 			continue
 		}
 
 		// Population is enhancement data: an empty or unparsable field loads
 		// as 0 and never drops the row. Values fit int32 (the largest GeoNames
 		// feature populations are < 40M); anything overflowing is treated as
-		// unparsable rather than silently wrapped.
+		// unparsable rather than silently wrapped. A negative value is a
+		// different matter: GeoNames populations are non-negative, so it marks
+		// a corrupt row, which is rejected rather than clamped to a valid 0.
 		var population int32
 		if p, err := strconv.ParseInt(field15, 10, 32); err == nil {
+			if p < 0 {
+				skipped.add(reasonNegativePop, lineCount)
+				continue
+			}
 			population = int32(p)
 		}
 
@@ -341,8 +344,9 @@ func LoadGeoNamesCSVWithOptions(filepath string, opts LoadOptions) ([]city.Spati
 		return nil, fmt.Errorf("failed to scan file: %v, %v", filepath, err)
 	}
 
-	// Skip summaries in the postal loader's style: one line each, end of
-	// load, only when rows were actually skipped (never per row).
+	// Skip summaries: one line each, end of load, only when rows were
+	// actually skipped (never per row).
+	skipped.log("city", filepath)
 	if skippedByClassAllowlist > 0 {
 		log.Printf("skipped %d rows outside feature class allowlist [%s] in %s",
 			skippedByClassAllowlist, strings.Join(opts.IncludeFeatureClasses, ","), filepath)

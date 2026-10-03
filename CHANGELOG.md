@@ -10,6 +10,12 @@ and this project adheres to
 
 ### Fixed
 
+- **Loaders accepted impossible coordinates and negative populations.**
+  City and postal rows with a NaN/Inf, `|lat| > 90` or `|lon| > 180`
+  coordinate, and city rows with a negative population, are now skipped
+  (one shared validator). Skipped rows are counted per reason and logged
+  as one summary line per file with the first few line numbers, instead of
+  one log line holding the full text of every rejected city row.
 - **A cached fuzzy result hid cities added later.** After `AddCity`, a
   typo whose result was already cached kept returning the old candidates
   for the full one-hour TTL. Cache entries now carry a generation that

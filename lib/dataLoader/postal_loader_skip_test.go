@@ -103,7 +103,7 @@ func TestLoadPostalCodes_SkipSummaryIsLoggedOnce(t *testing.T) {
 		lines = nil
 	}
 	require.Len(t, lines, 1, "expected exactly one summary log line, got: %q", buf.String())
-	assert.Contains(t, lines[0], "skipped 2 postal rows with unparsable coordinates")
+	assert.Contains(t, lines[0], "2 unparsable coordinates (lines 1, 2)")
 
 	// The valid row still loaded.
 	assert.True(t, func() bool { _, ok := postalCodes["US"]["10005"]; return ok }())
@@ -133,7 +133,7 @@ func TestLoadPostalCodes_NoSkipLogWhenAllRowsParse(t *testing.T) {
 		_, err := LoadPostalCodes(writePostalFixture(t, "XX\t10006\tToo few fields\n"))
 		require.NoError(t, err)
 		assert.NotContains(t, buf.String(), "unparsable coordinates")
-		assert.Contains(t, buf.String(), "skipped 1 postal rows with fewer than 12 fields")
+		assert.Contains(t, buf.String(), "1 fewer than 12 fields (line 1)")
 	})
 }
 
@@ -162,7 +162,7 @@ func TestLoadPostalCodes_ToleratesMalformedCSVStructure(t *testing.T) {
 	assert.Equal(t, "Valid City", codes["US"]["10005"].PlaceName)
 	assert.Equal(t, "Valid After Bad", codes["US"]["10008"].PlaceName)
 	assert.NotContains(t, codes["US"], "10006", "a short row must be skipped")
-	assert.Contains(t, buf.String(), "skipped 1 postal rows with fewer than 12 fields")
+	assert.Contains(t, buf.String(), "1 fewer than 12 fields (line 2)")
 }
 
 // TestLoadPostalCodes_QuoteCorruptionFailsLoudly pins the deliberate
