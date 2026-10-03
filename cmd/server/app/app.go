@@ -7,6 +7,8 @@ package app
 
 import (
 	"log"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/SamyRai/cityFinder/cmd/server/metrics"
@@ -59,15 +61,32 @@ func RequestLogger(l *log.Logger) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		start := time.Now()
 		err := c.Next()
-		l.Printf("%s %s %s %d %s %d",
-			start.Format(time.RFC3339),
-			c.Method(),
-			c.Path(),
+		bp := accessLineBuf.Get().(*[]byte)
+		*bp = appendAccessLine((*bp)[:0], start, c.Method(), c.Path(),
 			routes.CompletedStatus(c, err), // the status the client receives, incl. 404/405/500
-
-			time.Since(start),
-			len(c.Response().Body()),
-		)
+			time.Since(start), len(c.Response().Body()))
+		_ = l.Output(2, string(*bp))
+		accessLineBuf.Put(bp)
 		return err
 	}
+}
+
+// accessLineBuf recycles access-log line buffers across requests.
+var accessLineBuf = sync.Pool{New: func() any { b := make([]byte, 0, 128); return &b }}
+
+// appendAccessLine appends one access-log line, byte-identical to
+// fmt.Sprintf("%s %s %s %d %s %d", start.Format(time.RFC3339), method, path,
+// status, elapsed, size) but without boxing six arguments per request.
+func appendAccessLine(b []byte, start time.Time, method, path string, status int, elapsed time.Duration, size int) []byte {
+	b = start.AppendFormat(b, time.RFC3339)
+	b = append(b, ' ')
+	b = append(b, method...)
+	b = append(b, ' ')
+	b = append(b, path...)
+	b = append(b, ' ')
+	b = strconv.AppendInt(b, int64(status), 10)
+	b = append(b, ' ')
+	b = append(b, elapsed.String()...)
+	b = append(b, ' ')
+	return strconv.AppendInt(b, int64(size), 10)
 }
