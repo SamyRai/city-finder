@@ -97,3 +97,14 @@ func TestDeserializeIndexRejectsOutOfRangeIDInAnyCountry(t *testing.T) {
 		assert.ErrorContains(t, err, "outside the")
 	}
 }
+
+// TestBuildIndexEmptyCountryFirst: a first city with an empty country code
+// used to hit the staging loop's "same country as the previous city" cache
+// while it was still nil.
+func TestBuildIndexEmptyCountryFirst(t *testing.T) {
+	cities := gateCities(3)
+	cities[0].Country = ""
+	finder := BuildIndex(cities)
+	assert.NotNil(t, finder.CityByName("GateCity000000", ""), "city under the empty country code must be indexed")
+	assert.NotNil(t, finder.CityByName("GateCity000001", "GC"))
+}

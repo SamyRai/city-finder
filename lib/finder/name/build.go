@@ -54,7 +54,7 @@ func processBatchStreamlined(index map[string]map[string][]int32, cities []city.
 		id := base + int32(i)
 
 		internedCountry := internString(spatialCity.Country)
-		if internedCountry != cachedCountry {
+		if internedCountry != cachedCountry || cachedCountryMap == nil {
 			cachedCountry = internedCountry
 			var exists bool
 			cachedCountryMap, exists = index[internedCountry]
