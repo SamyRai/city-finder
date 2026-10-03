@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/finder"
@@ -342,4 +344,45 @@ func TestNearestBatch_ParallelOrderStable(t *testing.T) {
 		assert.JSONEq(t, bodyStr, string(raw),
 			"point %d must equal the GET response for the same query", i)
 	}
+}
+
+// TestLowerFirstFailureKeepsTheMinimum: concurrent reports leave the lowest
+// failing index, whatever the arrival order.
+func TestLowerFirstFailureKeepsTheMinimum(t *testing.T) {
+	var first atomic.Int64
+	first.Store(1000)
+	var wg sync.WaitGroup
+	for i := 999; i >= 0; i -= 7 {
+		wg.Add(1)
+		go func(i int64) {
+			defer wg.Done()
+			lowerFirstFailure(&first, i)
+		}(int64(i))
+	}
+	wg.Wait()
+	assert.EqualValues(t, 999%7, first.Load()) // the smallest reported index
+}
+
+// TestNearestBatch_FailureFirstThenManyPoints: with the gate saturated, a
+// batch whose FIRST point is population-ranked fails with 503 even though
+// every later distance point is skipped rather than executed.
+func TestNearestBatch_FailureFirstThenManyPoints(t *testing.T) {
+	app := setupTestApp(t, adminRouteNames)
+
+	for i := 0; i < populationGateConcurrency(); i++ {
+		populationGate <- struct{}{}
+	}
+	defer func() {
+		for i := 0; i < populationGateConcurrency(); i++ {
+			<-populationGate
+		}
+	}()
+	var sb strings.Builder
+	sb.WriteString(`{"points":[{"lat":37.78,"lon":-122.42,"rank":"population"}`)
+	for range maxBatchPoints - 1 {
+		sb.WriteString(`,{"lat":37.78,"lon":-122.42}`)
+	}
+	sb.WriteString(`]}`)
+	status, _ := post(t, app, "application/json", sb.String())
+	assert.Equal(t, 503, status)
 }
