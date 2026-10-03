@@ -53,12 +53,24 @@ func InitializeContext(ctx context.Context, cfg *config.Config) (*finder.Finder,
 }
 
 // ensureDatasetsFolder creates the datasets folder when missing. MkdirAll so
-// nested paths (config datasets_folder: "data/datasets") work.
+// nested paths (config datasets_folder: "data/datasets") work. Only a stat
+// that reports "does not exist" leads to creation: any other stat failure
+// (ENOTDIR when a parent is a regular file, EACCES) and an existing path
+// that is not a directory fail here with the cause, instead of surfacing
+// later as a confusing error from the init lock.
 func ensureDatasetsFolder(cfg *config.Config) error {
-	if _, err := os.Stat(cfg.DatasetsFolder); os.IsNotExist(err) {
-		if err := os.MkdirAll(cfg.DatasetsFolder, os.ModePerm); err != nil {
-			return fmt.Errorf("failed to create datasets folder: %v", err)
+	fi, err := os.Stat(cfg.DatasetsFolder)
+	switch {
+	case err == nil:
+		if !fi.IsDir() {
+			return fmt.Errorf("datasets folder %s exists but is not a directory", cfg.DatasetsFolder)
 		}
+	case os.IsNotExist(err):
+		if err := os.MkdirAll(cfg.DatasetsFolder, os.ModePerm); err != nil {
+			return fmt.Errorf("failed to create datasets folder: %w", err)
+		}
+	default:
+		return fmt.Errorf("cannot use datasets folder %s: %w", cfg.DatasetsFolder, err)
 	}
 	return nil
 }

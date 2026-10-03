@@ -69,6 +69,24 @@ func TestEnsureDatasetsFolder_CreatesNestedFolder(t *testing.T) {
 	assert.True(t, fi.IsDir())
 }
 
+// A parent that is a regular file makes Stat fail with ENOTDIR, not
+// "does not exist": it must fail here, naming the folder, not at the lock.
+func TestEnsureDatasetsFolder_ParentIsAFile(t *testing.T) {
+	dir := underAFile(t, "datasets")
+	err := ensureDatasetsFolder(&config.Config{DatasetsFolder: dir})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, syscall.ENOTDIR)
+	assert.Contains(t, err.Error(), "cannot use datasets folder "+dir)
+}
+
+func TestEnsureDatasetsFolder_PathIsAFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "datasets")
+	require.NoError(t, os.WriteFile(file, []byte("x"), 0o600))
+	err := ensureDatasetsFolder(&config.Config{DatasetsFolder: file})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is not a directory")
+}
+
 func TestInitialize_InvalidConfigFails(t *testing.T) {
 	_, err := Initialize(&config.Config{DatasetsFolder: t.TempDir()})
 	require.Error(t, err)
@@ -80,6 +98,7 @@ func TestInitialize_FolderUnderAFileFails(t *testing.T) {
 	_, err := Initialize(cfg)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, syscall.ENOTDIR)
+	assert.Contains(t, err.Error(), "cannot use datasets folder")
 }
 
 func TestInitialize_LockHeldFails(t *testing.T) {
