@@ -68,6 +68,7 @@ func decodeUninterned(t *testing.T, path string) (*Finder, []city.City) {
 	finder.cities = cityTable{base: payload.Cities, baseCount: payload.CityCount}
 	finder.countries, err = buildTables(payload.Refs, tableWorkers(), nil)
 	assert.NoError(t, err)
+	finder.refreshHasKeys()
 	return finder, payload.Cities
 }
 

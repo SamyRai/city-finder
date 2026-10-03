@@ -30,8 +30,13 @@ const (
 // Everything that reads the index — the key-total gate, the name snapshot —
 // runs inside the build goroutine, so the CAS is the only work on the
 // caller's path and exactly one snapshot is ever taken per attempt.
+//
+// A finder that has never held a name has nothing to index: a build would
+// settle straight back to not-built, so every miss on an empty finder would
+// spawn a goroutine for nothing. hasKeys (one more atomic load, no lock)
+// skips it; the first AddCity or load that brings a key re-arms the build.
 func (nf *Finder) ensureFuzzyBuilt() {
-	if nf.fuzzyState.Load() != fuzzyNotBuilt {
+	if nf.fuzzyState.Load() != fuzzyNotBuilt || !nf.hasKeys.Load() {
 		return
 	}
 	if nf.fuzzyState.CompareAndSwap(fuzzyNotBuilt, fuzzyBuilding) {

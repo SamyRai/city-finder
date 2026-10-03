@@ -211,5 +211,6 @@ func DeserializeIndex(filepath string, opts ...Options) (*Finder, error) {
 		return nil, err
 	}
 	finder.countries = tables
+	finder.refreshHasKeys()
 	return finder, nil
 }

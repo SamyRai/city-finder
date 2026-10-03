@@ -44,6 +44,9 @@ func waitFuzzyBuilt(tb testing.TB, nf *Finder) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	for {
+		if err := ctx.Err(); err != nil {
+			tb.Fatalf("fuzzy index did not build within 60s (state %d): %v", nf.fuzzyState.Load(), err)
+		}
 		nf.ensureFuzzyBuilt()
 		if err := nf.WaitFuzzy(ctx); err != nil {
 			tb.Fatalf("fuzzy index did not settle within 60s: %v", err)

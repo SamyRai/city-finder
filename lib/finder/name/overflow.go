@@ -51,7 +51,8 @@ func (nf *Finder) addOverflowLocked(country string, names []string, c city.City)
 		// it.
 		nf.fuzzyOverflow = append(nf.fuzzyOverflow, name)
 	}
-	nf.fuzzyGen.Add(1) // cached fuzzy results predate these names
+	nf.hasKeys.Store(true) // names holds at least the primary name
+	nf.fuzzyGen.Add(1)     // cached fuzzy results predate these names
 }
 
 // addNameToMap appends a row id to a name's staging list.

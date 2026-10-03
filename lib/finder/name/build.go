@@ -199,4 +199,5 @@ func (nf *Finder) buildFromIndexMap(index map[string]map[string][]int32) {
 	// No check: the staging ids were generated from the input rows, so an
 	// error is impossible and buildTables only returns one for a check.
 	nf.countries, _ = buildTables(index, tableWorkers(), nil)
+	nf.refreshHasKeys()
 }

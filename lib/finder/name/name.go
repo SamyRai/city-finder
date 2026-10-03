@@ -79,6 +79,7 @@ type Finder struct {
 	fuzzyWaitMu   sync.Mutex                           // Guards fuzzySettled
 	fuzzySettled  chan struct{}                        // Closed (and cleared) when a build leaves fuzzyBuilding; created lazily by WaitFuzzy
 	fuzzyState    atomic.Int32                         // Lazy fuzzy-index state (fuzzyNotBuilt*, above); runtime-only, not serialized
+	hasKeys       atomic.Bool                          // Any (country, name) key indexed; lets a never-populated finder skip fuzzy builds that would find nothing
 }
 
 // Memory pools removed - they were causing excessive memory usage
@@ -166,6 +167,12 @@ func (nf *Finder) totalIndexKeys() int {
 		total += len(countryOverflow)
 	}
 	return total
+}
+
+// refreshHasKeys republishes hasKeys after the tables were replaced. The
+// caller must hold nf.mutex for writing or own the finder exclusively.
+func (nf *Finder) refreshHasKeys() {
+	nf.hasKeys.Store(nf.totalIndexKeys() > 0)
 }
 
 // CityByName finds the coordinates of a city by its name using hybrid search strategy
