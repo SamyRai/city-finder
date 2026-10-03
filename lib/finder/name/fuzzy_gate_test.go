@@ -44,7 +44,7 @@ func waitFuzzyBuilt(tb testing.TB, nf *Finder) {
 	for nf.fuzzyState.Load() != fuzzyBuilt {
 		switch nf.fuzzyState.Load() {
 		case fuzzyDisabled:
-			tb.Fatal("fuzzy index reached fuzzyDisabled (FuzzyMaxNames gate or build failure); wanted fuzzyBuilt")
+			tb.Fatal("fuzzy index reached fuzzyDisabled (Options.FuzzyMaxNames gate or build failure); wanted fuzzyBuilt")
 		}
 		if time.Now().After(deadline) {
 			tb.Fatal("fuzzy index did not reach fuzzyBuilt within 60s")
@@ -132,22 +132,19 @@ func TestCityByNameBuildDoesNotBlockExactLookups(t *testing.T) {
 	}
 }
 
-// TestFuzzyDisabledOverThreshold covers the FuzzyMaxNames gate: an index over
+// TestFuzzyDisabledOverThreshold covers the Options.FuzzyMaxNames gate: an index over
 // the threshold must never build the n-gram structure, must log the disable
 // exactly once, must serve typo lookups as fast nils, must keep exact lookups
 // working, and must leave the fuzzy cache empty (no pollution from
 // not-ready results).
 func TestFuzzyDisabledOverThreshold(t *testing.T) {
-	orig := FuzzyMaxNames
-	FuzzyMaxNames = 4 // fuzzyFixtureCities has 5 (country,name) keys
-	t.Cleanup(func() { FuzzyMaxNames = orig })
-
 	var logBuf bytes.Buffer
 	oldLog := log.Writer()
 	log.SetOutput(&logBuf)
 	t.Cleanup(func() { log.SetOutput(oldLog) })
 
-	finder := BuildIndex(fuzzyFixtureCities())
+	// fuzzyFixtureCities has 5 (country,name) keys.
+	finder := BuildIndex(fuzzyFixtureCities(), Options{FuzzyMaxNames: 4, FuzzyMaxCandidates: DefaultFuzzyMaxCandidates})
 
 	start := time.Now()
 	if got := finder.CityByName("Pars", "FR"); got != nil {

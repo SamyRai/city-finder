@@ -85,15 +85,13 @@ func TestFuzzyBudgetScaleGate(t *testing.T) {
 		adv := adversarialQueries(rng, corpus)
 
 		// Before (unlimited) then the sweep. budget < 0 disables the cap.
-		origBudget := FuzzyMaxCandidates
-		t.Cleanup(func() { FuzzyMaxCandidates = origBudget }) // also on a failed measurement
 		configs := append([]int{-1}, sweep...)
 		for _, budget := range configs {
 			label := "unlimited"
 			if budget >= 0 {
 				label = fmt.Sprintf("%d", budget)
 			}
-			FuzzyMaxCandidates = budget
+			index.budget = budget
 			runtime.GC()
 			measureScaleWorkload(t, index, "std", label, std)
 			measureScaleWorkload(t, index, "adv", label, adv)

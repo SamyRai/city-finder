@@ -153,8 +153,9 @@ func (nf *Finder) buildPayloadV3Locked() (nameIndexPayloadV3, error) {
 // A v3 file that references an external city table yields a DETACHED finder:
 // its lookups return nil until ShareCities attaches the matching table (the
 // initializer does this with the S2 index's Cities). Files that embed their
-// table (v2, standalone v3) are fully usable as returned.
-func DeserializeIndex(filepath string) (*Finder, error) {
+// table (v2, standalone v3) are fully usable as returned. opts optionally
+// overrides the fuzzy limits (see Options).
+func DeserializeIndex(filepath string, opts ...Options) (*Finder, error) {
 	file, err := indexfile.Open(filepath)
 	if err != nil {
 		return nil, err
@@ -195,7 +196,7 @@ func DeserializeIndex(filepath string) (*Finder, error) {
 	log.Printf("name index %s decoded (v%d): %d B -> %d B streamed (zstd+gob) in %s",
 		filepath, header.Version, stats.FileBytes, stats.PayloadBytes, stats.Decode)
 
-	finder := NewNameFinder()
+	finder := NewNameFinder(opts...)
 	finder.cities = cityTable{base: payload.Cities, baseCount: payload.CityCount, fingerprint: payload.Fingerprint}
 	if payload.Cities != nil {
 		// gob allocates a fresh backing for every decoded string; one intern

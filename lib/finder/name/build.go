@@ -149,11 +149,12 @@ func getMemoryUsageMB() float64 {
 // buildFromIndexMap then flattens that staging structure into the sorted CSR
 // tables in one pass, after which it is dropped. The nested-map overhead is
 // therefore build-transient: it never survives into the resident index.
-func BuildIndex(cities []city.SpatialCity) *Finder {
+// opts optionally overrides the fuzzy limits (see Options).
+func BuildIndex(cities []city.SpatialCity, opts ...Options) *Finder {
 	log.Printf("Building name index with %d cities using concurrent batch processing", len(cities))
 	start := time.Now()
 
-	finder := NewFinderWithCapacity(estimateCapacity(cities))
+	finder := NewFinderWithCapacity(estimateCapacity(cities), opts...)
 	finder.cities = ownedCityTable(cities)
 
 	// Staging structure for the loaders; flattened (and freed) below.
