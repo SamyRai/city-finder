@@ -78,6 +78,16 @@ The previous formats (name v2, postal v3) still load. The initializer
 rewrites them in the current format on the first boot, with no rebuild and
 no dataset download. An index that does not match the S2 index is rebuilt.
 
+Boot guards in the initializer. An exclusive `flock` on
+`<datasets_folder>/.cityfinder-init.lock` serializes boots that share a
+volume. When every index file is present and the folder cannot be written
+(read-only mount, immutable image), the lock is skipped with a log line and
+the boot proceeds from the indexes: nothing is written then, and index files
+are replaced by atomic rename, so there is nothing to race. A boot that has
+to build an index still fails if the lock cannot be taken. A city load that
+yields zero rows aborts the boot before any index is built or written, so an
+empty or filtered-out dataset can never become a persistent empty index.
+
 ## Why S2
 
 Points are stored as an `s2.PointVector` in an `s2.ShapeIndex`, a hierarchical

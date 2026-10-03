@@ -25,6 +25,16 @@ and this project adheres to
 
 ### Fixed
 
+- **An empty city dataset was accepted, serialized and then served
+  forever.** A truncated or wrong dump, or an `include_feature_classes`
+  that matched nothing, produced empty index files; every later boot was a
+  warm start over them and every nearest query returned 500. The boot now
+  fails with an error naming the file and the filters, and writes nothing.
+  An empty postal file is still allowed.
+- **A read-only datasets volume with complete indexes could not boot.** The
+  init lock needed to create a file in the folder. When all indexes are
+  present and the folder is unwritable, the lock is skipped with a log line
+  (a warm boot writes nothing); a boot that must build still fails.
 - **Loaders accepted impossible coordinates and negative populations.**
   City and postal rows with a NaN/Inf, `|lat| > 90` or `|lon| > 180`
   coordinate, and city rows with a negative population, are now skipped

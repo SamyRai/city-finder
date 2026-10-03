@@ -28,7 +28,8 @@ func InitializeContext(ctx context.Context, cfg *config.Config) (*finder.Finder,
 	if err := ensureDatasetsFolder(cfg); err != nil {
 		return nil, err
 	}
-	release, err := acquireInitLock(cfg.DatasetsFolder)
+	s2Path, namePath, postalPath := cfg.IndexFilePaths()
+	release, err := acquireInitLock(cfg.DatasetsFolder, !allIndexesPresent(s2Path, namePath, postalPath))
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +37,8 @@ func InitializeContext(ctx context.Context, cfg *config.Config) (*finder.Finder,
 
 	admin1NamesPath := ensureAdmin1NamesPath(ctx, dl, cfg)
 
-	s2Path, namePath, postalPath := cfg.IndexFilePaths()
+	// Checked again now that the lock is held: the first check only chose
+	// the lock mode, and a previous holder may have built them since.
 	if allIndexesPresent(s2Path, namePath, postalPath) {
 		// Warm start: the raw datasets would only be needed to rebuild an
 		// index, and datasetSource.load re-ensures them on demand in that

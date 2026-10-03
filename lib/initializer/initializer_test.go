@@ -250,18 +250,18 @@ func TestUnzipAndRename_SuccessLeavesNoPartFile(t *testing.T) {
 func TestAcquireInitLock_ExclusiveWhileHeld(t *testing.T) {
 	dir := t.TempDir()
 
-	release, err := acquireInitLock(dir)
+	release, err := acquireInitLock(dir, true)
 	require.NoError(t, err)
 
 	// A second initializer (a second open file description, as another
 	// process would have) must fail fast instead of racing the holder.
-	_, err = acquireInitLock(dir)
+	_, err = acquireInitLock(dir, true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "another initializer")
 
 	release()
 
-	release2, err := acquireInitLock(dir)
+	release2, err := acquireInitLock(dir, true)
 	require.NoError(t, err, "the lock must be acquirable again after release")
 	release2()
 }
@@ -275,7 +275,7 @@ func TestAcquireInitLock_LeftoverFileIsNotALock(t *testing.T) {
 	for _, content := range []string{fmt.Sprintf("%d\n", os.Getpid()), "1\n", "999999999\n", "not a pid"} {
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, initLockName), []byte(content), 0o600))
-		release, err := acquireInitLock(dir)
+		release, err := acquireInitLock(dir, true)
 		require.NoError(t, err, "leftover lock file with %q must not block", content)
 		release()
 	}
@@ -290,7 +290,7 @@ func TestAcquireInitLock_HeldByAnotherProcessThenReleasedOnDeath(t *testing.T) {
 		t.Skip("flock is unix-only")
 	}
 	if dir := os.Getenv("CF_LOCK_HOLDER_DIR"); dir != "" {
-		release, err := acquireInitLock(dir)
+		release, err := acquireInitLock(dir, true)
 		if err != nil {
 			fmt.Println("ERR", err)
 			os.Exit(1)
@@ -311,13 +311,13 @@ func TestAcquireInitLock_HeldByAnotherProcessThenReleasedOnDeath(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "HELD\n", line)
 
-	_, err = acquireInitLock(dir)
+	_, err = acquireInitLock(dir, true)
 	require.Error(t, err, "a lock held by a living process must block")
 	assert.Contains(t, err.Error(), fmt.Sprintf("pid %d", cmd.Process.Pid), "the error names the holder")
 
 	require.NoError(t, cmd.Process.Kill()) // SIGKILL: no release code runs
 	_ = cmd.Wait()
-	release, err := acquireInitLock(dir)
+	release, err := acquireInitLock(dir, true)
 	require.NoError(t, err, "the kernel must release a dead holder's lock")
 	release()
 }

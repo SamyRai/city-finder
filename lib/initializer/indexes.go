@@ -42,7 +42,9 @@ type datasetSource struct {
 // load loads the raw datasets on first call and is a no-op afterwards. A
 // failed load retries once after re-running ensureDatasets: a warm start that
 // found all indexes skips the dataset ensure, so a rebuild triggered by a
-// corrupt/legacy index may reach this point with the raw files absent.
+// corrupt/legacy index may reach this point with the raw files absent. A load
+// that succeeds but yields no cities is an error, not an empty index: see
+// errNoCities.
 func (s *datasetSource) load(ctx context.Context) error {
 	if s.loaded {
 		return nil
@@ -56,8 +58,25 @@ func (s *datasetSource) load(ctx context.Context) error {
 			return err
 		}
 	}
+	if len(cities) == 0 {
+		return s.errNoCities()
+	}
 	s.cities, s.postalCodes, s.loaded = cities, postalCodes, true
 	return nil
+}
+
+// errNoCities explains an empty city load. Building indexes from it would
+// succeed, serialize empty files, and make every later boot a "warm" start
+// that serves nothing (every nearest query a 500), so the boot fails instead
+// and writes nothing; fix the data and restart. The postal table may be
+// empty: it is a separate dataset and lookups just find nothing.
+func (s *datasetSource) errNoCities() error {
+	path := filepath.Join(s.cfg.DatasetsFolder, s.cfg.AllCitiesFile)
+	hint := "the file is empty, truncated or not a GeoNames dump"
+	if len(s.cfg.IncludeFeatureClasses) > 0 || s.cfg.ExcludeAdminDivisions {
+		hint += ", or include_feature_classes/exclude_admin_divisions filtered out every row"
+	}
+	return fmt.Errorf("no cities loaded from %s (%s); refusing to build empty indexes", path, hint)
 }
 
 func loadData(cfg *config.Config) ([]city.SpatialCity, map[string]map[string]dataLoader.PostalCodeEntry, error) {

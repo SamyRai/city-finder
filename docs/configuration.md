@@ -55,6 +55,10 @@ file to force a rebuild.
   Region 9", which dominates population ranking across the western US, and
   country-less undersea features. With `"P"`, `exclude_admin_divisions` is a
   no-op.
+- A filter (or a truncated or wrong dataset file) that leaves zero cities
+  fails startup with an error naming the file and the filters. Nothing is
+  serialized, so the next start is not mistaken for a warm start that serves
+  empty indexes. An empty postal file is allowed.
 
 ## Runtime environment
 
