@@ -7,6 +7,7 @@ import (
 	"math"
 	"slices"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"unicode/utf8"
 )
@@ -302,17 +303,23 @@ func (c *levenshteinChecker) prepare(query string) {
 	c.prev = c.prev[:len(c.queryRunes)+1]
 }
 
-// atMost reports whether levenshtein(candidate, query) ≤ d. Rows run along
-// the predecoded query; cells outside the ±d band are unreachable at the
-// bound and never computed. Both the length difference and the row minimum
-// exit as soon as the bound is unreachable.
+// atMost reports whether levenshtein(candidate, query) ≤ d.
 func (c *levenshteinChecker) atMost(candidate string, d int) bool {
+	return c.within(candidate, d) <= d
+}
+
+// within returns levenshtein(candidate, query) when it is ≤ d, else d+1.
+// Rows run along the predecoded query; cells outside the ±d band are
+// unreachable at the bound and never computed (a band cell holding a value
+// ≤ d is exact). Both the length difference and the row minimum exit as soon
+// as the bound is unreachable.
+func (c *levenshteinChecker) within(candidate string, d int) int {
 	q := c.queryRunes
 	n := len(q)
 
 	candidateRunes := utf8.RuneCountInString(candidate)
 	if n-candidateRunes > d || candidateRunes-n > d {
-		return false
+		return d + 1
 	}
 
 	// Row 0: distance between the empty prefix and each query prefix.
@@ -350,11 +357,17 @@ func (c *levenshteinChecker) atMost(candidate string, d int) bool {
 			c.curr[j] = d + 1 // right of the band
 		}
 		if rowMin > d {
-			return false
+			return d + 1
 		}
 		c.prev, c.curr = c.curr, c.prev
 	}
-	return c.prev[n] <= d
+	return min(c.prev[n], d+1)
+}
+
+// fuzzyMatch is a verified search result and its exact edit distance.
+type fuzzyMatch struct {
+	name string
+	dist int
 }
 
 // search returns the indexed names within Levenshtein distance d of query,
@@ -425,6 +438,7 @@ func (ix *ngramIndex) search(query string, d int) (matches []string, truncated b
 	}
 	var walked, verified int64
 
+	var found []fuzzyMatch // d > 1: verified matches with their exact distance
 	seen := acquireSeenSet(len(ix.names))
 	defer seen.release()
 walk:
@@ -452,8 +466,12 @@ walk:
 				continue
 			}
 			verified++
-			if check.atMost(ix.names[id], d) {
-				matches = append(matches, ix.names[id])
+			if dist := check.within(ix.names[id], d); dist <= d {
+				if d > 1 {
+					found = append(found, fuzzyMatch{name: ix.names[id], dist: dist})
+				} else {
+					matches = append(matches, ix.names[id])
+				}
 			}
 		}
 	}
@@ -461,23 +479,22 @@ walk:
 	// Deterministic, closest-first order: callers take the first candidate
 	// that resolves in the requested country, so the order IS the answer for
 	// ambiguous typos. Edit distance ascending, then name.
-	if d > 1 && len(matches) > 1 {
-		dist := make(map[string]int, len(matches))
-		for _, m := range matches {
-			dist[m] = d
-			for k := 0; k < d; k++ {
-				if check.atMost(m, k) {
-					dist[m] = k
-					break
-				}
+	// At d ≤ 1 names alone order the result (the exact phase already tried
+	// every distance-0 name in the requested country), so the distances are
+	// only kept, and sorted on, when d > 1.
+	if d > 1 {
+		slices.SortFunc(found, func(a, b fuzzyMatch) int {
+			if a.dist != b.dist {
+				return a.dist - b.dist
+			}
+			return strings.Compare(a.name, b.name)
+		})
+		if len(found) > 0 {
+			matches = make([]string, len(found))
+			for i, m := range found {
+				matches[i] = m.name
 			}
 		}
-		sort.Slice(matches, func(i, j int) bool {
-			if dist[matches[i]] != dist[matches[j]] {
-				return dist[matches[i]] < dist[matches[j]]
-			}
-			return matches[i] < matches[j]
-		})
 	} else {
 		sort.Strings(matches)
 	}

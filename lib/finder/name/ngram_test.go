@@ -183,6 +183,8 @@ func TestLevenshteinCheckerMatchesReference(t *testing.T) {
 		for d := 0; d <= 5; d++ {
 			got := c.atMost(p[1], d)
 			assert.Equalf(t, want <= d, got, "atMost(%q, %q, %d): reference distance is %d", p[0], p[1], d, want)
+			// within is exact up to the bound and d+1 beyond it.
+			assert.Equalf(t, min(want, d+1), c.within(p[1], d), "within(%q, %q, %d)", p[0], p[1], d)
 		}
 	}
 }
