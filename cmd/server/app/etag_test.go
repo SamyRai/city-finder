@@ -72,3 +72,22 @@ func TestETagMatchesFiberBuiltin(t *testing.T) {
 	require.NotEmpty(t, tag)
 	assert.Equal(t, 304, etagDo(t, ours, "/json", tag).status)
 }
+
+// TestETagConditionalQuirks pins two lax behaviours inherited from fiber's
+// built-in ETag (product decision, E10): RFC 9110 says `If-None-Match: *`
+// matches any current representation (304), but it is answered 200 here, and
+// the tag is matched as a substring, so a tag wrapped in garbage still yields
+// 304. Changing either must move TestETagMatchesFiberBuiltin with it.
+func TestETagConditionalQuirks(t *testing.T) {
+	_, ours := etagApps()
+	tag := etagDo(t, ours, "/json", "").etag
+	require.NotEmpty(t, tag)
+
+	star := etagDo(t, ours, "/json", "*")
+	assert.Equal(t, 200, star.status, "If-None-Match: * is not treated as a match")
+	assert.Equal(t, tag, star.etag)
+
+	assert.Equal(t, 304, etagDo(t, ours, "/json", "garbage"+tag+"garbage").status,
+		"a tag embedded in other text still matches")
+	assert.Equal(t, 200, etagDo(t, ours, "/json", `"0-0"`).status, "a different tag does not match")
+}
