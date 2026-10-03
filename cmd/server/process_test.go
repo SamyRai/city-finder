@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -50,11 +52,36 @@ type serverProc struct {
 	port int
 }
 
-// buildServer compiles the real server binary into a temp dir.
+// subprocessCoverDir is where `go test -cover` collects coverage data, or ""
+// when the tests run without coverage. A server binary built with -cover and
+// started with GOCOVERDIR set to it writes its counters there at exit, so the
+// process-level tests produce coverage for cmd/server (main itself is only
+// reachable through a real process). `go test -cover` prints only the test
+// binary's own counters; to see the subprocess data too, keep the directory
+// and read it with covdata:
+//
+//	mkdir -p /tmp/cov && go test -cover ./cmd/server/ -args -test.gocoverdir=/tmp/cov
+//	go tool covdata percent -i=/tmp/cov -pkg=github.com/SamyRai/cityFinder/cmd/server
+func subprocessCoverDir() string {
+	if testing.CoverMode() == "" {
+		return ""
+	}
+	if f := flag.Lookup("test.gocoverdir"); f != nil {
+		return f.Value.String()
+	}
+	return ""
+}
+
+// buildServer compiles the real server binary into a temp dir, instrumented
+// for coverage when the tests themselves run with -cover.
 func buildServer(t *testing.T) string {
 	t.Helper()
 	binPath := filepath.Join(t.TempDir(), "cityfinder-server")
-	build := exec.Command("go", "build", "-o", binPath, "./cmd/server")
+	args := []string{"build", "-o", binPath}
+	if subprocessCoverDir() != "" {
+		args = append(args, "-cover")
+	}
+	build := exec.Command("go", append(args, "./cmd/server")...)
 	build.Dir = findRepoRoot(t)
 	if out, err := build.CombinedOutput(); err != nil {
 		require.NoError(t, err, "go build failed: %s", out)
@@ -107,6 +134,9 @@ func startServer(t *testing.T, binPath string, port int, env ...string) *serverP
 	p.cmd = exec.Command(binPath)
 	p.cmd.Dir = findRepoRoot(t)
 	p.cmd.Env = append(os.Environ(), env...)
+	if dir := subprocessCoverDir(); dir != "" {
+		p.cmd.Env = append(p.cmd.Env, "GOCOVERDIR="+dir)
+	}
 	p.cmd.Stdout = p.logs
 	p.cmd.Stderr = p.logs
 	require.NoError(t, p.cmd.Start())
@@ -218,4 +248,94 @@ func TestServerSecondSignalForcesExit(t *testing.T) {
 	waitErr := p.waitExit(5 * time.Second)
 	assert.Error(t, waitErr, "a forced exit is a signal death, not a clean exit 0")
 	assert.Less(t, time.Since(start), 5*time.Second, "second signal must not wait out the 10 s drain")
+}
+
+// exitCode returns the process exit status from Wait's error (0 for nil).
+func exitCode(t *testing.T, err error) int {
+	t.Helper()
+	if err == nil {
+		return 0
+	}
+	var ee *exec.ExitError
+	require.True(t, errors.As(err, &ee), "unexpected wait error: %v", err)
+	return ee.ExitCode()
+}
+
+// TestServerBadPortExitsBeforeIndexLoad: an invalid PORT is a startup error
+// (exit 1, named in the log) that must not wait for the index load. The
+// config is valid and cold, so a process that got past the PORT check would
+// start building indexes.
+func TestServerBadPortExitsBeforeIndexLoad(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process-level test skipped in short mode")
+	}
+	bin := buildServer(t)
+	for _, port := range []string{"abc", "0", "99999", "-1"} {
+		p := startServer(t, bin, 0, "CONFIG_PATH="+writeServerConfig(t), "PORT="+port)
+		err := p.waitExit(5 * time.Second)
+		assert.Equal(t, 1, exitCode(t, err), "PORT=%s; logs:\n%s", port, p.logs.String())
+		assert.Contains(t, p.logs.String(), "invalid PORT", "PORT=%s", port)
+		assert.NotContains(t, p.logs.String(), "Building", "PORT=%s must fail before any index is built", port)
+	}
+}
+
+// TestServerBadConfigExitsNonZero: a missing or malformed config file stops
+// the process with exit 1 and a "Failed to load config" line.
+func TestServerBadConfigExitsNonZero(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process-level test skipped in short mode")
+	}
+	bin := buildServer(t)
+	notJSON := filepath.Join(t.TempDir(), "bad.json")
+	require.NoError(t, os.WriteFile(notJSON, []byte("{not json"), 0o600))
+	for name, path := range map[string]string{
+		"missing":  filepath.Join(t.TempDir(), "absent.json"),
+		"not json": notJSON,
+	} {
+		p := startServer(t, bin, 0, "CONFIG_PATH="+path)
+		err := p.waitExit(10 * time.Second)
+		assert.Equal(t, 1, exitCode(t, err), "%s; logs:\n%s", name, p.logs.String())
+		assert.Contains(t, p.logs.String(), "Failed to load config", name)
+	}
+}
+
+// TestServerPortInUseExitsNonZero: a listen failure after initialization is
+// fatal (exit 1), not a silent hang.
+func TestServerPortInUseExitsNonZero(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process-level test skipped in short mode")
+	}
+	occupied, err := net.Listen("tcp", ":0")
+	require.NoError(t, err)
+	defer occupied.Close()
+	port := occupied.Addr().(*net.TCPAddr).Port
+
+	p := startServer(t, buildServer(t), port,
+		"CONFIG_PATH="+writeServerConfig(t), "PORT="+strconv.Itoa(port))
+	waitErr := p.waitExit(30 * time.Second)
+	assert.Equal(t, 1, exitCode(t, waitErr), "logs:\n%s", p.logs.String())
+	assert.Contains(t, p.logs.String(), "Server error")
+}
+
+// TestServerPprofListener: PPROF_ADDR opens the opt-in profiling listener on
+// its own address, and it goes away with the server on shutdown.
+func TestServerPprofListener(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process-level test skipped in short mode")
+	}
+	pprofPort := freePort(t)
+	port := freePort(t)
+	p := startServer(t, buildServer(t), port,
+		"CONFIG_PATH="+writeServerConfig(t), "PORT="+strconv.Itoa(port),
+		"PPROF_ADDR=127.0.0.1:"+strconv.Itoa(pprofPort))
+	p.waitHealthy()
+	p.waitLog("pprof listening on")
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/debug/pprof/cmdline", pprofPort))
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	assert.Equal(t, 200, resp.StatusCode)
+
+	require.NoError(t, p.cmd.Process.Signal(syscall.SIGTERM))
+	require.NoError(t, p.waitExit(10*time.Second))
 }
