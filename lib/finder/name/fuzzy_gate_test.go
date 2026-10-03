@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SamyRai/cityFinder/internal/testfixture"
 	"github.com/SamyRai/cityFinder/lib/city"
 )
 
@@ -19,18 +20,12 @@ import (
 // names, and this file needs a build that runs long enough (~1s at 200K on
 // Apple silicon) to overlap with concurrent exact lookups.
 func gateCities(count int) []city.SpatialCity {
-	cities := make([]city.SpatialCity, count)
-	for i := range cities {
-		cities[i] = city.SpatialCity{
-			City: city.City{
-				Name:      fmt.Sprintf("GateCity%06d", i),
-				Country:   "GC",
-				Latitude:  1,
-				Longitude: 1,
-			},
-		}
-	}
-	return cities
+	return testfixture.Cities(count, testfixture.Spec{
+		Name:    testfixture.Format("GateCity%06d"),
+		Country: testfixture.Const("GC"),
+		Lat:     testfixture.Const(1.0),
+		Lon:     testfixture.Const(1.0),
+	})
 }
 
 // waitFuzzyBuilt drives the lazy fuzzy state machine to fuzzyBuilt. The

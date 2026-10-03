@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"testing"
 
+	"github.com/SamyRai/cityFinder/internal/testfixture"
 	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/SamyRai/cityFinder/lib/dataLoader"
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
@@ -357,20 +358,13 @@ func TestProperty_FloatPrecisionEdgeCases(t *testing.T) {
 
 // Generate random but valid test data for property testing
 func generateRandomValidCities(count int) []city.SpatialCity {
-	cities := make([]city.SpatialCity, count)
 	r := rand.New(rand.NewSource(42)) // Fixed seed for reproducible tests
-
-	for i := 0; i < count; i++ {
-		cities[i] = city.SpatialCity{
-			City: city.City{
-				Name:      fmt.Sprintf("RandomCity%d", i),
-				Country:   fmt.Sprintf("C%d", r.Intn(100)),
-				Latitude:  r.Float64()*180.0 - 90.0,  // -90 to 90
-				Longitude: r.Float64()*360.0 - 180.0, // -180 to 180
-			},
-		}
-	}
-	return cities
+	return testfixture.Cities(count, testfixture.Spec{
+		Name:    testfixture.Format("RandomCity%d"),
+		Country: func(int) string { return fmt.Sprintf("C%d", r.Intn(100)) },
+		Lat:     func(int) float64 { return r.Float64()*180.0 - 90.0 },  // -90 to 90
+		Lon:     func(int) float64 { return r.Float64()*360.0 - 180.0 }, // -180 to 180
+	})
 }
 
 func TestProperty_RandomDataConsistency(t *testing.T) {

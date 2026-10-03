@@ -7,6 +7,7 @@ import (
 	"runtime/debug"
 	"testing"
 
+	"github.com/SamyRai/cityFinder/internal/testfixture"
 	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/SamyRai/cityFinder/lib/indexfile"
 	"github.com/stretchr/testify/assert"
@@ -22,21 +23,16 @@ import (
 // the v2 intern pass only collapses Country backings, so the measured heap
 // delta must come from those duplicates.
 func internFixtureCities(scale int) []city.SpatialCity {
-	n := 50000 * scale
-	cities := make([]city.SpatialCity, n)
-	for i := range cities {
-		cities[i] = city.SpatialCity{
-			City: city.City{
-				Name:    fmt.Sprintf("IntnCity%05d", i%(5000*scale)),
-				Country: fmt.Sprintf("RepublicOfNania%02d", i%5),
-			},
-			AltNames: []string{
+	return testfixture.Cities(50000*scale, testfixture.Spec{
+		Name:    func(i int) string { return fmt.Sprintf("IntnCity%05d", i%(5000*scale)) },
+		Country: func(i int) string { return fmt.Sprintf("RepublicOfNania%02d", i%5) },
+		Alts: func(i int) []string {
+			return []string{
 				fmt.Sprintf("IntnAlt%05d", (i*3)%(15000*scale)),
 				fmt.Sprintf("IntnOld%05d", (i*7)%(25000*scale)),
-			},
-		}
-	}
-	return cities
+			}
+		},
+	})
 }
 
 // decodeUninterned replicates DeserializeIndex's v2 decode sequence — raw gob

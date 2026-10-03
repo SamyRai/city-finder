@@ -6,6 +6,7 @@ import (
 	"log"
 	"testing"
 
+	"github.com/SamyRai/cityFinder/internal/testfixture"
 	"github.com/SamyRai/cityFinder/lib/city"
 )
 
@@ -35,18 +36,12 @@ func benchDiverseName(i int) string {
 // over exactTailCountries (same countries as the exact-tail fixture), with
 // no alternate names — the canonical-name tables only.
 func benchDiverseCities(count int) []city.SpatialCity {
-	cities := make([]city.SpatialCity, count)
-	for i := range cities {
-		cities[i] = city.SpatialCity{
-			City: city.City{
-				Name:      benchDiverseName(i),
-				Country:   exactTailCountries[i%len(exactTailCountries)],
-				Latitude:  float64(i%18000) / 100.0,
-				Longitude: float64(i%36000)/100.0 - 180.0,
-			},
-		}
-	}
-	return cities
+	return testfixture.Cities(count, testfixture.Spec{
+		Name:    benchDiverseName,
+		Country: testfixture.Cycle(exactTailCountries),
+		Lat:     func(i int) float64 { return float64(i%18000) / 100.0 },
+		Lon:     func(i int) float64 { return float64(i%36000)/100.0 - 180.0 },
+	})
 }
 
 // benchFuzzyQueries returns count typo queries against the benchDiverseName
