@@ -1,18 +1,12 @@
 package postalCode
 
 import (
-	"bufio"
-	"bytes"
-	"encoding/gob"
 	"errors"
 	"fmt"
-	"io"
 	"log"
-	"os"
-	"time"
 
 	"github.com/SamyRai/cityFinder/lib/dataLoader"
-	"github.com/klauspost/compress/zstd"
+	"github.com/SamyRai/cityFinder/lib/indexfile"
 )
 
 // Serialized index file format:
@@ -22,8 +16,8 @@ import (
 //
 // The header stays uncompressed so version checks run before any
 // decompression; a truncated or version-skewed file is rejected with
-// ErrCorruptIndex instead of loading as zero-filled garbage. Writes go to
-// filepath+".part" and are renamed into place only after a complete encode.
+// ErrCorruptIndex instead of loading as zero-filled garbage. The framing,
+// atomic durable writes and streaming reads belong to lib/indexfile.
 //
 // Version history:
 //   - v2: gob of the loader's map[country]map[code]PostalCodeEntry. Rejected
@@ -37,26 +31,6 @@ const (
 	indexVersionV3 = uint32(3)
 	indexVersion   = uint32(4)
 )
-
-// postalIndexZstdLevel: SpeedFastest keeps encode cheap; decompression speed
-// is nearly level-independent.
-const postalIndexZstdLevel = zstd.SpeedFastest
-
-// postalIndexZstdCRC enables the per-frame checksum so corruption inside a
-// structurally valid frame is detected deterministically by the decoder.
-const postalIndexZstdCRC = true
-
-// decodeZstdFrame decompresses one complete zstd frame with a per-call
-// decoder that is closed immediately afterwards (a shared decoder retains
-// its window/worker buffers).
-func decodeZstdFrame(compressed []byte) ([]byte, error) {
-	zd, err := zstd.NewReader(nil)
-	if err != nil {
-		return nil, err
-	}
-	defer zd.Close()
-	return zd.DecodeAll(compressed, nil)
-}
 
 // indexHeader is the first gob value of every serialized postal code index.
 type indexHeader struct {
@@ -109,37 +83,9 @@ func (pcf *Finder) SerializeIndex(filepath string) error {
 	}
 	pcf.mutex.RUnlock()
 
-	partPath := filepath + ".part"
-	file, err := os.Create(partPath)
-	if err != nil {
-		return fmt.Errorf("failed to create index file: %w", err)
-	}
-	fail := func(err error) error {
-		_ = file.Close()
-		_ = os.Remove(partPath)
-		return err
-	}
-	if err := gob.NewEncoder(file).Encode(indexHeader{Magic: indexMagic, Version: indexVersion, Count: total}); err != nil {
-		return fail(fmt.Errorf("failed to encode postal code index header: %w", err))
-	}
-	zw, err := zstd.NewWriter(file, zstd.WithEncoderLevel(postalIndexZstdLevel), zstd.WithEncoderCRC(postalIndexZstdCRC))
-	if err != nil {
-		return fail(fmt.Errorf("failed to create postal code index zstd writer: %w", err))
-	}
-	if err := gob.NewEncoder(zw).Encode(&payload); err != nil {
-		_ = zw.Close()
-		return fail(fmt.Errorf("failed to encode postal code index payload: %w", err))
-	}
-	if err := zw.Close(); err != nil {
-		return fail(fmt.Errorf("failed to finalize postal code index zstd frame: %w", err))
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(partPath)
-		return fmt.Errorf("failed to close index file: %w", err)
-	}
-	if err := os.Rename(partPath, filepath); err != nil {
-		_ = os.Remove(partPath)
-		return fmt.Errorf("failed to move %s to %s: %w", partPath, filepath, err)
+	header := indexHeader{Magic: indexMagic, Version: indexVersion, Count: total}
+	if err := indexfile.Write(filepath, header, &payload); err != nil {
+		return fmt.Errorf("failed to write postal code index: %w", err)
 	}
 	return nil
 }
@@ -151,7 +97,7 @@ func (pcf *Finder) SerializeIndex(filepath string) error {
 // initializer can fall back to a rebuild. A v3 file loads into the compact
 // table and reports LegacyFormat() so the caller can rewrite it.
 func DeserializeIndex(filepath string) (*Finder, error) {
-	file, err := os.Open(filepath)
+	file, err := indexfile.Open(filepath)
 	if err != nil {
 		return nil, fmt.Errorf("error opening file: %w", err)
 	}
@@ -162,10 +108,9 @@ func DeserializeIndex(filepath string) (*Finder, error) {
 			append([]any{ErrCorruptIndex, filepath, filepath}, args...)...)
 	}
 
-	bufFile := bufio.NewReader(file)
 	var header indexHeader
-	if err := gob.NewDecoder(bufFile).Decode(&header); err != nil {
-		return nil, corrupt("header decode: %v", err)
+	if err := file.Header(&header); err != nil {
+		return nil, corrupt("%v", err)
 	}
 	if header.Magic != indexMagic {
 		return nil, corrupt("bad magic %q (want %q)", header.Magic, indexMagic)
@@ -174,32 +119,18 @@ func DeserializeIndex(filepath string) (*Finder, error) {
 		return nil, corrupt("unsupported version %d (want %d or %d)", header.Version, indexVersion, indexVersionV3)
 	}
 
-	readStart := time.Now()
-	compressed, err := io.ReadAll(bufFile)
-	if err != nil {
-		return nil, fmt.Errorf("error reading postal code index payload from %s: %w", filepath, err)
-	}
-	compressedLen := len(compressed)
-	zstdStart := time.Now()
-	payloadBytes, err := decodeZstdFrame(compressed)
-	if err != nil {
-		return nil, corrupt("payload is not a decodable zstd frame: %v", err)
-	}
-	compressed = nil // release the compressed buffer before the gob decode allocates
-	zstdDone := time.Now()
-
 	var finder *Finder
 	if header.Version == indexVersionV3 {
 		var v3 payloadV3
-		if err := gob.NewDecoder(bytes.NewReader(payloadBytes)).Decode(&v3); err != nil {
-			return nil, corrupt("payload decode: %v", err)
+		if err := file.Payload(&v3); err != nil {
+			return nil, corrupt("%v", err)
 		}
 		finder = BuildIndex(v3.PostalCode)
 		finder.legacy = true
 	} else {
 		var v4 payloadV4
-		if err := gob.NewDecoder(bytes.NewReader(payloadBytes)).Decode(&v4); err != nil {
-			return nil, corrupt("payload decode: %v", err)
+		if err := file.Payload(&v4); err != nil {
+			return nil, corrupt("%v", err)
 		}
 		finder = NewPostalCodeFinder()
 		for country, cols := range v4.Countries {
@@ -217,13 +148,12 @@ func DeserializeIndex(filepath string) (*Finder, error) {
 			finder.countries[country] = t
 		}
 	}
-	gobDone := time.Now()
 	if got := finder.Len(); header.Count != got {
 		return nil, corrupt("payload holds %d postal code entries but the header recorded %d", got, header.Count)
 	}
-	log.Printf("postal code index %s decoded (v%d): read %d B in %s, zstd %d->%d B in %s, gob %s",
-		filepath, header.Version, compressedLen, zstdStart.Sub(readStart), compressedLen, len(payloadBytes),
-		zstdDone.Sub(zstdStart), gobDone.Sub(zstdDone))
+	stats := file.Stats()
+	log.Printf("postal code index %s decoded (v%d): %d B -> %d B streamed (zstd+gob) in %s",
+		filepath, header.Version, stats.FileBytes, stats.PayloadBytes, stats.Decode)
 	return finder, nil
 }
 

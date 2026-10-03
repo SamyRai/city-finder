@@ -20,6 +20,7 @@ lib/finder        facade over the three finders
   name            exact / fuzzy / prefix name index
   postalCode      postal code index
 lib/city          shared city types
+lib/indexfile     index file framing: atomic + fsynced writes, streaming verified reads
 benchmarks        bench.sh (measurement protocol) + committed baseline outputs
 helm, deploy      Helm chart, image config
 ```
@@ -40,6 +41,13 @@ therefore never change an answer. Primary-name keys share their bytes with
 | S2 | v3 | city table, admin ids/codes |
 | name | v3 | per-country name → row ids; references the S2 table by row count + fingerprint (a standalone index embeds its own table instead) |
 | postal | v4 | per country: sorted codes + latitude / longitude / place-name columns |
+
+All three files share one framing (`lib/indexfile`): a gob header (magic,
+version, count) that is checked before any decompression, then one zstd
+frame (CRC on) holding the gob payload. Writes go to `<file>.part`, are
+fsynced, and are renamed into place. Reads stream from the file through zstd
+into gob, so no whole-file buffer sits next to the decoded index, and drain
+the frame to its end, which verifies the CRC and rejects trailing bytes.
 
 The previous formats (name v2, postal v3) still load. The initializer
 rewrites them in the current format on the first boot, with no rebuild and

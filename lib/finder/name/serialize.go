@@ -1,18 +1,12 @@
 package name
 
 import (
-	"bufio"
-	"bytes"
-	"encoding/gob"
 	"errors"
 	"fmt"
-	"io"
 	"log"
-	"os"
-	"time"
 
 	"github.com/SamyRai/cityFinder/lib/city"
-	"github.com/klauspost/compress/zstd"
+	"github.com/SamyRai/cityFinder/lib/indexfile"
 )
 
 // indexHeader is the first value written into the serialized stream. It lets
@@ -75,44 +69,15 @@ type nameIndexPayloadV3 struct {
 	Refs        map[string]map[string][]int32
 }
 
-// The payload stream is zstd-framed:
-//
-//	gob(indexHeader)               // uncompressed, so version checks happen
-//	                               // before any decompression
-//	zstd-frame(gob(payload))       // one frame, CRC on
-//
-// A truncated or corrupted frame, or a payload that is not a valid frame,
-// decodes to ErrCorruptIndex exactly like a malformed raw gob stream.
-const (
-	// nameIndexZstdLevel trades compression ratio for encode speed;
-	// decompression speed is nearly level-independent.
-	nameIndexZstdLevel = zstd.SpeedFastest
-
-	// nameIndexZstdCRC enables the per-frame checksum: corruption inside an
-	// otherwise structurally valid frame is detected deterministically.
-	nameIndexZstdCRC = true
-)
-
-// decodeZstdFrame decompresses one complete zstd frame with a per-call
-// decoder that is closed immediately afterwards. A shared package-level
-// decoder was measured to retain ~900 MB of internal window/worker buffers
-// after decoding the prod-scale frame; warm start is a once-per-boot
-// operation, so paying decoder setup (µs) to release that memory is strictly
-// better.
-func decodeZstdFrame(compressed []byte) ([]byte, error) {
-	zd, err := zstd.NewReader(nil)
-	if err != nil {
-		return nil, err
-	}
-	defer zd.Close()
-	return zd.DecodeAll(compressed, nil)
-}
+// The file framing (uncompressed gob header, then one CRC-checked zstd frame
+// holding the gob payload), atomic durable writes and streaming reads belong
+// to lib/indexfile. A truncated or corrupted frame decodes to ErrCorruptIndex
+// exactly like a malformed gob stream.
 
 // SerializeIndex saves the name index to a file (format v3). A shared city
 // table (ShareCities) is referenced, not embedded; an owned one is embedded.
-// The payload is written to a sibling ".part" file first and moved into place
-// with os.Rename only after the full stream has been written, so a crash
-// mid-write can never leave a truncated file where the index used to be.
+// The write is atomic and durable (lib/indexfile.Write), so a crash mid-write
+// can never leave a truncated file where the index used to be.
 //
 // The fuzzy n-gram index is runtime state and is NOT written. Map iteration
 // order makes the file bytes non-deterministic — acceptable, indexes are
@@ -125,40 +90,8 @@ func (nf *Finder) SerializeIndex(filepath string) error {
 		return err
 	}
 
-	partPath := filepath + ".part"
-	file, err := os.Create(partPath)
-	if err != nil {
-		return err
-	}
-	fail := func(err error) error {
-		_ = file.Close()
-		_ = os.Remove(partPath)
-		return err
-	}
 	header := indexHeader{Magic: nameIndexMagic, Version: nameIndexVersion, Count: len(payload.Refs)}
-	if err := gob.NewEncoder(file).Encode(&header); err != nil {
-		return fail(err)
-	}
-	zw, err := zstd.NewWriter(file, zstd.WithEncoderLevel(nameIndexZstdLevel), zstd.WithEncoderCRC(nameIndexZstdCRC))
-	if err != nil {
-		return fail(err)
-	}
-	if err := gob.NewEncoder(zw).Encode(&payload); err != nil {
-		_ = zw.Close()
-		return fail(err)
-	}
-	if err := zw.Close(); err != nil {
-		return fail(err)
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(partPath)
-		return err
-	}
-	if err := os.Rename(partPath, filepath); err != nil {
-		_ = os.Remove(partPath)
-		return err
-	}
-	return nil
+	return indexfile.Write(filepath, &header, &payload)
 }
 
 // buildPayloadV3Locked reduces the flat tables plus the overflow to the v3
@@ -218,18 +151,14 @@ func (nf *Finder) buildPayloadV3Locked() (nameIndexPayloadV3, error) {
 // initializer does this with the S2 index's Cities). Files that embed their
 // table (v2, standalone v3) are fully usable as returned.
 func DeserializeIndex(filepath string) (*Finder, error) {
-	file, err := os.Open(filepath)
+	file, err := indexfile.Open(filepath)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
-	// The bufio.Reader is shared by the header gob decoder and the payload
-	// read: gob consumes exactly the header's bytes, and whatever it buffered
-	// past them belongs to the zstd frame.
-	bufFile := bufio.NewReader(file)
 	var header indexHeader
-	if err := gob.NewDecoder(bufFile).Decode(&header); err != nil {
+	if err := file.Header(&header); err != nil {
 		return nil, fmt.Errorf("%w: name index %s is not a readable versioned index (legacy or corrupt file: %v); delete the file so the index is rebuilt",
 			ErrCorruptIndex, filepath, err)
 	}
@@ -238,34 +167,18 @@ func DeserializeIndex(filepath string) (*Finder, error) {
 			ErrCorruptIndex, filepath, header.Magic, header.Version, nameIndexMagic, nameIndexVersion, nameIndexVersionV2)
 	}
 
-	readStart := time.Now()
-	compressed, err := io.ReadAll(bufFile)
-	if err != nil {
-		return nil, fmt.Errorf("reading name index payload from %s: %w", filepath, err)
-	}
-	compressedLen := len(compressed)
-	zstdStart := time.Now()
-	payloadBytes, err := decodeZstdFrame(compressed)
-	if err != nil {
-		return nil, fmt.Errorf("%w: name index %s payload is not a decodable zstd frame: %v; delete the file so the index is rebuilt",
-			ErrCorruptIndex, filepath, err)
-	}
-	compressed = nil // release the compressed buffer before the gob decode allocates
-	zstdDone := time.Now()
-
 	var payload nameIndexPayloadV3
 	if header.Version == nameIndexVersionV2 {
 		var v2 nameIndexPayloadV2
-		if err := gob.NewDecoder(bytes.NewReader(payloadBytes)).Decode(&v2); err != nil {
+		if err := file.Payload(&v2); err != nil {
 			return nil, fmt.Errorf("%w: decoding name index payload from %s: %v", ErrCorruptIndex, filepath, err)
 		}
 		// v2 ids number a self-contained distinct-city table: it is exactly
 		// an embedded v3 base table.
 		payload = nameIndexPayloadV3{CityCount: len(v2.Cities), Cities: v2.Cities, Refs: v2.Refs}
-	} else if err := gob.NewDecoder(bytes.NewReader(payloadBytes)).Decode(&payload); err != nil {
+	} else if err := file.Payload(&payload); err != nil {
 		return nil, fmt.Errorf("%w: decoding name index payload from %s: %v", ErrCorruptIndex, filepath, err)
 	}
-	gobDone := time.Now()
 	if header.Count != len(payload.Refs) {
 		return nil, fmt.Errorf("%w: name index %s payload holds %d countries but the header recorded %d; delete the file so the index is rebuilt",
 			ErrCorruptIndex, filepath, len(payload.Refs), header.Count)
@@ -274,9 +187,9 @@ func DeserializeIndex(filepath string) (*Finder, error) {
 		return nil, fmt.Errorf("%w: name index %s embeds %d cities but records %d; delete the file so the index is rebuilt",
 			ErrCorruptIndex, filepath, len(payload.Cities), payload.CityCount)
 	}
-	log.Printf("name index %s decoded (v%d): read %d B in %s, zstd %d->%d B in %s, gob %s",
-		filepath, header.Version, compressedLen, zstdStart.Sub(readStart), compressedLen, len(payloadBytes),
-		zstdDone.Sub(zstdStart), gobDone.Sub(zstdDone))
+	stats := file.Stats()
+	log.Printf("name index %s decoded (v%d): %d B -> %d B streamed (zstd+gob) in %s",
+		filepath, header.Version, stats.FileBytes, stats.PayloadBytes, stats.Decode)
 
 	finder := NewNameFinder()
 	finder.cities = cityTable{base: payload.Cities, baseCount: payload.CityCount, fingerprint: payload.Fingerprint}

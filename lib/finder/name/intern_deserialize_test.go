@@ -1,17 +1,14 @@
 package name
 
 import (
-	"bufio"
-	"bytes"
-	"encoding/gob"
 	"fmt"
-	"io"
 	"os"
 	"runtime"
 	"runtime/debug"
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/city"
+	"github.com/SamyRai/cityFinder/lib/indexfile"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -53,23 +50,17 @@ func internFixtureCities(scale int) []city.SpatialCity {
 // pay (or benefit from) table state left by an earlier variant.
 func decodeUninterned(t *testing.T, path string) (*Finder, []city.City) {
 	t.Helper()
-	file, err := os.Open(path)
+	file, err := indexfile.Open(path)
 	assert.NoError(t, err)
 	defer func() { _ = file.Close() }()
 
-	bufFile := bufio.NewReader(file)
 	var header indexHeader
-	assert.NoError(t, gob.NewDecoder(bufFile).Decode(&header))
+	assert.NoError(t, file.Header(&header))
 	assert.Equal(t, nameIndexMagic, header.Magic)
 	assert.Equal(t, nameIndexVersion, header.Version)
 
-	compressed, err := io.ReadAll(bufFile)
-	assert.NoError(t, err)
-	payloadBytes, err := decodeZstdFrame(compressed)
-	assert.NoError(t, err)
-
 	var payload nameIndexPayloadV3
-	assert.NoError(t, gob.NewDecoder(bytes.NewReader(payloadBytes)).Decode(&payload))
+	assert.NoError(t, file.Payload(&payload))
 
 	// Rehydrate into the flat tables exactly the way DeserializeIndex does,
 	// minus the intern pass under measurement.

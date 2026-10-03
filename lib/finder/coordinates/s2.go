@@ -1,25 +1,19 @@
 package coordinates
 
 import (
-	"bufio"
-	"bytes"
-	"encoding/gob"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"math"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/SamyRai/cityFinder/lib/city"
+	"github.com/SamyRai/cityFinder/lib/indexfile"
 	"github.com/golang/geo/s1"
 	"github.com/golang/geo/s2"
-	"github.com/klauspost/compress/zstd"
 )
 
 const earthRadiusKm = 6371.0
@@ -319,46 +313,19 @@ type SerializableS2Finder struct {
 // Version history: v2 embedded Population in City (bumped in lockstep with
 // the name index's City change); v3 adds the admin attribution arrays and
 // moves the payload behind one zstd frame (the same framing the name index
-// v2 established: SpeedFastest, frame CRC, per-call encoder/decoder). A v2
+// v2 established, now owned by lib/indexfile: SpeedFastest, frame CRC). A v2
 // file fails the version check below and returns ErrCorruptIndex exactly as
 // truncated files do; the initializer's ensure*Index fallback rebuilds from
 // the source datasets and rewrites the file as v3 — the proven v1→v2 path.
 // Admin1Names is deliberately NOT in the payload: it is optional side data,
 // re-attached per boot, so a names-file change never invalidates the index.
 //
-// Writes go to filepath+".part" and are renamed into place only after a
-// complete encode, so a crash mid-write never replaces a valid index with a
-// truncated one.
+// Writes are atomic and durable (lib/indexfile.Write): a crash mid-write
+// never replaces a valid index with a truncated one.
 const (
 	indexMagic   = "CFS2IDX"
 	indexVersion = uint32(3)
 )
-
-// s2IndexZstdLevel trades compression ratio for encode/decode speed, matching
-// the name index v2 framing decision: SpeedFastest keeps the decode off the
-// warm-start critical path; SpeedDefault would shave a few more MB but tax
-// every boot.
-const s2IndexZstdLevel = zstd.SpeedFastest
-
-// s2IndexZstdCRC enables the per-frame checksum: corruption inside an
-// otherwise structurally valid frame is then detected deterministically by
-// the decoder instead of surfacing as garbage that happens to survive gob.
-const s2IndexZstdCRC = true
-
-// decodeZstdFrame decompresses one complete zstd frame with a per-call
-// decoder that is closed immediately afterwards. A shared package-level
-// decoder was measured (name index v2) to retain ~900 MB of internal
-// window/worker buffers after a prod-scale frame; warm start is a
-// once-per-boot operation, so paying decoder setup (µs) to release that
-// memory is strictly better. DecodeAll itself is stateless.
-func decodeZstdFrame(compressed []byte) ([]byte, error) {
-	zd, err := zstd.NewReader(nil)
-	if err != nil {
-		return nil, err
-	}
-	defer zd.Close()
-	return zd.DecodeAll(compressed, nil)
-}
 
 // indexHeader is the first gob value of every serialized S2 index.
 type indexHeader struct {
@@ -949,13 +916,8 @@ func (f *S2Finder) populationRankScore(result s2.EdgeQueryResult) float64 {
 	return float64(f.Cities[cityIndex].Population) / (distanceKm*distanceKm + 1.0)
 }
 
-// SerializeIndex saves the finder's data to a file. The stream is
-// uncompressed header, then one zstd frame holding the gob payload (see the
-// format comment above), written atomically: the bytes land in
-// filepath+".part" first and are renamed over filepath only after a complete
-// encode, so readers never observe a half-written index. A fresh zstd
-// encoder per call: encoders are not reusable, and serialization is a
-// one-shot init-path operation.
+// SerializeIndex saves the finder's data to a file in the format described
+// above, atomically and durably (lib/indexfile.Write).
 func (f *S2Finder) SerializeIndex(filepath string) error {
 	payload := SerializableS2Finder{
 		Cities:      f.Cities,
@@ -965,39 +927,9 @@ func (f *S2Finder) SerializeIndex(filepath string) error {
 		Admin2Codes: f.Admin2Codes,
 	}
 
-	partPath := filepath + ".part"
-	file, err := os.Create(partPath)
-	if err != nil {
-		return fmt.Errorf("failed to create index file: %w", err)
-	}
-	fail := func(err error) error {
-		_ = file.Close()
-		_ = os.Remove(partPath)
-		return err
-	}
-
-	encoder := gob.NewEncoder(file)
-	if err := encoder.Encode(indexHeader{Magic: indexMagic, Version: indexVersion, Count: len(f.Cities)}); err != nil {
-		return fail(fmt.Errorf("failed to encode s2 index header: %w", err))
-	}
-	zw, err := zstd.NewWriter(file, zstd.WithEncoderLevel(s2IndexZstdLevel), zstd.WithEncoderCRC(s2IndexZstdCRC))
-	if err != nil {
-		return fail(fmt.Errorf("failed to create s2 index zstd writer: %w", err))
-	}
-	if err := gob.NewEncoder(zw).Encode(&payload); err != nil {
-		_ = zw.Close()
-		return fail(fmt.Errorf("failed to encode s2 index payload: %w", err))
-	}
-	if err := zw.Close(); err != nil {
-		return fail(fmt.Errorf("failed to finalize s2 index zstd frame: %w", err))
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(partPath)
-		return fmt.Errorf("failed to close index file: %w", err)
-	}
-	if err := os.Rename(partPath, filepath); err != nil {
-		_ = os.Remove(partPath)
-		return fmt.Errorf("failed to move %s to %s: %w", partPath, filepath, err)
+	header := indexHeader{Magic: indexMagic, Version: indexVersion, Count: len(f.Cities)}
+	if err := indexfile.Write(filepath, header, &payload); err != nil {
+		return fmt.Errorf("failed to write s2 index: %w", err)
 	}
 	return nil
 }
@@ -1007,76 +939,46 @@ func (f *S2Finder) SerializeIndex(filepath string) error {
 // before any decompression runs; every decode failure — bad header,
 // truncated or corrupted zstd frame, malformed payload, or counts that
 // disagree with the header — wraps ErrCorruptIndex so the initializer can
-// fall back to a rebuild (open/read/close failures are environmental and
-// returned unwrapped). The frame is decompressed whole and the read/zstd/gob
-// split is logged, mirroring the name index, so warm-start time stays
-// attributable.
+// fall back to a rebuild (an open failure is environmental and returned
+// unwrapped). The payload streams from the file through zstd into gob
+// (lib/indexfile), so no whole-file buffer is held next to the decoded
+// cities.
 func DeserializeIndex(filepath string) (*S2Finder, error) {
-	file, err := os.Open(filepath)
+	file, err := indexfile.Open(filepath)
 	if err != nil {
 		return nil, fmt.Errorf("error opening file: %w", err)
 	}
+	defer file.Close()
 
 	corrupt := func(format string, args ...any) error {
 		return fmt.Errorf("%w: index file %s appears truncated or from an incompatible version; delete %s or rebuild the index: "+format,
 			append([]any{ErrCorruptIndex, filepath, filepath}, args...)...)
 	}
 
-	// The bufio.Reader is shared by the header gob decoder and the payload
-	// read: gob consumes exactly the header's bytes, and whatever it buffered
-	// past them belongs to the zstd frame.
-	bufFile := bufio.NewReader(file)
 	var header indexHeader
-	if err := gob.NewDecoder(bufFile).Decode(&header); err != nil {
-		_ = file.Close()
-		return nil, corrupt("header decode: %v", err)
+	if err := file.Header(&header); err != nil {
+		return nil, corrupt("%v", err)
 	}
 	if header.Magic != indexMagic {
-		_ = file.Close()
 		return nil, corrupt("bad magic %q (want %q)", header.Magic, indexMagic)
 	}
 	if header.Version != indexVersion {
-		_ = file.Close()
 		return nil, corrupt("unsupported version %d (want %d)", header.Version, indexVersion)
 	}
 
-	readStart := time.Now()
-	compressed, err := io.ReadAll(bufFile)
-	if err != nil {
-		_ = file.Close()
-		return nil, fmt.Errorf("error reading s2 index payload from %s: %w", filepath, err)
-	}
-	compressedLen := len(compressed)
-	zstdStart := time.Now()
-	payloadBytes, err := decodeZstdFrame(compressed)
-	if err != nil {
-		_ = file.Close()
-		return nil, corrupt("payload is not a decodable zstd frame: %v", err)
-	}
-	zstdDone := time.Now()
-	compressed = nil // release the compressed buffer before the gob decode allocates
-	gobStart := zstdDone
 	var payload SerializableS2Finder
-	if err := gob.NewDecoder(bytes.NewReader(payloadBytes)).Decode(&payload); err != nil {
-		_ = file.Close()
-		return nil, corrupt("payload decode: %v", err)
+	if err := file.Payload(&payload); err != nil {
+		return nil, corrupt("%v", err)
 	}
 	if header.Count != len(payload.Cities) {
-		_ = file.Close()
 		return nil, corrupt("payload holds %d cities but the header recorded %d", len(payload.Cities), header.Count)
 	}
 	if len(payload.Admin1IDs) != len(payload.Cities) || len(payload.Admin2IDs) != len(payload.Cities) {
-		_ = file.Close()
 		return nil, corrupt("admin id arrays hold %d/%d entries for %d cities", len(payload.Admin1IDs), len(payload.Admin2IDs), len(payload.Cities))
 	}
-	gobDone := time.Now()
-
-	if err := file.Close(); err != nil {
-		return nil, fmt.Errorf("error closing file: %w", err)
-	}
-	log.Printf("s2 index %s decoded: read %d B in %s, zstd %d->%d B in %s, gob %s",
-		filepath, compressedLen, zstdStart.Sub(readStart), compressedLen, len(payloadBytes),
-		zstdDone.Sub(zstdStart), gobDone.Sub(gobStart))
+	stats := file.Stats()
+	log.Printf("s2 index %s decoded: %d B -> %d B streamed (zstd+gob) in %s",
+		filepath, stats.FileBytes, stats.PayloadBytes, stats.Decode)
 
 	// gob allocates a fresh backing for every decoded string: collapse the
 	// per-city copies of the ~250 country codes to one each.
