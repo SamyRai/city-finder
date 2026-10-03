@@ -171,6 +171,16 @@ and this project adheres to
 
 ### Changed
 
+- **Cold start overlaps independent work.** The city and postal files are
+  parsed concurrently, and once the S2, name and postal indexes are built
+  the three index files are written concurrently. The builds stay
+  sequential, because running them together raised peak memory by about half
+  in measurement. Index files are now written only after all three indexes
+  exist, so a failing build no longer leaves a partly updated set. On a
+  200k-city synthetic dataset on a shared 4-core host the gain was within
+  noise (1.34 s against 1.40 s mean of 8 interleaved runs, peak RSS
+  +3%); the overlap scales with file sizes, so production gains more. Answer
+  transcripts are byte-identical.
 - **Dataset downloads are owned by one `downloader`.** The HTTP client, the
   attempt count and the retry delay are fields of a struct instead of
   package variables that tests patched, and the pause between attempts now

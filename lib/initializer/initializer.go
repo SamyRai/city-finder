@@ -151,17 +151,24 @@ func loadOrBuildFinders(ctx context.Context, dl *downloader, cfg *config.Config)
 		return nil, err
 	}
 
-	s2Finder, err := ensureS2Index(ctx, s2IndexPath, cfg, data)
+	// Build (or load) the three indexes one after another, then write
+	// whatever was built, concurrently. The builds are the memory peak and
+	// stay sequential; the name index needs the S2 index's city table. Index
+	// files are only written once every index exists, so a failing step
+	// leaves no half-updated set behind.
+	s2Finder, writeS2, err := ensureS2Index(ctx, s2IndexPath, data)
 	if err != nil {
 		return nil, err
 	}
-	nameFinder, err := ensureNameIndex(ctx, nameIndexPath, data, s2Finder.Cities)
+	nameFinder, writeName, err := ensureNameIndex(ctx, nameIndexPath, data, s2Finder.Cities)
 	if err != nil {
 		return nil, err
 	}
-
-	postalCodeFinder, err := ensurePostalCodeIndex(ctx, postalCodeIndexPath, data)
+	postalCodeFinder, writePostal, err := ensurePostalCodeIndex(ctx, postalCodeIndexPath, data)
 	if err != nil {
+		return nil, err
+	}
+	if err := writeAll(ctx, writeS2, writeName, writePostal); err != nil {
 		return nil, err
 	}
 
