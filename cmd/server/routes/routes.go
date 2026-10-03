@@ -291,6 +291,21 @@ func validateBatchPoint(p batchPoint) (validatedPoint, string) {
 	return v, ""
 }
 
+// healthzBody is the fixed liveness response, served without a per-probe
+// marshal.
+var healthzBody = []byte(`{"status":"ok"}`)
+
+// lowerFirstFailure lowers *first to i unless it already holds a lower
+// index.
+func lowerFirstFailure(first *atomic.Int64, i int64) {
+	for {
+		cur := first.Load()
+		if i >= cur || first.CompareAndSwap(cur, i) {
+			return
+		}
+	}
+}
+
 // CompletedStatus returns the HTTP status a request ends with. A handler (or
 // fiber's router, for 404/405) may return an error that fiber's error handler
 // turns into the response AFTER the middleware chain has unwound, so inside a
@@ -352,7 +367,8 @@ func SetupRoutesWithMetrics(app *fiber.App, mainFinder *finder.Finder, reg *metr
 	// finders, so it stays cheap and answers even when data loading is slow
 	// or the indexes are degraded.
 	app.Get("/healthz", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"status": "ok"})
+		c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		return c.Send(healthzBody)
 	})
 
 	if reg != nil {
@@ -494,8 +510,16 @@ func SetupRoutesWithMetrics(app *fiber.App, mainFinder *finder.Finder, reg *metr
 		// array stays parallel to the request regardless of completion
 		// order; the first saturated/error outcome in REQUEST order still
 		// fails the whole request.
+		//
+		// Once a point fails, every LATER point is skipped: its result would
+		// be discarded, and a population point would hold a gate slot for
+		// nothing. Earlier points still run, so the first failure in request
+		// order is still the one reported (firstFailure only ever decreases,
+		// and a skipped index is always above a failed one).
 		responses := make([]nearestCityResponse, len(queries))
 		outcomes := make([]nearestOutcome, len(queries))
+		var firstFailure atomic.Int64
+		firstFailure.Store(int64(len(queries)))
 		work := make(chan int)
 		hasPopulation := false
 		for _, q := range queries {
@@ -508,9 +532,15 @@ func SetupRoutesWithMetrics(app *fiber.App, mainFinder *finder.Finder, reg *metr
 			go func() {
 				defer wg.Done()
 				for i := range work {
+					if int64(i) > firstFailure.Load() {
+						continue // a result after the first failure is never used
+					}
 					responses[i], outcomes[i] = executeNearest(
 						mainFinder, queries[i].lat, queries[i].lon,
 						queries[i].rank, queries[i].includeAdmin)
+					if outcomes[i] == nearestSaturated || outcomes[i] == nearestError {
+						lowerFirstFailure(&firstFailure, int64(i))
+					}
 				}
 			}()
 		}
