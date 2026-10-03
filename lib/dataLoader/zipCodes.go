@@ -1,9 +1,7 @@
 package dataLoader
 
 import (
-	"encoding/csv"
-	"errors"
-	"io"
+	"bufio"
 	"os"
 	"strconv"
 )
@@ -33,34 +31,28 @@ func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, er
 	}
 	defer file.Close()
 
-	reader := csv.NewReader(file)
-	reader.Comma = '\t'
-	reader.ReuseRecord = true // Reuse record slice to reduce allocations
 	// GeoNames ships ~14M rows and is hand-curated upstream: a row with a
 	// stray extra field must not abort the whole load (and with it server
-	// startup) — FieldsPerRecord=-1 defers to the len(record) check below.
-	// LazyQuotes is deliberately NOT set: with it, an unterminated leading
-	// quote silently swallows every row after the malformed one, losing the
-	// file tail into a single skipped record; a structurally ambiguous quote
-	// fails the load loudly instead, which is the honest failure for an
-	// index that must stay complete.
-	reader.FieldsPerRecord = -1
+	// startup) — such rows are counted and skipped below. The file is plain
+	// TSV, so lines are split on tabs and quotes mean nothing; encoding/csv's
+	// quote handling aborted the load on a place name like 5" Rd.
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	// Pre-allocate with reasonable capacity based on typical postal code data size
 	postalCodes := make(map[string]map[string]PostalCodeEntry, 200) // ~200 countries
 
 	var skipped skipReport
 
-	for {
-		record, err := reader.Read()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			return nil, err
+	var record []string
+	line := 0
+	for scanner.Scan() {
+		line++
+		text := scanner.Text()
+		if text == "" {
+			continue
 		}
-
-		line, _ := reader.FieldPos(0)
+		record = splitTab(text, record)
 
 		// Skip malformed records
 		if len(record) < 12 {
@@ -103,6 +95,9 @@ func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, er
 		postalCodes[countryCode][postalCode.PostalCode] = postalCode
 	}
 
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
 	skipped.log("postal", filepath)
 
 	return postalCodes, nil

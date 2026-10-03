@@ -16,6 +16,10 @@ and this project adheres to
   (one shared validator). Skipped rows are counted per reason and logged
   as one summary line per file with the first few line numbers, instead of
   one log line holding the full text of every rejected city row.
+- **A stray `"` in the postal file aborted startup.** The postal loader
+  parsed the file as quoted CSV, so a place name such as `5" Rd` failed the
+  whole load. GeoNames postal files are plain TSV; they are now split on
+  tabs and quotes are ordinary characters. Valid files load identically.
 - **A cached fuzzy result hid cities added later.** After `AddCity`, a
   typo whose result was already cached kept returning the old candidates
   for the full one-hour TTL. Cache entries now carry a generation that

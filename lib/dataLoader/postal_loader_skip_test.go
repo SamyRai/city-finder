@@ -165,16 +165,53 @@ func TestLoadPostalCodes_ToleratesMalformedCSVStructure(t *testing.T) {
 	assert.Contains(t, buf.String(), "1 fewer than 12 fields (line 2)")
 }
 
-// TestLoadPostalCodes_QuoteCorruptionFailsLoudly pins the deliberate
-// counterpart of the tolerance policy: an unterminated leading quote makes
-// the record structure genuinely ambiguous (and with LazyQuotes it would
-// silently swallow every row after it, losing the file tail), so the load
-// fails loudly instead of producing a quietly partial index.
-func TestLoadPostalCodes_QuoteCorruptionFailsLoudly(t *testing.T) {
+// TestLoadPostalCodes_QuotesAreOrdinaryCharacters pins that GeoNames postal
+// files are plain TSV: a double quote — bare mid-field (5" Rd) or leading —
+// is just text. Under encoding/csv the bare quote aborted the whole load
+// ("bare \" in non-quoted-field") and the leading one was ambiguous; neither
+// may now lose a row or any row after it.
+func TestLoadPostalCodes_QuotesAreOrdinaryCharacters(t *testing.T) {
 	content := validUSPostalRow() +
-		postalRow("US", "10007", `"Quoted Start`, "", "", "", "", "", "", "40.7128", "-74.0060", "1") +
-		postalRow("US", "10008", "Never Reached", "", "", "", "", "", "", "51.5074", "-0.1278", "1")
+		postalRow("US", "10007", `5" Rd`, `Adm "One"`, "", "", "", "", "", "40.7128", "-74.0060", "1") +
+		postalRow("US", "10009", `"Quoted Start`, "", "", "", "", "", "", "40.7128", "-74.0060", "1") +
+		postalRow("US", "10008", "Survivor", "", "", "", "", "", "", "51.5074", "-0.1278", "1")
 
-	_, err := LoadPostalCodes(writePostalFixture(t, content))
-	require.Error(t, err, "structurally ambiguous quoting must fail the load, not lose the file tail")
+	codes, err := LoadPostalCodes(writePostalFixture(t, content))
+	require.NoError(t, err)
+
+	assert.Len(t, codes["US"], 4)
+	assert.Equal(t, `5" Rd`, codes["US"]["10007"].PlaceName)
+	assert.Equal(t, `Adm "One"`, codes["US"]["10007"].AdminName1)
+	assert.Equal(t, `"Quoted Start`, codes["US"]["10009"].PlaceName)
+	assert.Equal(t, "Survivor", codes["US"]["10008"].PlaceName)
+}
+
+// TestLoadPostalCodes_ColumnSemantics pins every column of a loaded row, so
+// the TSV split cannot drift from the 12-column GeoNames layout.
+func TestLoadPostalCodes_ColumnSemantics(t *testing.T) {
+	row := postalRow("GB", "SW1A 1AA", "London", "England", "ENG", "Greater London", "GLA", "Westminster", "E09000033", "51.5014", "-0.1419", "6")
+	codes, err := LoadPostalCodes(writePostalFixture(t, row))
+	require.NoError(t, err)
+	assert.Equal(t, PostalCodeEntry{
+		CountryCode: "GB", PostalCode: "SW1A 1AA", PlaceName: "London",
+		AdminName1: "England", AdminCode1: "ENG", AdminName2: "Greater London", AdminCode2: "GLA",
+		AdminName3: "Westminster", AdminCode3: "E09000033",
+		Latitude: 51.5014, Longitude: -0.1419, Accuracy: 6,
+	}, codes["GB"]["SW1A 1AA"])
+}
+
+// TestLoadPostalCodes_ExtraFieldsAndBlankLines pins that a row with more than
+// 12 fields still loads from its first 12, and blank lines are ignored
+// without being counted as malformed.
+func TestLoadPostalCodes_ExtraFieldsAndBlankLines(t *testing.T) {
+	buf, restore := captureLoaderLogs(t)
+	defer restore()
+
+	content := "\n" +
+		postalRow("US", "10005", "Valid City", "", "", "", "", "", "", "40.7128", "-74.0060", "1", "extra", "more") +
+		"\n"
+	codes, err := LoadPostalCodes(writePostalFixture(t, content))
+	require.NoError(t, err)
+	assert.Equal(t, "Valid City", codes["US"]["10005"].PlaceName)
+	assert.NotContains(t, buf.String(), "skipped")
 }
