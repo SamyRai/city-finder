@@ -3,6 +3,7 @@ package coordinates
 import (
 	"math/rand"
 	"os"
+	"slices"
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/city"
@@ -263,6 +264,45 @@ func TestPopulationRankPopKScaleOracle(t *testing.T) {
 			assert.Equal(t, wantName, got.Name,
 				"query %d (%.6f, %.6f): unique gravity winner mismatch: got %q, want %q",
 				i, query.lat, query.lon, got.Name, wantName)
+		}
+	}
+}
+
+// referenceTopPopulationRefs is the full-sort construction the heap replaced.
+func referenceTopPopulationRefs(cities []city.City, k int) []populationRef {
+	var refs []populationRef
+	for i := range cities {
+		if cities[i].Population > 0 {
+			refs = append(refs, populationRef{population: cities[i].Population, index: i})
+		}
+	}
+	slices.SortFunc(refs, func(a, b populationRef) int {
+		if a.population != b.population {
+			return int(b.population) - int(a.population)
+		}
+		return a.index - b.index
+	})
+	return refs[:min(k, len(refs))]
+}
+
+// TestTopPopulationRefsMatchesFullSort pins the heap selection to the full
+// sort, ties included (populations drawn from a tiny range force them), for
+// tables shorter than, equal to and longer than k.
+func TestTopPopulationRefsMatchesFullSort(t *testing.T) {
+	rng := rand.New(rand.NewSource(3))
+	for _, n := range []int{0, 1, 7, 64, 65, 1000, 20000} {
+		for _, k := range []int{0, 1, 8, 64, 4096} {
+			cities := make([]city.City, n)
+			for i := range cities {
+				cities[i].Population = int32(rng.Intn(12) - 3) // negatives, zeros, many ties
+			}
+			want := referenceTopPopulationRefs(cities, k)
+			got := topPopulationRefs(cities, k)
+			if len(want) == 0 {
+				assert.Empty(t, got, "n=%d k=%d", n, k)
+				continue
+			}
+			assert.Equal(t, want, got, "n=%d k=%d", n, k)
 		}
 	}
 }
