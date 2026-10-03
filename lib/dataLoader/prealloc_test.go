@@ -1,9 +1,9 @@
 package dataLoader
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -16,7 +16,7 @@ const testDataRelPath = "../../testdata/allCountries.txt"
 
 // BenchmarkLoadGeoNamesCSV measures allocation behavior of the unlimited
 // load on the test dataset. It exists to guard the preallocation strategy:
-// the slice capacity must be derived from the input file size, not from a
+// the slice capacity must come from the input's line count, not from a
 // hardcoded row count.
 func BenchmarkLoadGeoNamesCSV(b *testing.B) {
 	silenceLoaderLogs(b)
@@ -34,19 +34,24 @@ func BenchmarkLoadGeoNamesCSV(b *testing.B) {
 
 func TestEstimatedCityCount(t *testing.T) {
 	dir := t.TempDir()
+	write := func(name, content string) string {
+		p := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(p, []byte(content), 0o600))
+		return p
+	}
 
-	// 1440 bytes / 120 bytes-per-line + 1 = 13
-	small := filepath.Join(dir, "small.txt")
-	require.NoError(t, os.WriteFile(small, bytes.Repeat([]byte("x"), 1440), 0o600))
-	assert.Equal(t, 13, estimatedCityCount(small, 0))
+	// The line count, whatever the line length; an unterminated last line
+	// counts too.
+	long := write("long.txt", strings.Repeat(strings.Repeat("x", 5000)+"\n", 13))
+	assert.Equal(t, 13, estimatedCityCount(long, 0))
+	assert.Equal(t, 3, estimatedCityCount(write("unterminated.txt", "a\nb\nc"), 0))
+	assert.Equal(t, 2_000_001, estimatedCityCount(write("big.txt", strings.Repeat("\n", 2_000_001)), 0), "counts across read buffers")
 
-	// An explicit limit always takes precedence over the size estimate.
-	assert.Equal(t, 5, estimatedCityCount(small, 5))
+	// An explicit limit always takes precedence over the count.
+	assert.Equal(t, 5, estimatedCityCount(long, 5))
 
 	// Degenerate inputs yield "no estimate" (0), never a huge allocation.
-	empty := filepath.Join(dir, "empty.txt")
-	require.NoError(t, os.WriteFile(empty, nil, 0o600))
-	assert.Equal(t, 0, estimatedCityCount(empty, 0))
+	assert.Equal(t, 0, estimatedCityCount(write("empty.txt", ""), 0))
 	assert.Equal(t, 0, estimatedCityCount(filepath.Join(dir, "missing.txt"), 0))
 }
 

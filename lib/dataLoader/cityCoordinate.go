@@ -2,7 +2,9 @@ package dataLoader
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strconv"
@@ -44,26 +46,52 @@ func LoadGeoNamesCSV(filepath string) ([]city.SpatialCity, error) {
 	return LoadGeoNamesCSVWithLimit(filepath, 0)
 }
 
-// averageGeoNamesLineBytes is a deliberately conservative (low) average line
-// length for the GeoNames allCountries dump; real lines average ~120-140
-// bytes. Assuming fewer bytes per line overestimates the row count, so the
-// preallocated slice may be slightly too large but never needs to regrow
-// (regrowing at ~12M rows of 80 bytes would briefly double ~1GB of memory).
-const averageGeoNamesLineBytes = 120
-
-// estimatedCityCount returns the slice capacity to preallocate for filepath.
-// An explicit limit always wins; otherwise the capacity is derived from the
-// file size so that a small or partial file no longer allocates a fixed
-// 15,000,000-row (~1.2GB) backing array. A return of 0 means "no estimate";
-// the append loop then grows the slice naturally.
+// estimatedCityCount returns the slice capacity to preallocate for filepath:
+// an explicit limit, else the file's line count — an exact upper bound on
+// the rows it can yield, so the slice never regrows (regrowing at ~13M rows
+// would briefly double ~1.5 GB) and never carries slack for the whole build.
+// A file-size estimate at an assumed bytes-per-line overshot by every byte
+// the real lines were longer (~8% on the production dump, ~1M unused rows).
+// Counting costs one sequential read, which also warms the page cache for
+// the parse. A return of 0 means "no estimate": the append loop then grows
+// the slice naturally.
 func estimatedCityCount(filepath string, limit int) int {
 	if limit > 0 {
 		return limit
 	}
-	if fi, err := os.Stat(filepath); err == nil && fi.Size() > 0 {
-		return int(fi.Size()/averageGeoNamesLineBytes) + 1
+	n, err := countLines(filepath)
+	if err != nil {
+		return 0
 	}
-	return 0
+	return n
+}
+
+// countLines counts newline-terminated lines, plus a final unterminated one.
+func countLines(path string) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	buf := make([]byte, 1<<20)
+	lines, last := 0, byte('\n')
+	for {
+		n, err := f.Read(buf)
+		if n > 0 {
+			lines += bytes.Count(buf[:n], []byte{'\n'})
+			last = buf[n-1]
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return 0, err
+		}
+	}
+	if last != '\n' {
+		lines++
+	}
+	return lines, nil
 }
 
 // GeoNamesFeatureClasses lists every GeoNames feature class — the value of
@@ -269,10 +297,14 @@ func LoadGeoNamesCSVWithOptions(filepath string, opts LoadOptions) ([]city.Spati
 			population = int32(p)
 		}
 
-		// Parse alternate names more efficiently - avoid allocation if empty
+		// Build-only fields must not pin the source line either: the rows
+		// live until the indexes are built, and a substring would hold the
+		// whole line (every column) for each of them. One clone of the
+		// alternate-names column, split in place, keeps just that text; the
+		// admin codes (a few thousand distinct values) are interned.
 		var altNames []string
 		if field4 != "" {
-			altNames = strings.Split(field4, ",")
+			altNames = strings.Split(strings.Clone(field4), ",")
 		}
 
 		cityObj := city.City{
@@ -291,9 +323,9 @@ func LoadGeoNamesCSVWithOptions(filepath string, opts LoadOptions) ([]city.Spati
 
 		spatialCity := city.SpatialCity{
 			City:       cityObj,
-			AltNames:   altNames, // AltNames stored in SpatialCity for building only
-			Admin1Code: field11,  // build-only; empty field means "no admin1 code"
-			Admin2Code: field12,  // build-only; empty field means "no admin2 code"
+			AltNames:   altNames,                     // AltNames stored in SpatialCity for building only
+			Admin1Code: unique.Make(field11).Value(), // build-only; empty means "no admin1 code"
+			Admin2Code: unique.Make(field12).Value(), // build-only; empty means "no admin2 code"
 		}
 
 		cities = append(cities, spatialCity)

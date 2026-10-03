@@ -56,3 +56,49 @@ func TestLoadedCitiesDoNotPinSourceLines(t *testing.T) {
 		t.Fatalf("keeping %d City values retained %d B (> %d): source lines are pinned", rows, retained, limit)
 	}
 }
+
+// TestLoadedRowsDoNotPinSourceLines extends the check to the build-only
+// fields: rows stay alive until the indexes are built, so alternate names
+// and admin codes must not keep their whole source line resident either.
+// The padding sits in a column the loader never keeps (cc2).
+func TestLoadedRowsDoNotPinSourceLines(t *testing.T) {
+	const rows = 20_000
+	pad := strings.Repeat("X", 1024) // ~1 KiB per row in an unused column
+	var sb strings.Builder
+	for i := 0; i < rows; i++ {
+		alts := ""
+		if i%2 == 0 {
+			alts = fmt.Sprintf("Alt%d,Other%d", i, i)
+		}
+		fmt.Fprintf(&sb, "%d\tTown%d\tTown%d\t%s\t1.5\t2.5\tP\tPPL\tAD\t%s\t07\t123\t\t\t0\t\t0\tEtc/UTC\t2026-01-01\n", i, i, i, alts, pad)
+	}
+	path := filepath.Join(t.TempDir(), "rows.txt")
+	if err := os.WriteFile(path, []byte(sb.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb.Reset()
+
+	settle := func() uint64 {
+		runtime.GC()
+		runtime.GC()
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		return m.HeapAlloc
+	}
+	before := settle()
+	loaded, err := LoadGeoNamesCSV(path)
+	if err != nil || len(loaded) != rows {
+		t.Fatalf("loaded %d rows, err %v", len(loaded), err)
+	}
+	if loaded[0].Admin1Code != "07" || loaded[0].Admin2Code != "123" || len(loaded[0].AltNames) != 2 || loaded[1].AltNames != nil {
+		t.Fatalf("row fields not loaded: %+v / %+v", loaded[0], loaded[1])
+	}
+	retained := int64(settle()) - int64(before)
+	runtime.KeepAlive(loaded)
+
+	// Kept per row: the ~120 B SpatialCity, a name, and on half the rows two
+	// short alternate names (~50 B). Pinned lines would add ~1 KiB per row.
+	if limit := int64(rows * 300); retained > limit {
+		t.Fatalf("keeping %d rows retained %d B (> %d): source lines are pinned", rows, retained, limit)
+	}
+}
