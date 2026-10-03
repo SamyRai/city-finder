@@ -61,3 +61,14 @@ func TestRegistry_ConcurrentObserve(t *testing.T) {
 	require.Contains(t, out, "fuzzy_budget_trips_total 1000")
 	assert.False(t, strings.Contains(out, "NaN"), "no NaN may leak into the exposition")
 }
+
+// TestObserveRequestDoesNotAllocate: every request pays ObserveRequest in
+// the metrics middleware, so it must stay allocation-free once a route's
+// series exist.
+func TestObserveRequestDoesNotAllocate(t *testing.T) {
+	reg := NewRegistry()
+	reg.ObserveRequest("/nearest", 200, time.Millisecond) // create the series
+	if got := testing.AllocsPerRun(200, func() { reg.ObserveRequest("/nearest", 200, 250*time.Microsecond) }); got != 0 {
+		t.Errorf("ObserveRequest: %.1f allocs per call, want 0", got)
+	}
+}
