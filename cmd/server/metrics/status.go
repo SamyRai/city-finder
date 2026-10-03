@@ -1,4 +1,4 @@
-package routes
+package metrics
 
 import (
 	"errors"

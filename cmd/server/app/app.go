@@ -36,17 +36,23 @@ func Config() fiber.Config {
 	}
 }
 
-// New returns the production app: panic recovery, one access-log line per
-// request on requestLog, request metrics on reg (nil disables the metrics
-// middleware and GET /metrics), and every data route over f.
+// New returns the production app: one access-log line per request on
+// requestLog, ETag handling, request metrics on reg (nil disables the
+// metrics middleware and GET /metrics), panic recovery, and every data route
+// over f. The app owns the whole middleware chain and its order.
 func New(f *finder.Finder, reg *metrics.Registry, requestLog *log.Logger) *fiber.App {
 	a := fiber.New(Config())
-	// fasthttp performs no panic recovery of its own: without this middleware
-	// any handler panic terminates the process. It must be registered before
-	// all other middleware so it wraps the full handler chain.
-	a.Use(recover.New())
 	a.Use(RequestLogger(requestLog))
 	a.Use(ETag())
+	if reg != nil {
+		a.Use(metrics.Middleware(reg))
+	}
+	// fasthttp performs no panic recovery of its own: without this middleware
+	// any handler panic terminates the process. It is registered once, as the
+	// innermost middleware, so the metrics middleware and the access log above
+	// it observe a recovered panic as the 500 the client receives (a recover
+	// registered outermost would let the panic unwind through them unrecorded).
+	a.Use(recover.New())
 	routes.SetupRoutesWithMetrics(a, f, reg)
 	return a
 }
@@ -63,7 +69,7 @@ func RequestLogger(l *log.Logger) fiber.Handler {
 		err := c.Next()
 		bp := accessLineBuf.Get().(*[]byte)
 		*bp = appendAccessLine((*bp)[:0], start, c.Method(), c.Path(),
-			routes.CompletedStatus(c, err), // the status the client receives, incl. 404/405/500
+			metrics.CompletedStatus(c, err), // the status the client receives, incl. 404/405/500
 			time.Since(start), len(c.Response().Body()))
 		_ = l.Output(2, string(*bp))
 		accessLineBuf.Put(bp)

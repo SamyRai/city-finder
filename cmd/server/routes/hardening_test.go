@@ -12,11 +12,12 @@ import (
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
 	"github.com/SamyRai/cityFinder/lib/finder/name"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// setupMetricsApp wires SetupRoutesWithMetrics over the same fixture
+// setupMetricsApp wires the metrics middleware, recover and SetupRoutesWithMetrics over the same fixture
 // setupTestApp uses, for tests that exercise the metrics surface.
 func setupMetricsApp(t *testing.T) *fiber.App {
 	t.Helper()
@@ -24,7 +25,10 @@ func setupMetricsApp(t *testing.T) *fiber.App {
 	require.NoError(t, err)
 	s2f.Admin1Names = adminRouteNames
 	app := fiber.New()
-	SetupRoutesWithMetrics(app, &finder.Finder{S2Finder: s2f}, metrics.NewRegistry())
+	reg := metrics.NewRegistry()
+	app.Use(metrics.Middleware(reg))
+	app.Use(recover.New())
+	SetupRoutesWithMetrics(app, &finder.Finder{S2Finder: s2f}, reg)
 	return app
 }
 
@@ -52,20 +56,20 @@ func TestCoordinates_NameTooLong(t *testing.T) {
 }
 
 func TestNearest_PopulationSaturationSheds503(t *testing.T) {
-	app := setupTestApp(t, adminRouteNames)
+	app, h := setupTestHandlers(t, adminRouteNames)
 
 	// Fill every population gate slot: the next rank=population query must
 	// shed with 503 + Retry-After instead of queueing behind the scans.
-	for i := 0; i < populationGateConcurrency(); i++ {
-		populationGate <- struct{}{}
+	for i := 0; i < cap(h.gate); i++ {
+		h.gate <- struct{}{}
 	}
 	req := httptest.NewRequest("GET", "/nearest?lat=37.77&lon=-122.41&rank=population", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
 	assert.Equal(t, 503, resp.StatusCode)
 	assert.Equal(t, "1", resp.Header.Get("Retry-After"))
-	for i := 0; i < populationGateConcurrency(); i++ {
-		<-populationGate
+	for i := 0; i < cap(h.gate); i++ {
+		<-h.gate
 	}
 
 	// With the gate drained the same query succeeds.

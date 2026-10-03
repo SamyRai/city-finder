@@ -165,6 +165,12 @@ and this project adheres to
 
 ### Changed
 
+- **Server wiring (internal, no wire change).** The population gate, batch
+  fan-out limit and per-point query core are owned by a `routes.Handlers`
+  value instead of package variables, so two apps in one process no longer
+  share a gate. The app package owns the whole middleware chain (access log,
+  ETag, request metrics, then a single panic-recovery middleware); the
+  metrics middleware moved to `cmd/server/metrics`.
 - **Index footprint.** Measured with `cmd/memreport` on a 4M-city synthetic
   GeoNames dataset (answer transcripts byte-identical for nearest, prefix
   and postal lookups):

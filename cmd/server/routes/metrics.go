@@ -4,7 +4,6 @@ import (
 	"runtime"
 	rmetrics "runtime/metrics"
 	"sync/atomic"
-	"time"
 
 	"github.com/SamyRai/cityFinder/cmd/server/metrics"
 	"github.com/SamyRai/cityFinder/lib/finder"
@@ -16,19 +15,6 @@ import (
 // /memory/classes/heap/objects:bytes is maintained continuously by the
 // runtime, so reading it needs no stop-the-world.
 const heapAllocMetricName = "/memory/classes/heap/objects:bytes"
-
-// metricsMiddleware records every request into reg (route pattern, completed
-// status, latency), except scrapes of /metrics itself.
-func metricsMiddleware(reg *metrics.Registry) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		start := time.Now()
-		err := c.Next()
-		if pattern := RouteLabel(c, err); pattern != "/metrics" { // a scrape must not grow its own counts
-			reg.ObserveRequest(pattern, CompletedStatus(c, err), time.Since(start))
-		}
-		return err
-	}
-}
 
 // metricsHandler serves GET /metrics: it refreshes the scrape-time gauges and
 // counters in reg, then renders it.

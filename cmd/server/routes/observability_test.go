@@ -8,6 +8,7 @@ import (
 	"github.com/SamyRai/cityFinder/lib/finder"
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,6 +21,8 @@ func observedApp(t *testing.T) (*fiber.App, *metrics.Registry) {
 	require.NoError(t, err)
 	reg := metrics.NewRegistry()
 	app := fiber.New()
+	app.Use(metrics.Middleware(reg))
+	app.Use(recover.New())
 	SetupRoutesWithMetrics(app, &finder.Finder{S2Finder: s2f}, reg)
 	app.Get("/boom", func(c *fiber.Ctx) error { panic("boom") })
 	return app, reg
@@ -65,14 +68,13 @@ func TestMetricsRecordHandlerPanics(t *testing.T) {
 // GOMAXPROCS while the gate is capped at 8 and fails fast, so on a host with
 // more than 8 cores one population batch on an idle server could 503 itself.
 func TestBatchWorkersNeverExceedThePopulationGate(t *testing.T) {
-	saved := maxBatchWorkers
-	t.Cleanup(func() { maxBatchWorkers = saved })
-	maxBatchWorkers = 64 // a large host
+	h := New(&finder.Finder{})
+	h.maxBatchWorkers = 64 // a large host
 	for _, n := range []int{1, 7, 8, 9, 100} {
-		got := batchWorkerCount(n, true)
-		assert.LessOrEqual(t, got, cap(populationGate), "n=%d with population points", n)
+		got := h.batchWorkerCount(n, true)
+		assert.LessOrEqual(t, got, cap(h.gate), "n=%d with population points", n)
 		assert.GreaterOrEqual(t, got, 1)
 		assert.LessOrEqual(t, got, n)
 	}
-	assert.Equal(t, 64, batchWorkerCount(100, false), "distance-only batches keep the full fan-out")
+	assert.Equal(t, 64, h.batchWorkerCount(100, false), "distance-only batches keep the full fan-out")
 }
