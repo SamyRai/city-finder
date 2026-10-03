@@ -72,10 +72,11 @@ file to force a rebuild.
 
 ## Library tunables (Go API)
 
-Package variables in `lib/finder/name`. Set them **before** the first fuzzy
-lookup.
+Fields of `name.Options`, passed per finder as the optional last argument to
+`name.NewNameFinder`, `name.BuildIndex` or `name.DeserializeIndex`. Omitting
+it uses the defaults below.
 
-| Variable | Default | Meaning |
+| Field | Default | Meaning |
 |---|---|---|
-| `name.FuzzyMaxNames` | 25,000,000 keys | Above this the fuzzy index is never built (exact-only) |
-| `name.FuzzyMaxCandidates` | 4,000,000 posting entries | Per-query cap on the fuzzy walk; a capped query returns partial results (`name.FuzzyBudgetTrips()`). ~500k clamps latency harder at the cost of truncating a few percent of typo queries. |
+| `FuzzyMaxNames` | 25,000,000 keys | Above this the fuzzy index is never built (exact-only) |
+| `FuzzyMaxCandidates` | 4,000,000 posting entries | Per-query cap on the fuzzy walk; a capped query returns partial results (counted by `Finder.FuzzyBudgetTrips()`). ~500k clamps latency harder at the cost of truncating a few percent of typo queries. |

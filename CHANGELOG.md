@@ -8,6 +8,22 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-03
+
+### Breaking (Go library API only)
+
+The HTTP API, configuration file and on-disk index formats are unchanged; this
+only affects code that imports the packages.
+
+- `name.FuzzyMaxNames`, `name.FuzzyMaxCandidates` (mutable package
+  variables) and the package-level `name.FuzzyBudgetTrips()` are removed.
+  Limits are now per finder: pass `name.Options` as the optional last
+  argument to `name.NewNameFinder`, `name.BuildIndex` or
+  `name.DeserializeIndex`; budget trips are read with
+  `Finder.FuzzyBudgetTrips()`.
+- `routes.SetupRoutes` / `SetupRoutesWithMetrics` no longer install the
+  metrics or panic-recovery middleware; `app.New` owns the middleware chain.
+
 ### Security
 
 - **A corrupt or hostile index file could cost 512 MB per load attempt.**
