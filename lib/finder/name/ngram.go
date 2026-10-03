@@ -96,6 +96,26 @@ func appendPostings(dst []byte, ids []int32) []byte {
 	return dst
 }
 
+// postingsLen is the byte length appendPostings produces for ids.
+func postingsLen(ids []int32) int {
+	n, prev := 0, int32(0)
+	for _, id := range ids {
+		n += uvarintLen(uint64(id - prev))
+		prev = id
+	}
+	return n
+}
+
+// uvarintLen is the length of binary.AppendUvarint's encoding of v.
+func uvarintLen(v uint64) int {
+	n := 1
+	for v >= 0x80 {
+		v >>= 7
+		n++
+	}
+	return n
+}
+
 // nextPosting decodes one delta from data, returning the delta and the bytes
 // consumed. Single-byte deltas (the common case) take the fast path.
 func nextPosting(data []byte) (int32, int) {
@@ -210,8 +230,15 @@ func buildNGramIndex(names []string) (*ngramIndex, error) {
 
 	// Pass 3: delta-encode each gram's list. Ids were appended in name-id
 	// order, so every list is ascending; the plain array is dropped after.
+	// The buffer is sized exactly first: a guessed capacity stays allocated
+	// for the index's lifetime even when clipped (27% of it on a test
+	// corpus, most deltas being one byte).
+	encLen := 0
+	for gid := range counts {
+		encLen += postingsLen(plain[postOff[gid]:postOff[gid+1]])
+	}
 	encOff := make([]int64, len(counts)+1)
-	enc := make([]byte, 0, int(total)+int(total)/2)
+	enc := make([]byte, 0, encLen)
 	for gid := range counts {
 		encOff[gid] = int64(len(enc))
 		enc = appendPostings(enc, plain[postOff[gid]:postOff[gid+1]])
@@ -222,7 +249,7 @@ func buildNGramIndex(names []string) (*ngramIndex, error) {
 	return &ngramIndex{
 		names:    names,
 		nameLens: nameLens,
-		post:     slices.Clip(enc),
+		post:     enc,
 		postOff:  encOff,
 		postLen:  counts,
 		gramIDs:  gramIDs,
