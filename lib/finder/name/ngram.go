@@ -44,7 +44,7 @@ import (
 //     why the counter sits on raw entries, not on verifications).
 //
 // Postings may list a name id more than once (a gram repeated inside one
-// name appends once per occurrence); search dedups with a local seen-set,
+// name appends once per occurrence); search dedups with a pooled bitset,
 // so duplicates only cost a redundant set probe.
 //
 // Completeness boundary, documented honestly: when runes(name) + q − 1 ≤ q·d
@@ -411,8 +411,8 @@ func (ix *ngramIndex) search(query string, d int) (matches []string, truncated b
 	check.prepare(query)
 
 	// The budget counts RAW posting entries read (before dedup, filter, and
-	// verification): every unit of downstream work — seen-set probe, length
-	// filter, Levenshtein run — happens at most once per entry read, so this
+	// verification): every unit of downstream work — length filter, seen-set
+	// probe, Levenshtein run — happens at most once per entry read, so this
 	// single counter bounds the whole walk. Counting verifications instead
 	// would leave the dominant cost of degenerate short queries unbounded:
 	// measured at prod, adversarial 1–3-rune queries walk up to 4.0M entries
@@ -425,7 +425,8 @@ func (ix *ngramIndex) search(query string, d int) (matches []string, truncated b
 	}
 	var walked, verified int64
 
-	seen := make(map[int32]struct{})
+	seen := acquireSeenSet(len(ix.names))
+	defer seen.release()
 walk:
 	for i := 0; i < walkCount; i++ {
 		gid := ranked[i].gid
@@ -441,13 +442,13 @@ walk:
 			}
 			walked++
 
-			if _, dup := seen[id]; dup {
+			// Length filter first: an array read, and a property of the id,
+			// so an id it rejects is rejected on every list and never needs
+			// a dedup mark.
+			if delta := int(ix.nameLens[id]) - qLen; delta > d || delta < -d {
 				continue
 			}
-			seen[id] = struct{}{}
-
-			// Length filter before anything expensive.
-			if delta := int(ix.nameLens[id]) - qLen; delta > d || delta < -d {
+			if seen.testAndSet(id) {
 				continue
 			}
 			verified++
