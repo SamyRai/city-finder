@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"runtime/pprof"
 	"time"
 
@@ -24,7 +25,14 @@ func liveHeapMB() float64 {
 }
 
 // peakRSSMB reads VmHWM (the process's peak resident set) from /proc.
-func peakRSSMB() float64 {
+func peakRSSMB() float64 { return procStatusMB("VmHWM") }
+
+// rssMB reads VmRSS (the current resident set) from /proc.
+func rssMB() float64 { return procStatusMB("VmRSS") }
+
+// procStatusMB returns a kB field of /proc/self/status in MB, -1 when
+// unavailable (non-Linux).
+func procStatusMB(field string) float64 {
 	f, err := os.Open("/proc/self/status")
 	if err != nil {
 		return -1
@@ -33,7 +41,7 @@ func peakRSSMB() float64 {
 	s := bufio.NewScanner(f)
 	for s.Scan() {
 		var kb float64
-		if _, err := fmt.Sscanf(s.Text(), "VmHWM: %f kB", &kb); err == nil {
+		if _, err := fmt.Sscanf(s.Text(), field+": %f kB", &kb); err == nil {
 			return kb / 1024
 		}
 	}
@@ -66,6 +74,12 @@ func measure(cfgPath, dumpPath, profilePath string) error {
 	}
 	initDur := time.Since(start)
 	heapInit := liveHeapMB()
+	// The same release cmd/server/main performs after init: the boot's
+	// transient garbage goes back to the OS now instead of lingering until
+	// the background scavenger gets to it.
+	rssInit := rssMB()
+	debug.FreeOSMemory()
+	rssReleased := rssMB()
 
 	start = time.Now()
 	f.WarmFuzzy()
@@ -79,6 +93,8 @@ func measure(cfgPath, dumpPath, profilePath string) error {
 	fmt.Printf("go: %s GOMAXPROCS=%d\n", runtime.Version(), runtime.GOMAXPROCS(0))
 	fmt.Printf("init_seconds: %.2f\n", initDur.Seconds())
 	fmt.Printf("heap_after_init_mb: %.1f\n", heapInit)
+	fmt.Printf("rss_after_init_mb: %.1f\n", rssInit)
+	fmt.Printf("rss_after_release_mb: %.1f\n", rssReleased)
 	fmt.Printf("fuzzy_build_seconds: %.2f\n", fuzzyDur.Seconds())
 	fmt.Printf("heap_with_fuzzy_mb: %.1f\n", heapFuzzy)
 	fmt.Printf("fuzzy_mb: %.1f\n", heapFuzzy-heapInit)

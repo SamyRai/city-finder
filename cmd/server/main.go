@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -26,6 +27,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Initialization failed: %v", err)
 	}
+	// Index building and decoding leave gigabytes of garbage at prod scale.
+	// Return it to the OS now: otherwise the background scavenger releases
+	// it gradually and the container's RSS sits near the boot peak.
+	debug.FreeOSMemory()
 	// Build the fuzzy (n-gram) index in the background so no user query
 	// pays the in-request build: until it lands, typo lookups get exact-only
 	// results (~94 s and +~1.2 GiB resident at prod scale — see
