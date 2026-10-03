@@ -49,6 +49,22 @@ fsynced, and are renamed into place. Reads stream from the file through zstd
 into gob, so no whole-file buffer sits next to the decoded index, and drain
 the frame to its end, which verifies the CRC and rejects trailing bytes.
 
+Reads are bounded against hostile or corrupt files, with no format change.
+The zstd window is capped at 64 MiB (`indexfile.MaxDecoderWindow`; the
+writer's is 4 MiB, a test reads it back from the frame header), because the
+decoder allocates the declared window up front: a 9-byte frame declaring the
+library default of 512 MB used to cost 512 MB per attempt. The decompressed
+payload is also capped by a byte budget, `indexfile.DefaultMaxPayloadBytes`
+(1 GiB, gob's own per-message ceiling; a 13M-city S2 index is about 0.7 GB),
+which a caller can tighten with `Reader.LimitPayload`. A ratio cap was
+measured and rejected: real indexes compress 1.6x (S2), 1.9x (name) and 2.3x
+(postal), but 200k legitimate cities with identical name and coordinates
+reach 3900x (postal codes 100x, name 11x), the same range as a bomb of
+one-byte entries, so any ratio that stops the bomb would also force a
+rebuild loop for repetitive data. Going over the budget or the window is
+`ErrFormat`, which each package reports as its `ErrCorruptIndex`, so the
+initializer rebuilds the file as for any other corruption.
+
 The previous formats (name v2, postal v3) still load. The initializer
 rewrites them in the current format on the first boot, with no rebuild and
 no dataset download. An index that does not match the S2 index is rebuilt.
