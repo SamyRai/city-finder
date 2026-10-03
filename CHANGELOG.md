@@ -45,6 +45,8 @@ and this project adheres to
   silently ignored). Unknown keys are logged at startup. Startup fails with
   a clear message when a dataset or index file name is missing, or when two
   keys name the same file.
+- Autocomplete listed a name twice when `AddCity` added a homonym of an
+  indexed name.
 - `PrefixNames` on a name index loaded detached from its city table could
   return a match with a nil city.
 - Bad `lat`/`lon` parameters are no longer logged per request (a log
@@ -136,8 +138,8 @@ and this project adheres to
   | | before | after |
   |---|---|---|
   | heap after warm boot | 1234 MB | 724 MB (−41%) |
-  | heap with fuzzy index | 1497 MB | 856 MB (−43%) |
-  | fuzzy index | 263 MB | 132 MB (−50%) |
+  | heap with fuzzy index | 1497 MB | 836 MB (−44%) |
+  | fuzzy index | 263 MB | 112 MB (−57%) |
   | heap after cold build | 1510 MB | 734 MB (−51%) |
   | index files | 286 MB | 183 MB (−36%) |
   | cold init | 58.8 s | 46.3 s |
@@ -147,7 +149,7 @@ and this project adheres to
     second copy (name format v3).
   - The postal index keeps only the fields a lookup returns (postal format
     v4).
-  - Fuzzy posting lists are delta-varint encoded.
+  - Fuzzy posting lists are delta-varint encoded, in an exactly sized buffer.
   - Cities no longer pin their source lines.
   - Country codes are interned.
 
@@ -170,6 +172,9 @@ and this project adheres to
   (`/autocomplete` and `/postalCode` −11–12%).
 - Batch requests stop executing points after the first failing one; the
   reported failure is unchanged. `/healthz` serves fixed bytes.
+- Access-log lines are built without `Printf` (5 fewer allocations per
+  request; the output is byte-identical). The name index serializes under
+  the read lock, so lookups keep running during a write.
 - The cold-build loader no longer pins each row's source line through
   alternate names and admin codes. The row slice is sized from the file's
   line count instead of a bytes-per-line guess that overshot by ~8%.

@@ -152,6 +152,7 @@ Later changes target the boot path:
 | Warm start: RSS right after init → after the release | — | 2,415 → **870 MB** |
 | Cold build: init time / peak RSS | 46.3 s / 4,580 MB | 36.4 s / 4,453 MB |
 | Cold build: RSS right after init → after the release | — | 3,491 → **1,341 MB** |
+| Fuzzy index (exactly sized posting buffer) | 131.9 MB | 111.9 MB |
 
 The warm rows are two interleaved before/after pairs, with transcripts
 byte-identical across all four runs. The cold row and the release rows are
