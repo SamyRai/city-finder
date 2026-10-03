@@ -2,6 +2,7 @@ package name
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log"
 	"slices"
@@ -36,21 +37,23 @@ func gateCities(count int) []city.SpatialCity {
 // build runs in a background goroutine, so any test that needs the built
 // index after triggering it (directly or via a lookup) waits here. The
 // ensureFuzzyBuilt nudge matters: a build discarded because AddCity raced
-// its snapshot resets to fuzzyNotBuilt and only a fresh call restarts it.
+// its snapshot settles at fuzzyNotBuilt and only a fresh call restarts it.
 // Must run on the test/benchmark goroutine (it calls tb.Fatal).
 func waitFuzzyBuilt(tb testing.TB, nf *Finder) {
 	tb.Helper()
-	deadline := time.Now().Add(60 * time.Second)
-	for nf.fuzzyState.Load() != fuzzyBuilt {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	for {
+		nf.ensureFuzzyBuilt()
+		if err := nf.WaitFuzzy(ctx); err != nil {
+			tb.Fatalf("fuzzy index did not settle within 60s: %v", err)
+		}
 		switch nf.fuzzyState.Load() {
+		case fuzzyBuilt:
+			return
 		case fuzzyDisabled:
 			tb.Fatal("fuzzy index reached fuzzyDisabled (Options.FuzzyMaxNames gate or build failure); wanted fuzzyBuilt")
 		}
-		if time.Now().After(deadline) {
-			tb.Fatal("fuzzy index did not reach fuzzyBuilt within 60s")
-		}
-		nf.ensureFuzzyBuilt()
-		time.Sleep(2 * time.Millisecond)
 	}
 }
 

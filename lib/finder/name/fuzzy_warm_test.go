@@ -2,6 +2,7 @@ package name
 
 import (
 	"bytes"
+	"context"
 	"log"
 	"strings"
 	"sync"
@@ -12,16 +13,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// waitFuzzySettled polls until the fuzzy state leaves fuzzyBuilding, without
+// waitFuzzySettled waits for the fuzzy state to leave fuzzyBuilding, without
 // nudging a new build.
 func waitFuzzySettled(tb testing.TB, nf *Finder) {
 	tb.Helper()
-	deadline := time.Now().Add(60 * time.Second)
-	for nf.fuzzyState.Load() == fuzzyBuilding {
-		if time.Now().After(deadline) {
-			tb.Fatal("fuzzy build did not settle within 60s")
-		}
-		time.Sleep(2 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if err := nf.WaitFuzzy(ctx); err != nil {
+		tb.Fatalf("fuzzy build did not settle within 60s: %v", err)
 	}
 }
 
