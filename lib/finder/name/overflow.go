@@ -54,18 +54,6 @@ func (nf *Finder) addOverflowLocked(country string, names []string, c city.City)
 	nf.fuzzyGen.Add(1) // cached fuzzy results predate these names
 }
 
-// addNameToIndexDirect adds a single name-city pair to the index with minimal overhead
-// The bulk build paths stage into a nested map and flatten once (see
-// BuildIndex), so a direct add after construction lands in the unsorted
-// overflow and is consulted after the sorted-table miss — the same
-// correctness contract AddCity's names follow. The city value is copied so
-// the distinct-city table keeps its one-fresh-pointer-per-entry invariant.
-func (nf *Finder) addNameToIndexDirect(country, name string, cityPtr *city.City) {
-	nf.mutex.Lock()
-	nf.addOverflowLocked(country, []string{name}, *cityPtr)
-	nf.mutex.Unlock()
-}
-
 // addNameToMap appends a row id to a name's staging list.
 func addNameToMap(countryMap map[string][]int32, name string, id int32) {
 	ids, exists := countryMap[name]

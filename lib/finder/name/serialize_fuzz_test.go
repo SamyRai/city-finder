@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -41,5 +42,41 @@ func FuzzDeserializeIndex(f *testing.F) {
 		}
 		_ = got.CityByName("Paris", "FR")
 		_ = got.PrefixNames("FR", "Pa", 10)
+		assertRoundTripStable(t, got)
 	})
+}
+
+// assertRoundTripStable re-serializes a decoded index, decodes that, and
+// requires the same reduced payload: whatever the decoder accepts, the writer
+// must reproduce. (File bytes are not compared — map order makes them
+// non-deterministic — and city values are compared by count only, since a
+// fuzzed NaN coordinate never equals itself.) A detached index cannot be
+// written and is skipped.
+func assertRoundTripStable(t *testing.T, got *Finder) {
+	t.Helper()
+	got.mutex.RLock()
+	first, err := got.buildPayloadV3Locked()
+	got.mutex.RUnlock()
+	if err != nil {
+		return
+	}
+	p := filepath.Join(t.TempDir(), "again.gob")
+	if err := got.SerializeIndex(p); err != nil {
+		t.Fatalf("re-serializing a decoded index: %v", err)
+	}
+	again, err := DeserializeIndex(p)
+	if err != nil {
+		t.Fatalf("decoding a re-serialized index: %v", err)
+	}
+	again.mutex.RLock()
+	second, err := again.buildPayloadV3Locked()
+	again.mutex.RUnlock()
+	if err != nil {
+		t.Fatalf("payload of the round-tripped index: %v", err)
+	}
+	if first.CityCount != second.CityCount || first.Fingerprint != second.Fingerprint ||
+		len(first.Cities) != len(second.Cities) || len(first.Extra) != len(second.Extra) ||
+		!reflect.DeepEqual(first.Refs, second.Refs) {
+		t.Fatalf("round trip changed the payload: %d/%d cities, %d/%d extras", len(first.Cities), len(second.Cities), len(first.Extra), len(second.Extra))
+	}
 }
