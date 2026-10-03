@@ -2,11 +2,13 @@ package coordinates
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var testCities = []city.SpatialCity{
@@ -316,5 +318,27 @@ func TestLargeCoordinateOffsets(t *testing.T) {
 		assert.NotNil(t, nearest)
 		assert.Equal(t, tc.expected, nearest.Name)
 		assert.InDelta(t, 0.0, dist, 1e-6)
+	}
+}
+
+// TestNearestRejectsInvalidCoordinates: non-finite points and latitudes past
+// the poles fail fast with ErrInvalidCoordinate on both rank paths, while
+// any finite longitude wraps to a real place.
+func TestNearestRejectsInvalidCoordinates(t *testing.T) {
+	finder, err := BuildIndex(weightedCitySet())
+	require.NoError(t, err)
+	for _, rank := range []Rank{RankDistance, RankPopulation} {
+		for _, p := range [][2]float64{
+			{math.NaN(), 0}, {0, math.NaN()}, {math.Inf(1), 0}, {0, math.Inf(-1)}, {90.0001, 0}, {-91, 0},
+		} {
+			_, _, err := finder.NearestPlace(p[0], p[1], rank)
+			assert.ErrorIs(t, err, ErrInvalidCoordinate, "rank %d point %v", rank, p)
+			_, _, _, err = finder.NearestPlaceWithAdmin(p[0], p[1], rank)
+			assert.ErrorIs(t, err, ErrInvalidCoordinate, "rank %d point %v (admin)", rank, p)
+		}
+		for _, p := range [][2]float64{{90, 0}, {-90, 0}, {0, 540}, {0, -181}} {
+			_, _, err := finder.NearestPlace(p[0], p[1], rank)
+			assert.NoError(t, err, "rank %d point %v", rank, p)
+		}
 	}
 }

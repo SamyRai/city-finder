@@ -1,6 +1,7 @@
 package finder
 
 import (
+	"math"
 	"testing"
 
 	"github.com/SamyRai/cityFinder/lib/city"
@@ -168,11 +169,17 @@ func TestDataIntegrity_CoordinateFinder(t *testing.T) {
 				// Test nearest place lookup if we have cities
 				if len(tc.cities) > 0 {
 					// Try to find nearest place to first city coordinates
+					// A query point off the sphere is rejected even when the
+					// index holds a city stored there.
 					firstCity := tc.cities[0]
 					nearest, dist, err := finder.NearestPlace(firstCity.Latitude, firstCity.Longitude, coordinates.RankDistance)
-					assert.NoError(t, err)
-					assert.NotNil(t, nearest)
-					assert.True(t, dist >= 0, "Distance should be non-negative")
+					if lat := firstCity.Latitude; math.IsNaN(lat) || lat < -90 || lat > 90 || math.IsNaN(firstCity.Longitude) || math.IsInf(firstCity.Longitude, 0) {
+						assert.ErrorIs(t, err, coordinates.ErrInvalidCoordinate)
+					} else {
+						assert.NoError(t, err)
+						assert.NotNil(t, nearest)
+						assert.True(t, dist >= 0, "Distance should be non-negative")
+					}
 				} else {
 					// Empty cities should return error
 					_, _, err := finder.NearestPlace(0, 0, coordinates.RankDistance)

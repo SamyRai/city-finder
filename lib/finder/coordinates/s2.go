@@ -517,12 +517,23 @@ func (f *S2Finder) NearestPlaceWithAdmin(lat, lon float64, rank Rank) (*city.Cit
 	return nearestCity, distanceKm, f.adminOf(cityIndex), nil
 }
 
+// ErrInvalidCoordinate reports a query point that is not a place on the
+// sphere: a NaN or infinite coordinate, or a latitude outside [-90, 90].
+var ErrInvalidCoordinate = errors.New("invalid coordinate")
+
 // nearest is the shared query core of NearestPlace and
 // NearestPlaceWithAdmin: it also returns the winning city's index into
 // Cities, which the attribution lookup needs and the plain callers discard.
 func (f *S2Finder) nearest(lat, lon float64, rank Rank) (*city.City, int, float64, error) {
 	if f.Index == nil {
 		return nil, 0, 0, fmt.Errorf("s2 index is not initialized")
+	}
+	// A non-finite point compares false against every bound, so a
+	// population query would escalate to the full-sphere scan (seconds at
+	// production scale) before returning nonsense. Longitude wraps, so any
+	// finite value is a real place; latitude beyond the poles is not.
+	if math.IsNaN(lat) || math.IsInf(lat, 0) || math.IsNaN(lon) || math.IsInf(lon, 0) || lat < -90 || lat > 90 {
+		return nil, 0, 0, fmt.Errorf("%w: lat %v, lon %v", ErrInvalidCoordinate, lat, lon)
 	}
 	targetPoint := s2.PointFromLatLng(s2.LatLngFromDegrees(lat, lon))
 
