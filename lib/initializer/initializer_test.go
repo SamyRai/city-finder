@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// --- downloadFile ---
+// --- downloader ---
 
 func TestDownloadFile_HTTPError404(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -32,7 +33,7 @@ func TestDownloadFile_HTTPError404(t *testing.T) {
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "allCountries.zip")
 
-	err := downloadFile(dst, srv.URL)
+	err := fastDownloader().download(context.Background(), dst, srv.URL)
 	require.Error(t, err, "a 404 response must fail the download")
 	assert.Contains(t, err.Error(), "404")
 
@@ -52,7 +53,7 @@ func TestDownloadFile_Success(t *testing.T) {
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "allCountries.zip")
 
-	require.NoError(t, downloadFile(dst, srv.URL))
+	require.NoError(t, fastDownloader().download(context.Background(), dst, srv.URL))
 
 	got, err := os.ReadFile(dst)
 	require.NoError(t, err)
@@ -69,7 +70,7 @@ func TestDownloadFile_ServerUnavailable(t *testing.T) {
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "allCountries.zip")
 
-	err := downloadFile(dst, srv.URL)
+	err := fastDownloader().download(context.Background(), dst, srv.URL)
 	require.Error(t, err)
 
 	_, statErr := os.Stat(dst)
@@ -79,9 +80,8 @@ func TestDownloadFile_ServerUnavailable(t *testing.T) {
 }
 
 func TestDownloadFile_ClientTimeout(t *testing.T) {
-	origClient := httpClient
-	defer func() { httpClient = origClient }()
-	httpClient = &http.Client{Timeout: 100 * time.Millisecond}
+	dl := fastDownloader()
+	dl.client = &http.Client{Timeout: 100 * time.Millisecond}
 
 	// Handler stalls without ever sending headers; it exits early once the
 	// client aborts so srv.Close() below does not block.
@@ -96,7 +96,7 @@ func TestDownloadFile_ClientTimeout(t *testing.T) {
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "allCountries.zip")
 
-	err := downloadFile(dst, srv.URL)
+	err := dl.download(context.Background(), dst, srv.URL)
 	require.Error(t, err, "a stalled response must hit the client timeout")
 	assert.Contains(t, err.Error(), "Client.Timeout")
 
@@ -250,18 +250,18 @@ func TestUnzipAndRename_SuccessLeavesNoPartFile(t *testing.T) {
 func TestAcquireInitLock_ExclusiveWhileHeld(t *testing.T) {
 	dir := t.TempDir()
 
-	release, err := acquireInitLock(dir)
+	release, err := acquireInitLock(dir, true)
 	require.NoError(t, err)
 
 	// A second initializer (a second open file description, as another
 	// process would have) must fail fast instead of racing the holder.
-	_, err = acquireInitLock(dir)
+	_, err = acquireInitLock(dir, true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "another initializer")
 
 	release()
 
-	release2, err := acquireInitLock(dir)
+	release2, err := acquireInitLock(dir, true)
 	require.NoError(t, err, "the lock must be acquirable again after release")
 	release2()
 }
@@ -275,7 +275,7 @@ func TestAcquireInitLock_LeftoverFileIsNotALock(t *testing.T) {
 	for _, content := range []string{fmt.Sprintf("%d\n", os.Getpid()), "1\n", "999999999\n", "not a pid"} {
 		dir := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(dir, initLockName), []byte(content), 0o600))
-		release, err := acquireInitLock(dir)
+		release, err := acquireInitLock(dir, true)
 		require.NoError(t, err, "leftover lock file with %q must not block", content)
 		release()
 	}
@@ -290,7 +290,7 @@ func TestAcquireInitLock_HeldByAnotherProcessThenReleasedOnDeath(t *testing.T) {
 		t.Skip("flock is unix-only")
 	}
 	if dir := os.Getenv("CF_LOCK_HOLDER_DIR"); dir != "" {
-		release, err := acquireInitLock(dir)
+		release, err := acquireInitLock(dir, true)
 		if err != nil {
 			fmt.Println("ERR", err)
 			os.Exit(1)
@@ -311,13 +311,13 @@ func TestAcquireInitLock_HeldByAnotherProcessThenReleasedOnDeath(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "HELD\n", line)
 
-	_, err = acquireInitLock(dir)
+	_, err = acquireInitLock(dir, true)
 	require.Error(t, err, "a lock held by a living process must block")
 	assert.Contains(t, err.Error(), fmt.Sprintf("pid %d", cmd.Process.Pid), "the error names the holder")
 
 	require.NoError(t, cmd.Process.Kill()) // SIGKILL: no release code runs
 	_ = cmd.Wait()
-	release, err := acquireInitLock(dir)
+	release, err := acquireInitLock(dir, true)
 	require.NoError(t, err, "the kernel must release a dead holder's lock")
 	release()
 }
@@ -352,7 +352,7 @@ func TestDownloadAndExtract_RecoversFromCorruptExistingZip(t *testing.T) {
 	zipPath := filepath.Join(dir, "allCountries.zip")
 	require.NoError(t, os.WriteFile(zipPath, []byte("<html>404 page saved as zip</html>"), 0o600))
 
-	require.NoError(t, downloadAndExtractDataset(srv.URL, "allCountries.zip", "allCountries_dump.txt", cfg))
+	require.NoError(t, downloadAndExtractDataset(context.Background(), fastDownloader(), srv.URL, "allCountries.zip", "allCountries_dump.txt", cfg))
 
 	got, err := os.ReadFile(filepath.Join(dir, "allCountries_dump.txt"))
 	require.NoError(t, err)
@@ -370,7 +370,7 @@ func TestDownloadAndExtract_CorruptZipAndFailingServer(t *testing.T) {
 	zipPath := filepath.Join(dir, "allCountries.zip")
 	require.NoError(t, os.WriteFile(zipPath, []byte("corrupt"), 0o600))
 
-	err := downloadAndExtractDataset(srv.URL, "allCountries.zip", "allCountries_dump.txt", cfg)
+	err := downloadAndExtractDataset(context.Background(), fastDownloader(), srv.URL, "allCountries.zip", "allCountries_dump.txt", cfg)
 	require.Error(t, err, "when the re-download also fails, the error must surface")
 }
 
@@ -381,7 +381,7 @@ func TestDownloadAndExtract_SkipsWhenFinalFileExists(t *testing.T) {
 	require.NoError(t, os.WriteFile(finalPath, []byte("existing"), 0o600))
 
 	// No server needed: everything must be skipped.
-	require.NoError(t, downloadAndExtractDataset("http://127.0.0.1:0/unused", "allCountries.zip", "allCountries_dump.txt", cfg))
+	require.NoError(t, downloadAndExtractDataset(context.Background(), fastDownloader(), "http://127.0.0.1:0/unused", "allCountries.zip", "allCountries_dump.txt", cfg))
 
 	got, err := os.ReadFile(finalPath)
 	require.NoError(t, err)
@@ -401,7 +401,7 @@ func TestDownloadAndExtract_DeletesArchiveAfterSuccess(t *testing.T) {
 
 	dir := t.TempDir()
 	cfg := &config.Config{DatasetsFolder: dir}
-	require.NoError(t, downloadAndExtractDataset(srv.URL, "allCountries.zip", "allCountries_dump.txt", cfg))
+	require.NoError(t, downloadAndExtractDataset(context.Background(), fastDownloader(), srv.URL, "allCountries.zip", "allCountries_dump.txt", cfg))
 
 	got, err := os.ReadFile(filepath.Join(dir, "allCountries_dump.txt"))
 	require.NoError(t, err)
@@ -419,7 +419,7 @@ func TestInitialize_WarmStartDoesNotTouchDatasets(t *testing.T) {
 	writeTinyDatasets(t, cfg)
 
 	// Build and serialize all three indexes once.
-	_, err := ensureFinders(cfg, "")
+	_, err := ensureFinders(context.Background(), fastDownloader(), cfg, "")
 	require.NoError(t, err)
 	// Raw datasets gone, URLs deliberately unroutable: any dataset ensure
 	// would fail the boot loudly.
@@ -461,8 +461,8 @@ func TestDatasetSource_LoadReEnsuresMissingDatasets(t *testing.T) {
 	cfg.PostalCodesURL = srv.URL + "/zipCodes.zip"
 	cfg.PostalCodesZip = "zipCodes.zip"
 
-	data := &datasetSource{cfg: cfg}
-	require.NoError(t, data.load(), "load must re-ensure and fetch the missing datasets on demand")
+	data := &datasetSource{cfg: cfg, dl: fastDownloader()}
+	require.NoError(t, data.load(context.Background()), "load must re-ensure and fetch the missing datasets on demand")
 	assert.NotEmpty(t, data.cities)
 	assert.NotEmpty(t, data.postalCodes)
 	_, statErr := os.Stat(filepath.Join(dir, cfg.AllCitiesFile))
@@ -476,7 +476,7 @@ func TestIndexPaths_Resolution(t *testing.T) {
 		PostalCodeIndexFile: "postal_code_index.gob",
 		S2:                  config.S2{IndexFile: "s2index.gob"},
 	}
-	s2Path, namePath, postalPath := indexFilePaths(cfg)
+	s2Path, namePath, postalPath := cfg.IndexFilePaths()
 
 	root := string(filepath.Separator) + filepath.Join("data", "datasets")
 	assert.Equal(t, filepath.Join(root, "s2index.gob"), s2Path)
@@ -534,7 +534,7 @@ func TestEnsureFinders_WarmStartSkipsDatasetLoad(t *testing.T) {
 	writeTinyDatasets(t, cfg)
 
 	// Cold start: builds and serializes all three indexes.
-	finder1, err := ensureFinders(cfg, "")
+	finder1, err := ensureFinders(context.Background(), fastDownloader(), cfg, "")
 	require.NoError(t, err)
 	require.NotNil(t, finder1)
 	for _, name := range []string{cfg.S2.IndexFile, cfg.NameIndexFile, cfg.PostalCodeIndexFile} {
@@ -548,7 +548,7 @@ func TestEnsureFinders_WarmStartSkipsDatasetLoad(t *testing.T) {
 	require.NoError(t, os.Remove(filepath.Join(dir, cfg.AllCitiesFile)))
 	require.NoError(t, os.Remove(filepath.Join(dir, cfg.PostalCodesFile)))
 
-	finder2, err := ensureFinders(cfg, "")
+	finder2, err := ensureFinders(context.Background(), fastDownloader(), cfg, "")
 	require.NoError(t, err, "warm start must skip the dataset load when all indexes exist")
 	require.NotNil(t, finder2)
 	require.NotNil(t, finder2.S2Finder)
@@ -561,7 +561,7 @@ func TestEnsureFinders_ColdStartLoadsDatasets(t *testing.T) {
 	cfg := testConfig(dir)
 	writeTinyDatasets(t, cfg)
 
-	f, err := ensureFinders(cfg, "")
+	f, err := ensureFinders(context.Background(), fastDownloader(), cfg, "")
 	require.NoError(t, err)
 	require.NotNil(t, f)
 

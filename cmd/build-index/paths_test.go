@@ -15,7 +15,7 @@ import (
 // defaults, the resolved prod output paths equal each index file key joined
 // with that config's datasets_folder. That join is exactly what
 // (*config.Config).IndexFilePaths performs and what the initializer's
-// indexFilePaths performs on the reader side, so build-index writes its
+// IndexFilePaths call performs on the reader side, so build-index writes its
 // outputs precisely where the initializer will look for them — for any
 // non-default config, not just the shipped one.
 func TestResolvePathsProdHonorsConfigPath(t *testing.T) {

@@ -1,6 +1,7 @@
 package initializer
 
 import (
+	"context"
 	"encoding/gob"
 	"net/http"
 	"net/http/httptest"
@@ -85,7 +86,7 @@ func TestEnsureFinders_RebuildsV2S2IndexAsV3(t *testing.T) {
 	cfg := testConfig(dir)
 	writeTinyDatasets(t, cfg)
 
-	f1, err := ensureFinders(cfg, "")
+	f1, err := ensureFinders(context.Background(), fastDownloader(), cfg, "")
 	require.NoError(t, err)
 	require.NotNil(t, f1)
 
@@ -97,7 +98,7 @@ func TestEnsureFinders_RebuildsV2S2IndexAsV3(t *testing.T) {
 	_, err = coordinates.DeserializeIndex(s2Path)
 	require.ErrorIs(t, err, coordinates.ErrCorruptIndex, "a v2 header must fail the version check")
 
-	f2, err := ensureFinders(cfg, "")
+	f2, err := ensureFinders(context.Background(), fastDownloader(), cfg, "")
 	require.NoError(t, err, "a v2 s2 index must trigger a rebuild, not a fatal error")
 	require.NotNil(t, f2)
 
@@ -121,7 +122,7 @@ func TestEnsureFinders_RebuildsV2S2IndexAsV3(t *testing.T) {
 	// Warm start after repair: still v3, no rebuild loop.
 	require.NoError(t, os.Remove(filepath.Join(dir, cfg.AllCitiesFile)))
 	require.NoError(t, os.Remove(filepath.Join(dir, cfg.PostalCodesFile)))
-	f3, err := ensureFinders(cfg, "")
+	f3, err := ensureFinders(context.Background(), fastDownloader(), cfg, "")
 	require.NoError(t, err)
 	assert.Equal(t, uint32(3), readFileVersion(t, s2Path), "the repaired file must stay v3 across warm starts")
 	_, _, attr, err = f3.S2Finder.NearestPlaceWithAdmin(42.50729, 1.53414, coordinates.RankDistance)
@@ -137,7 +138,7 @@ func TestEnsureFinders_RebuildsV2PostalIndexAsV3(t *testing.T) {
 	cfg := testConfig(dir)
 	writeTinyDatasets(t, cfg)
 
-	_, err := ensureFinders(cfg, "")
+	_, err := ensureFinders(context.Background(), fastDownloader(), cfg, "")
 	require.NoError(t, err)
 
 	postalPath := filepath.Join(dir, cfg.PostalCodeIndexFile)
@@ -146,7 +147,7 @@ func TestEnsureFinders_RebuildsV2PostalIndexAsV3(t *testing.T) {
 	_, err = postalCode.DeserializeIndex(postalPath)
 	require.ErrorIs(t, err, postalCode.ErrCorruptIndex, "a v2 header must fail the version check")
 
-	f2, err := ensureFinders(cfg, "")
+	f2, err := ensureFinders(context.Background(), fastDownloader(), cfg, "")
 	require.NoError(t, err, "a v2 postal index must trigger a rebuild, not a fatal error")
 	require.NotNil(t, f2)
 
@@ -166,7 +167,7 @@ func TestEnsureFinders_IndexFormatVersions(t *testing.T) {
 	cfg := testConfig(dir)
 	writeTinyDatasets(t, cfg)
 
-	f, err := ensureFinders(cfg, "")
+	f, err := ensureFinders(context.Background(), fastDownloader(), cfg, "")
 	require.NoError(t, err)
 	require.NotNil(t, f)
 
@@ -192,7 +193,7 @@ func TestEnsureFinders_Admin1NamesModes(t *testing.T) {
 			"AD.07\tAndorra la Vella\tAndorra la Vella\t3041563\n"), 0o600))
 
 	// Cold start with names.
-	f, err := ensureFinders(cfg, namesPath)
+	f, err := ensureFinders(context.Background(), fastDownloader(), cfg, namesPath)
 	require.NoError(t, err)
 	require.NotNil(t, f.S2Finder.Admin1Names)
 	assert.Equal(t, "Andorra la Vella", f.S2Finder.Admin1Names["AD.07"])
@@ -201,7 +202,7 @@ func TestEnsureFinders_Admin1NamesModes(t *testing.T) {
 	assert.Equal(t, "Andorra la Vella", attr.Admin1Name)
 
 	// Warm start with names (re-attached per boot, not serialized).
-	f2, err := ensureFinders(cfg, namesPath)
+	f2, err := ensureFinders(context.Background(), fastDownloader(), cfg, namesPath)
 	require.NoError(t, err)
 	require.NotNil(t, f2.S2Finder.Admin1Names, "warm start must re-attach the names map")
 	_, _, attr, err = f2.S2Finder.NearestPlaceWithAdmin(42.50729, 1.53414, coordinates.RankDistance)
@@ -210,7 +211,7 @@ func TestEnsureFinders_Admin1NamesModes(t *testing.T) {
 
 	// Codes-only: configured-but-missing file degrades, never fails.
 	missing := filepath.Join(dir, "absent_admin1.txt")
-	f3, err := ensureFinders(cfg, missing)
+	f3, err := ensureFinders(context.Background(), fastDownloader(), cfg, missing)
 	require.NoError(t, err, "a missing admin1 names file must degrade to codes-only, not fail startup")
 	assert.Nil(t, f3.S2Finder.Admin1Names)
 	_, _, attr, err = f3.S2Finder.NearestPlaceWithAdmin(42.50729, 1.53414, coordinates.RankDistance)
@@ -240,18 +241,18 @@ func TestEnsureAdmin1NamesPath(t *testing.T) {
 	dir := t.TempDir()
 
 	// Unconfigured: disabled.
-	assert.Equal(t, "", ensureAdmin1NamesPath(&config.Config{DatasetsFolder: dir}))
+	assert.Equal(t, "", ensureAdmin1NamesPath(context.Background(), fastDownloader(), &config.Config{DatasetsFolder: dir}))
 
 	// Configured, present: resolved path is returned verbatim.
 	present := filepath.Join(dir, "admin1CodesASCII.txt")
 	require.NoError(t, os.WriteFile(present, []byte("US.CA\tCalifornia\tCalifornia\t5332921\n"), 0o600))
-	assert.Equal(t, present, ensureAdmin1NamesPath(&config.Config{
+	assert.Equal(t, present, ensureAdmin1NamesPath(context.Background(), fastDownloader(), &config.Config{
 		DatasetsFolder:  dir,
 		Admin1CodesFile: "admin1CodesASCII.txt",
 	}))
 
 	// Configured, missing, no URL: path is returned but nothing downloads.
-	missing := ensureAdmin1NamesPath(&config.Config{
+	missing := ensureAdmin1NamesPath(context.Background(), fastDownloader(), &config.Config{
 		DatasetsFolder:  dir,
 		Admin1CodesFile: "absent_names.txt",
 	})
@@ -265,7 +266,7 @@ func TestEnsureAdmin1NamesPath(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	downloaded := ensureAdmin1NamesPath(&config.Config{
+	downloaded := ensureAdmin1NamesPath(context.Background(), fastDownloader(), &config.Config{
 		DatasetsFolder:  dir,
 		Admin1CodesFile: "dl_names.txt",
 		Admin1CodesURL:  srv.URL,
@@ -305,7 +306,7 @@ func TestEnsureFinders_MigratesLegacyV3PostalIndexInPlace(t *testing.T) {
 	writeTinyDatasets(t, cfg)
 	postalMap, err := dataLoader.LoadPostalCodes(filepath.Join(dir, cfg.PostalCodesFile))
 	require.NoError(t, err)
-	f1, err := ensureFinders(cfg, "")
+	f1, err := ensureFinders(context.Background(), fastDownloader(), cfg, "")
 	require.NoError(t, err)
 	want := *f1.PostalCodeFinder.CityByPostalCode("AD100", "AD")
 
@@ -328,7 +329,7 @@ func TestEnsureFinders_MigratesLegacyV3PostalIndexInPlace(t *testing.T) {
 
 	require.NoError(t, os.Remove(filepath.Join(dir, cfg.AllCitiesFile)))
 	require.NoError(t, os.Remove(filepath.Join(dir, cfg.PostalCodesFile)))
-	f2, err := ensureFinders(cfg, "")
+	f2, err := ensureFinders(context.Background(), fastDownloader(), cfg, "")
 	require.NoError(t, err)
 	assert.Equal(t, want, *f2.PostalCodeFinder.CityByPostalCode("AD100", "AD"))
 	assert.Equal(t, uint32(4), readFileVersion(t, postalPath), "the v3 file must be migrated to v4")

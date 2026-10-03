@@ -8,8 +8,93 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-03
+
+### Breaking (Go library API only)
+
+The HTTP API, configuration file and on-disk index formats are unchanged; this
+only affects code that imports the packages.
+
+- `name.FuzzyMaxNames`, `name.FuzzyMaxCandidates` (mutable package
+  variables) and the package-level `name.FuzzyBudgetTrips()` are removed.
+  Limits are now per finder: pass `name.Options` as the optional last
+  argument to `name.NewNameFinder`, `name.BuildIndex` or
+  `name.DeserializeIndex`; budget trips are read with
+  `Finder.FuzzyBudgetTrips()`.
+- `routes.SetupRoutes` / `SetupRoutesWithMetrics` no longer install the
+  metrics or panic-recovery middleware; `app.New` owns the middleware chain.
+
+### Security
+
+- **A corrupt or hostile index file could cost 512 MB per load attempt.**
+  The zstd window a file declares is now capped at 64 MiB (the writer uses
+  4 MiB), and the decompressed payload has a byte budget (gob's own
+  per-message ceiling by default, 8 GiB on 64-bit platforms,
+  `indexfile.DefaultMaxPayloadBytes`, tightenable per read with
+  `Reader.LimitPayload`). A file over either limit is reported as a corrupt
+  index, so the initializer rebuilds it. No format change; valid files decode
+  as before. The S2 and postal headers carry an entry count, and
+  `Reader.BoundByEntries` now rejects a count that is implausible for the file
+  size and caps the payload at what that many entries can hold, so a tiny file
+  of millions of near-empty entries is refused with the default budget in
+  milliseconds. Not covered: the name index, which still relies on the default budget.
+
 ### Fixed
 
+- **A `datasets_folder` under a regular file failed late and confusingly.**
+  `ensureDatasetsFolder` only handled a stat error of "does not exist", so
+  ENOTDIR (a parent is a file), a permission error, or a path that is itself a
+  file got through and failed at the init lock. The boot now stops at once and
+  names the folder and the cause.
+- **Oversized and malformed requests were invisible.** 413 (body over
+  1 MB) and 431 (headers over the read buffer) are produced by the HTTP
+  server before any middleware runs, so `/metrics` and the access log never
+  showed them. They are now counted under the `(rejected)` path label and
+  logged with method and path `-` (the raw request is never echoed).
+
+- **A second SIGTERM/SIGINT during shutdown was ignored.** The signal
+  handler stayed registered after the first signal, so a stalled connection
+  held the process for the full 10 s drain no matter how often it was
+  signalled. Default handling is restored after the first signal: the
+  second one terminates the process immediately.
+
+- **A bad `PORT` failed only after the full index load.** `PORT=abc`,
+  `0` or `99999` exited with status 1 after the 20 s (warm) to multi-minute
+  (cold) boot. It is now validated first (decimal, 1-65535) and the server
+  exits immediately with `invalid PORT ...`.
+
+- **A panic inside a `POST /nearest/batch` worker killed the process.**
+  Batch points run on their own goroutines, outside the recover middleware
+  that protects `GET /nearest`. A panicking point now becomes the same
+  `500 internal server error` GET serves (later points are skipped, the
+  population gate slot is released, and the stack is logged once per
+  request) and the server keeps running.
+
+- **An empty city dataset was accepted, serialized and then served
+  forever.** A truncated or wrong dump, or an `include_feature_classes`
+  that matched nothing, produced empty index files; every later boot was a
+  warm start over them and every nearest query returned 500. The boot now
+  fails with an error naming the file and the filters, and writes nothing.
+  An empty postal file is still allowed.
+- **A read-only datasets volume with complete indexes could not boot.** The
+  init lock needed to create a file in the folder. When all indexes are
+  present and the folder is unwritable, the lock is skipped with a log line
+  (a warm boot writes nothing); a boot that must build still fails.
+- **Loaders accepted impossible coordinates and negative populations.**
+  City and postal rows with a NaN/Inf, `|lat| > 90` or `|lon| > 180`
+  coordinate, and city rows with a negative population, are now skipped
+  (one shared validator). Skipped rows are counted per reason and logged
+  as one summary line per file with the first few line numbers, instead of
+  one log line holding the full text of every rejected city row.
+- **A stray `"` in the postal file aborted startup.** The postal loader
+  parsed the file as quoted CSV, so a place name such as `5" Rd` failed the
+  whole load. GeoNames postal files are plain TSV; they are now split on
+  tabs and quotes are ordinary characters. Valid files load identically.
+- **Loader input quirks.** A UTF-8 BOM at the start of the postal or admin1
+  file no longer glues itself to the first key (the first postal row was
+  unreachable). A single line over 1 MiB used to abort the whole load; it is
+  now skipped and counted in the per-file summary. CRLF files load like LF
+  ones. All three loaders share one line reader.
 - **A cached fuzzy result hid cities added later.** After `AddCity`, a
   typo whose result was already cached kept returning the old candidates
   for the full one-hour TTL. Cache entries now carry a generation that
@@ -94,6 +179,15 @@ and this project adheres to
 - `make profile`, `make build-greentea` and `make bench*` no longer exist
   in broken form (`go run -cpuprofile` is not a flag; Green Tea is the
   default GC since Go 1.26).
+- `cmd/loadgen` accepted `-max-inflight <= 0`, `-timeout <= 0`, a
+  `-stop-error-rate` outside [0,1], a negative `-warmup`, NaN/Inf rates and
+  a malformed `-url`, and then hung or measured nothing; `-rates` could be
+  unordered, which breaks stop-past-the-knee. Each is now
+  rejected up front with an error naming the flag (rates must be strictly
+  ascending).
+- `memreport measure` waited for the fuzzy index forever when the build
+  failed (the state resets to "not built"). It now gives up after
+  `-fuzzy-timeout` (default 30m) with an error. Usage errors exit 2.
 
 ### Added
 
@@ -131,6 +225,66 @@ and this project adheres to
 
 ### Changed
 
+- **One owner for the index build sequence.** `cmd/build-index` and the
+  initializer each carried a copy of load, S2, name, share the city table,
+  postal, write, with different handling of a failed share. The steps now live
+  in the new `lib/builder` package; a share that fails keeps a private city
+  table and logs a warning, for both callers. `cmd/build-index` is a thin
+  `main` over `run(args, stdout, stderr)`: errors are returned instead of
+  `log.Fatalf`, usage errors go to stderr, `-h` prints usage and exits 0, and
+  the index files are written concurrently after all builds succeed. Answers
+  are unchanged: indexes built before and after load to the same transcript.
+- **`cmd/build-index` follows the initializer's dataset policies.** A city
+  load with zero rows now fails (naming the file and any filters) instead of
+  writing empty indexes, and a postal file that fails to load is an error
+  instead of a warning plus an empty postal index. A postal file with zero rows
+  is still allowed. Both rules live in `lib/builder`.
+- **Index header handling has one owner.** The S2, name and postal code
+  loaders shared a copy of the header struct, the magic/version check and the
+  corruption mapping; `indexfile.OpenIndex` now does it once. Each package
+  keeps its own `ErrCorruptIndex`, and the header's gob field names and types
+  are unchanged, so existing index files load as before (a fixture written by
+  the previous code is loaded in each package's tests). Corruption error
+  messages now share one wording.
+- `finder.Finder.WaitFuzzy(ctx)` forwards the name finder's method (a finder
+  without a name index returns nil). `memreport` uses it instead of polling
+  the build state, and a build that settles back at "not built" now fails
+  right away instead of at `-fuzzy-timeout`.
+- A name finder that holds no names no longer spawns a goroutine and takes a
+  snapshot each time something triggers the fuzzy build; answers are
+  unchanged. The first name added re-arms the build.
+- Test fixtures: nine copies of the synthetic city loop now share
+  `internal/testfixture` (output byte-identical).
+- **Process environment has one owner.** `PORT`, `PPROF_ADDR` and
+  `CONFIG_PATH` are read once, in `config.LoadRuntime`, and passed down;
+  `cmd/server` no longer reads the environment itself. The previously
+  undocumented `CONFIG_FILE` (a fallback used when `CONFIG_PATH` is empty)
+  is now documented as deprecated and logs a notice when used; it keeps
+  working.
+
+- **Server wiring (internal, no wire change).** The population gate, batch
+  fan-out limit and per-point query core are owned by a `routes.Handlers`
+  value instead of package variables, so two apps in one process no longer
+  share a gate. The app package owns the whole middleware chain (access log,
+  ETag, request metrics, then a single panic-recovery middleware); the
+  metrics middleware moved to `cmd/server/metrics`.
+
+- **Cold start overlaps independent work.** The city and postal files are
+  parsed concurrently, and once the S2, name and postal indexes are built
+  the three index files are written concurrently. The builds stay
+  sequential, because running them together raised peak memory by about half
+  in measurement. Index files are now written only after all three indexes
+  exist, so a failing build no longer leaves a partly updated set. On a
+  200k-city synthetic dataset on a shared 4-core host the gain was within
+  noise (1.34 s against 1.40 s mean of 8 interleaved runs, peak RSS
+  +3%); the overlap scales with file sizes, so production gains more. Answer
+  transcripts are byte-identical.
+- **Dataset downloads are owned by one `downloader`.** The HTTP client, the
+  attempt count and the retry delay are fields of a struct instead of
+  package variables that tests patched, and the pause between attempts now
+  ends when the context is cancelled (`initializer.InitializeContext`;
+  `Initialize` keeps its signature). Admin1 names reach the S2 finder
+  through one method, `AttachAdmin1Names`, called once per boot.
 - **Index footprint.** Measured with `cmd/memreport` on a 4M-city synthetic
   GeoNames dataset (answer transcripts byte-identical for nearest, prefix
   and postal lookups):

@@ -77,9 +77,9 @@ a range, not a distribution.
   the background right after boot (`WarmFuzzy`). Until it lands (~30–90 s at
   this scale, state exported as `fuzzy_build_state` on `/metrics`), typo
   lookups return exact-only results. No request ever pays the build.
-  - `name.FuzzyMaxNames` (default 25M keys) bounds it against unmeasured
+  - `name.Options.FuzzyMaxNames` (default 25M keys) bounds it against unmeasured
     scales.
-  - Per-query work is capped by `name.FuzzyMaxCandidates` (default 4M posting
+  - Per-query work is capped by `name.Options.FuzzyMaxCandidates` (default 4M posting
     entries). A capped query returns the matches verified so far, is never
     cached as complete, and increments `fuzzy_budget_trips_total`.
   - Results are cached (10k entries, 1 h TTL). Eviction is O(1) FIFO since the

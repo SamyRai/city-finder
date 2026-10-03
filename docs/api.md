@@ -18,7 +18,11 @@ Prometheus text format:
 
 - `http_requests_total{path,status}` and the
   `http_request_duration_seconds` histogram per route pattern (scrapes of
-  `/metrics` itself are not counted);
+  `/metrics` itself are not counted). Requests no route matched are labelled
+  `(unrouted)`; requests the HTTP server rejects before routing (413 body
+  too large, 431 headers too large, 408 read timeout, malformed requests)
+  are labelled `(rejected)` and also get an access-log line with method and
+  path `-`;
 - `fuzzy_budget_trips_total`: fuzzy searches that returned budget-truncated,
   partial results;
 - `fuzzy_build_state`: 0 not built, 1 building, 2 built, 3 disabled;
@@ -84,12 +88,12 @@ full `SW1A 1AA`.
 
 | Aspect | Value |
 |---|---|
-| Listen port | `PORT` env (default `3000`) |
+| Listen port | `PORT` env (default `3000`; validated at startup, 1-65535) |
 | Timeouts | read 15 s, write 15 s, idle 60 s |
 | Body limit | 1 MB (a 100-point batch is ~6 KB) |
 | Connection cap | 1024 concurrent connections |
 | ETag | enabled |
 | Panics | recovered per request (500), never fatal |
 | Access log | one line per request: method, path (no query string), status, latency, size — bodies and parameters are never logged |
-| Shutdown | SIGINT/SIGTERM drain in-flight requests for up to 10 s |
+| Shutdown | SIGINT/SIGTERM drain in-flight requests for up to 10 s; a second signal during the drain exits immediately |
 | Profiling | opt-in `PPROF_ADDR` listener, separate from the API port (see [configuration.md](configuration.md)) |

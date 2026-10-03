@@ -13,11 +13,7 @@ import (
 // DeserializeIndex reject files written by an incompatible build (magic or
 // version mismatch) up front, with an error that tells the caller to rebuild
 // instead of failing halfway through a half-understood payload.
-type indexHeader struct {
-	Magic   string
-	Version uint32
-	Count   int
-}
+type indexHeader = indexfile.Header
 
 const (
 	// nameIndexMagic identifies name index files.
@@ -45,6 +41,9 @@ const (
 // treats it (and only it) as rebuildable; any other error — a wrapped fs
 // error from an unreadable file, for example — is fatal.
 var ErrCorruptIndex = errors.New("name index file is corrupt or incompatible")
+
+// indexSpec is what indexfile.OpenIndex checks a file against.
+var indexSpec = indexfile.Spec{Magic: nameIndexMagic, Versions: []uint32{nameIndexVersion, nameIndexVersionV2}, Corrupt: ErrCorruptIndex}
 
 // nameIndexPayloadV2 is the v2 payload, kept for reading existing files:
 // Cities[i] is city id i; Refs maps country -> name -> ids into Cities.
@@ -153,49 +152,39 @@ func (nf *Finder) buildPayloadV3Locked() (nameIndexPayloadV3, error) {
 // A v3 file that references an external city table yields a DETACHED finder:
 // its lookups return nil until ShareCities attaches the matching table (the
 // initializer does this with the S2 index's Cities). Files that embed their
-// table (v2, standalone v3) are fully usable as returned.
-func DeserializeIndex(filepath string) (*Finder, error) {
-	file, err := indexfile.Open(filepath)
+// table (v2, standalone v3) are fully usable as returned. opts optionally
+// overrides the fuzzy limits (see Options).
+func DeserializeIndex(filepath string, opts ...Options) (*Finder, error) {
+	file, header, err := indexfile.OpenIndex(filepath, indexSpec)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-
-	var header indexHeader
-	if err := file.Header(&header); err != nil {
-		return nil, fmt.Errorf("%w: name index %s is not a readable versioned index (legacy or corrupt file: %v); delete the file so the index is rebuilt",
-			ErrCorruptIndex, filepath, err)
-	}
-	if header.Magic != nameIndexMagic || (header.Version != nameIndexVersion && header.Version != nameIndexVersionV2) {
-		return nil, fmt.Errorf("%w: name index %s format mismatch: got magic %q version %d, want magic %q version %d or %d; delete the file so the index is rebuilt",
-			ErrCorruptIndex, filepath, header.Magic, header.Version, nameIndexMagic, nameIndexVersion, nameIndexVersionV2)
-	}
+	corrupt := func(format string, args ...any) error { return indexSpec.Corruptf(filepath, format, args...) }
 
 	var payload nameIndexPayloadV3
 	if header.Version == nameIndexVersionV2 {
 		var v2 nameIndexPayloadV2
 		if err := file.Payload(&v2); err != nil {
-			return nil, fmt.Errorf("%w: decoding name index payload from %s: %v", ErrCorruptIndex, filepath, err)
+			return nil, corrupt("decoding payload: %v", err)
 		}
 		// v2 ids number a self-contained distinct-city table: it is exactly
 		// an embedded v3 base table.
 		payload = nameIndexPayloadV3{CityCount: len(v2.Cities), Cities: v2.Cities, Refs: v2.Refs}
 	} else if err := file.Payload(&payload); err != nil {
-		return nil, fmt.Errorf("%w: decoding name index payload from %s: %v", ErrCorruptIndex, filepath, err)
+		return nil, corrupt("decoding payload: %v", err)
 	}
 	if header.Count != len(payload.Refs) {
-		return nil, fmt.Errorf("%w: name index %s payload holds %d countries but the header recorded %d; delete the file so the index is rebuilt",
-			ErrCorruptIndex, filepath, len(payload.Refs), header.Count)
+		return nil, corrupt("payload holds %d countries but the header recorded %d", len(payload.Refs), header.Count)
 	}
 	if payload.Cities != nil && len(payload.Cities) != payload.CityCount {
-		return nil, fmt.Errorf("%w: name index %s embeds %d cities but records %d; delete the file so the index is rebuilt",
-			ErrCorruptIndex, filepath, len(payload.Cities), payload.CityCount)
+		return nil, corrupt("embeds %d cities but records %d", len(payload.Cities), payload.CityCount)
 	}
 	stats := file.Stats()
 	log.Printf("name index %s decoded (v%d): %d B -> %d B streamed (zstd+gob) in %s",
 		filepath, header.Version, stats.FileBytes, stats.PayloadBytes, stats.Decode)
 
-	finder := NewNameFinder()
+	finder := NewNameFinder(opts...)
 	finder.cities = cityTable{base: payload.Cities, baseCount: payload.CityCount, fingerprint: payload.Fingerprint}
 	if payload.Cities != nil {
 		// gob allocates a fresh backing for every decoded string; one intern
@@ -205,16 +194,23 @@ func DeserializeIndex(filepath string) (*Finder, error) {
 	for i := range payload.Extra {
 		finder.cities.add(payload.Extra[i])
 	}
-	for country, refs := range payload.Refs {
+	// The id range check rides in the per-country workers: it walks every id
+	// once anyway, and the loop is most of the decode after the zstd stream.
+	size := finder.cities.size()
+	tables, err := buildTables(payload.Refs, tableWorkers(), func(refs map[string][]int32) error {
 		for _, ids := range refs {
 			for _, id := range ids {
-				if id < 0 || int(id) >= finder.cities.size() {
-					return nil, fmt.Errorf("%w: name index %s references id %d outside the %d-city table; delete the file so the index is rebuilt",
-						ErrCorruptIndex, filepath, id, finder.cities.size())
+				if id < 0 || int(id) >= size {
+					return corrupt("references id %d outside the %d-city table", id, size)
 				}
 			}
 		}
-		finder.countries[country] = buildTable(refs)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
+	finder.countries = tables
+	finder.refreshHasKeys()
 	return finder, nil
 }

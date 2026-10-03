@@ -135,26 +135,13 @@ func parseIncludeFeatureClasses(raw string) ([]string, error) {
 
 // IndexFilePaths returns the on-disk locations of the three serialized indexes
 // (S2, name, postal code): each index file key joined with DatasetsFolder. It
-// mirrors the initializer's indexFilePaths exactly, so index producers
-// (cmd/build-index) and consumers (lib/initializer) agree on the same paths
-// for any config, not just the shipped default.
+// is the single resolution both index producers (cmd/build-index) and
+// consumers (lib/initializer) use, so they agree on the same paths for any
+// config, not just the shipped default.
 func (c *Config) IndexFilePaths() (s2Path, namePath, postalPath string) {
 	return filepath.Join(c.DatasetsFolder, c.S2.IndexFile),
 		filepath.Join(c.DatasetsFolder, c.NameIndexFile),
 		filepath.Join(c.DatasetsFolder, c.PostalCodeIndexFile)
-}
-
-// LoadFromEnv resolves the config file the way the binaries do — the
-// CONFIG_PATH environment variable when it is set (even to an empty string),
-// otherwise the "config.json" default relative to the process working
-// directory — and loads it. cmd/server/main.go resolves CONFIG_PATH inline
-// today; switching it to this helper is a behavior-preserving refactor.
-func LoadFromEnv() (*Config, error) {
-	configPath, exists := os.LookupEnv("CONFIG_PATH")
-	if !exists {
-		configPath = "config.json"
-	}
-	return LoadConfig(configPath)
 }
 
 // LoadConfig loads the JSON configuration at configPath.
@@ -172,9 +159,9 @@ func LoadFromEnv() (*Config, error) {
 //     resolution: CWD-relative is the standard meaning of a relative path,
 //     and Go API users pass relative paths from their working directory.
 //
-// With an empty configPath, the CONFIG_FILE environment variable is honored
-// (the CONFIG_PATH env var is resolved by the binaries — directly or via
-// LoadFromEnv — and fed into LoadConfig as configPath).
+// With an empty configPath, the deprecated CONFIG_FILE environment variable
+// is honored (CONFIG_PATH is resolved by LoadRuntime / LoadFromEnv and fed
+// into LoadConfig as configPath).
 //
 // datasets_folder inside the config file: absolute values are kept verbatim;
 // relative values resolve against the directory containing the config file
@@ -186,7 +173,7 @@ func LoadConfig(configPath string) (*Config, error) {
 	cfg := &Config{}
 
 	if configPath == "" {
-		configPath = os.Getenv("CONFIG_FILE")
+		configPath = configFileFallback(os.LookupEnv)
 	}
 
 	if configPath == "" {

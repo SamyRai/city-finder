@@ -1,7 +1,6 @@
 package dataLoader
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -220,20 +219,13 @@ func LoadGeoNamesCSVWithOptions(filepath string, opts LoadOptions) ([]city.Spati
 	}
 	defer file.Close()
 
-	// Use larger buffer for scanner to reduce I/O overhead
-	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 0, 64*1024) // 64KB buffer
-	scanner.Buffer(buf, 1024*1024)  // 1MB max line size
-
 	// Preallocate the slice from a file-size-based row estimate (an explicit
 	// limit takes precedence) instead of a hardcoded 15M rows.
 	cities := make([]city.SpatialCity, 0, estimatedCityCount(filepath, opts.Limit))
-	lineCount := 0
 	skippedAdminDivisions := 0
 	skippedByClassAllowlist := 0
-	for scanner.Scan() {
-		line := scanner.Bytes() // Use Bytes() instead of Text() to avoid string allocation
-		lineCount++
+	var skipped skipReport
+	err = forEachLine(file, &skipped, func(lineCount int, line []byte) bool {
 		// Log progress every 1 million lines to reduce overhead (only if limit is large)
 		if opts.Limit == 0 && lineCount%1000000 == 0 {
 			log.Printf("Processing line %d...", lineCount)
@@ -255,11 +247,11 @@ func LoadGeoNamesCSVWithOptions(filepath string, opts LoadOptions) ([]city.Spati
 			featureClass := findField(lineStr, 6, '\t')
 			if includeSet != nil && !includeSet[featureClass] {
 				skippedByClassAllowlist++
-				continue
+				return true
 			}
 			if opts.ExcludeAdminDivisions && featureClass == "A" {
 				skippedAdminDivisions++
-				continue
+				return true
 			}
 		}
 
@@ -274,26 +266,28 @@ func LoadGeoNamesCSVWithOptions(filepath string, opts LoadOptions) ([]city.Spati
 		field15 := findField(lineStr, 14, '\t') // population (GeoNames field 14, 0-indexed)
 
 		if field2 == "" || field5 == "" || field6 == "" || field9 == "" {
-			continue
+			skipped.add(reasonMissingField, lineCount)
+			return true
 		}
 
-		lat, err := strconv.ParseFloat(field5, 64)
-		if err != nil {
-			log.Printf("Error parsing lat: %v on line: %s\n", err, line)
-			continue
-		}
-		lon, err := strconv.ParseFloat(field6, 64)
-		if err != nil {
-			log.Printf("Error parsing lon: %v on line: %s\n", err, line)
-			continue
+		lat, lon, reason := parseCoordinate(field5, field6)
+		if reason != "" {
+			skipped.add(reason, lineCount)
+			return true
 		}
 
 		// Population is enhancement data: an empty or unparsable field loads
 		// as 0 and never drops the row. Values fit int32 (the largest GeoNames
 		// feature populations are < 40M); anything overflowing is treated as
-		// unparsable rather than silently wrapped.
+		// unparsable rather than silently wrapped. A negative value is a
+		// different matter: GeoNames populations are non-negative, so it marks
+		// a corrupt row, which is rejected rather than clamped to a valid 0.
 		var population int32
 		if p, err := strconv.ParseInt(field15, 10, 32); err == nil {
+			if p < 0 {
+				skipped.add(reasonNegativePop, lineCount)
+				return true
+			}
 			population = int32(p)
 		}
 
@@ -333,16 +327,17 @@ func LoadGeoNamesCSVWithOptions(filepath string, opts LoadOptions) ([]city.Spati
 		// Check limit
 		if opts.Limit > 0 && len(cities) >= opts.Limit {
 			log.Printf("Reached limit of %d cities, stopping early", opts.Limit)
-			break
+			return false
 		}
-	}
-
-	if err := scanner.Err(); err != nil {
+		return true
+	})
+	if err != nil {
 		return nil, fmt.Errorf("failed to scan file: %v, %v", filepath, err)
 	}
 
-	// Skip summaries in the postal loader's style: one line each, end of
-	// load, only when rows were actually skipped (never per row).
+	// Skip summaries: one line each, end of load, only when rows were
+	// actually skipped (never per row).
+	skipped.log("city", filepath)
 	if skippedByClassAllowlist > 0 {
 		log.Printf("skipped %d rows outside feature class allowlist [%s] in %s",
 			skippedByClassAllowlist, strings.Join(opts.IncludeFeatureClasses, ","), filepath)

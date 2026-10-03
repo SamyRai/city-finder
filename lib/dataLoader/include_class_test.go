@@ -188,7 +188,7 @@ func TestLoadGeoNames_IncludeListCheckPrecedesFieldValidation(t *testing.T) {
 	}
 	path := writeFixture(t, rows...)
 
-	t.Run("filtered as out-of-class, no lat error logged", func(t *testing.T) {
+	t.Run("filtered as out-of-class, no malformed-row summary", func(t *testing.T) {
 		buf, restore := captureLoaderLogs(t)
 		defer restore()
 
@@ -197,11 +197,11 @@ func TestLoadGeoNames_IncludeListCheckPrecedesFieldValidation(t *testing.T) {
 		require.Len(t, cities, 1)
 		assert.Equal(t, "Springfield", cities[0].City.Name)
 		assert.Contains(t, buf.String(), "skipped 1 rows outside feature class allowlist [P]")
-		assert.NotContains(t, buf.String(), "Error parsing lat",
-			"an out-of-class row must not reach coordinate parsing and must not log a per-row error")
+		assert.NotContains(t, buf.String(), "unparsable coordinates",
+			"an out-of-class row must not reach coordinate parsing and must not be reported as malformed")
 	})
 
-	t.Run("default: historical parse-error path", func(t *testing.T) {
+	t.Run("default: historical skip path", func(t *testing.T) {
 		buf, restore := captureLoaderLogs(t)
 		defer restore()
 
@@ -209,7 +209,7 @@ func TestLoadGeoNames_IncludeListCheckPrecedesFieldValidation(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, cities, 1)
 		assert.Equal(t, "Springfield", cities[0].City.Name)
-		assert.Contains(t, buf.String(), "Error parsing lat")
+		assert.Contains(t, buf.String(), "unparsable coordinates")
 		assert.NotContains(t, buf.String(), "outside feature class allowlist")
 	})
 }

@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/SamyRai/cityFinder/internal/testfixture"
 	"github.com/SamyRai/cityFinder/lib/city"
 )
 
@@ -29,18 +30,12 @@ import (
 // (seeded, deterministic).
 func generateDistinctCities(count int) []city.SpatialCity {
 	rng := rand.New(rand.NewSource(7))
-	cities := make([]city.SpatialCity, count)
-	for i := 0; i < count; i++ {
-		cities[i] = city.SpatialCity{
-			City: city.City{
-				Name:      "Distinct City",
-				Country:   "TC",
-				Latitude:  math.Round((rng.Float64()*180-90)*1e6) / 1e6,
-				Longitude: math.Round((rng.Float64()*360-180)*1e6) / 1e6,
-			},
-		}
-	}
-	return cities
+	return testfixture.Cities(count, testfixture.Spec{
+		Name:    testfixture.Const("Distinct City"),
+		Country: testfixture.Const("TC"),
+		Lat:     func(int) float64 { return math.Round((rng.Float64()*180-90)*1e6) / 1e6 },
+		Lon:     func(int) float64 { return math.Round((rng.Float64()*360-180)*1e6) / 1e6 },
+	})
 }
 
 // benchQueryPoint is one query coordinate.

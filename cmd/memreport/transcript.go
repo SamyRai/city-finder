@@ -2,12 +2,14 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/SamyRai/cityFinder/lib/config"
@@ -20,7 +22,13 @@ import (
 // API exposes, distances to 1e-9 km, admin attribution, prefix lists). Two
 // transcripts from the same dataset must be byte-identical for a layout
 // change to count as "no data regression".
-func dumpTranscript(f *finder.Finder, cfg *config.Config, path string) error {
+//
+// It waits for the fuzzy build itself (see ensureFuzzy): typo answers differ
+// mid-build, so the transcript must not depend on when the caller calls it.
+func dumpTranscript(ctx context.Context, f *finder.Finder, cfg *config.Config, path string, fuzzyTimeout time.Duration) error {
+	if err := ensureFuzzy(ctx, f, fuzzyTimeout); err != nil {
+		return err
+	}
 	out, err := os.Create(path)
 	if err != nil {
 		return err

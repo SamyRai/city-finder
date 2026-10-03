@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SamyRai/cityFinder/internal/testfixture"
 	"github.com/SamyRai/cityFinder/lib/city"
 )
 
@@ -22,18 +23,12 @@ var exactTailCountries = []string{
 // measures a cache-hot single-entry hit and cannot see the latency tail that
 // real distinct-key traffic produces.
 func exactTailCities(count int) []city.SpatialCity {
-	cities := make([]city.SpatialCity, count)
-	for i := 0; i < count; i++ {
-		cities[i] = city.SpatialCity{
-			City: city.City{
-				Name:      exactTailName(i),
-				Country:   exactTailCountries[i%len(exactTailCountries)],
-				Latitude:  float64(i%18000) / 100.0,
-				Longitude: float64(i%36000)/100.0 - 180.0,
-			},
-		}
-	}
-	return cities
+	return testfixture.Cities(count, testfixture.Spec{
+		Name:    exactTailName,
+		Country: testfixture.Cycle(exactTailCountries),
+		Lat:     func(i int) float64 { return float64(i%18000) / 100.0 },
+		Lon:     func(i int) float64 { return float64(i%36000)/100.0 - 180.0 },
+	})
 }
 
 func exactTailName(i int) string {

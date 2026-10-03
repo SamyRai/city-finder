@@ -15,14 +15,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// withFuzzyMaxCandidates swaps the package-level budget for a test and
-// restores it on cleanup. Tests must not run concurrent searches across the
-// swap boundary — the variable is read without synchronization by design.
-func withFuzzyMaxCandidates(t *testing.T, budget int) {
-	t.Helper()
-	orig := FuzzyMaxCandidates
-	FuzzyMaxCandidates = budget
-	t.Cleanup(func() { FuzzyMaxCandidates = orig })
+// setIndexBudget changes a built Finder's per-search posting budget. The
+// budget lives on the immutable n-gram index, so swapping it takes the write
+// lock that serializes against searches.
+func setIndexBudget(f *Finder, budget int) {
+	f.mutex.Lock()
+	f.ngrams.budget = budget
+	f.mutex.Unlock()
 }
 
 // budgetTestCorpus returns a corpus large enough that its posting walks span
@@ -50,9 +49,9 @@ func budgetTestCorpus() []string {
 // immediately and returns no matches — deterministically, without error or
 // panic. An empty query (no grams) still returns empty without truncating.
 func TestFuzzyBudgetZeroReturnsEmpty(t *testing.T) {
-	withFuzzyMaxCandidates(t, 0)
 	index, err := buildNGramIndex(ngramCorpus())
 	require.NoError(t, err)
+	index.budget = 0
 
 	got, truncated := index.search("Paris", 1)
 	assert.Empty(t, got, "budget 0 must surface no candidates")
@@ -74,7 +73,7 @@ func TestFuzzyBudgetTinyIsDeterministicAndSound(t *testing.T) {
 
 	queries := []string{"Paris", "Pars", "Londin", "Saint", "BudgCity00042", "sa01", "zzz"}
 	for _, budget := range []int{1, 2, 7, 50, 500} {
-		withFuzzyMaxCandidates(t, budget)
+		index.budget = budget
 		for _, q := range queries {
 			first, firstTrunc := index.search(q, 2)
 			second, secondTrunc := index.search(q, 2)
@@ -89,14 +88,14 @@ func TestFuzzyBudgetTinyIsDeterministicAndSound(t *testing.T) {
 
 	// Subset property against the unlimited walk, over a query sweep that
 	// includes guaranteed trips (tiny budgets) and non-trips.
-	withFuzzyMaxCandidates(t, -1)
+	index.budget = -1
 	full := make(map[string][]string, len(queries))
 	for _, q := range queries {
 		matches, _ := index.search(q, 2)
 		full[q] = matches
 	}
 	for _, budget := range []int{1, 7, 50} {
-		withFuzzyMaxCandidates(t, budget)
+		index.budget = budget
 		for _, q := range queries {
 			partial, _ := index.search(q, 2)
 			fullSet := make(map[string]struct{}, len(full[q]))
@@ -114,11 +113,11 @@ func TestFuzzyBudgetTinyIsDeterministicAndSound(t *testing.T) {
 // far above small-scale walks: neither the corpus queries nor the package
 // counter move.
 func TestFuzzyBudgetDefaultNeverTripsAtSmallScale(t *testing.T) {
-	require.Positive(t, FuzzyMaxCandidates, "default budget must be a positive cap")
+	require.Positive(t, DefaultFuzzyMaxCandidates, "default budget must be a positive cap")
 	index, err := buildNGramIndex(budgetTestCorpus())
 	require.NoError(t, err)
 
-	before := FuzzyBudgetTrips()
+	before := index.stats.trips.Load()
 	for _, q := range []string{"Paris", "Londinium", "BudgCity01234", "sa199", "zzz"} {
 		for _, d := range []int{1, 2} {
 			got, truncated := index.search(q, d)
@@ -128,12 +127,12 @@ func TestFuzzyBudgetDefaultNeverTripsAtSmallScale(t *testing.T) {
 			}
 		}
 	}
-	assert.Equal(t, before, FuzzyBudgetTrips(), "no default-budget search at this scale may count a trip")
+	assert.Equal(t, before, index.stats.trips.Load(), "no default-budget search at this scale may count a trip")
 }
 
 // TestFuzzyBudgetTripCounterAndOneTimeLog pins the observability contract:
-// every truncated search increments FuzzyBudgetTrips exactly once, and the
-// summary log fires exactly once for the first trip ever — never per query.
+// every truncated search increments the Finder's trip counter exactly once, and
+// the summary log fires exactly once for the first trip — never per query.
 func TestFuzzyBudgetTripCounterAndOneTimeLog(t *testing.T) {
 	index, err := buildNGramIndex(budgetTestCorpus())
 	require.NoError(t, err)
@@ -143,18 +142,14 @@ func TestFuzzyBudgetTripCounterAndOneTimeLog(t *testing.T) {
 	log.SetOutput(&logBuf)
 	t.Cleanup(func() { log.SetOutput(oldLog) })
 
-	// The one-time log guard is process-global; earlier tests may have
-	// already spent it. Re-arm it so this test owns the first trip.
-	fuzzyBudgetLogged.Store(false)
-
-	withFuzzyMaxCandidates(t, 5)
-	before := FuzzyBudgetTrips()
+	index.budget = 5
+	before := index.stats.trips.Load()
 	const trips = 10
 	for i := 0; i < trips; i++ {
 		_, truncated := index.search(fmt.Sprintf("BudgCity%05d", i), 2)
 		require.Truef(t, truncated, "trip %d must truncate", i)
 	}
-	assert.Equal(t, before+trips, FuzzyBudgetTrips(), "one counter increment per truncated search")
+	assert.Equal(t, before+trips, index.stats.trips.Load(), "one counter increment per truncated search")
 
 	// The very first trip logged once; later trips stay silent.
 	if n := strings.Count(logBuf.String(), "candidate budget"); n != 1 {
@@ -162,10 +157,10 @@ func TestFuzzyBudgetTripCounterAndOneTimeLog(t *testing.T) {
 	}
 
 	// Untruncated searches do not count or log.
-	withFuzzyMaxCandidates(t, -1)
-	after := FuzzyBudgetTrips()
+	index.budget = -1
+	after := index.stats.trips.Load()
 	index.search("BudgCity00001", 2)
-	assert.Equal(t, after, FuzzyBudgetTrips())
+	assert.Equal(t, after, index.stats.trips.Load())
 	assert.Equal(t, 1, strings.Count(logBuf.String(), "candidate budget"))
 }
 
@@ -186,7 +181,7 @@ func TestFuzzyBudgetExcludesTruncatedFromCache(t *testing.T) {
 	baseCache := len(finder.fuzzyCache)
 	finder.cacheMutex.RUnlock()
 
-	withFuzzyMaxCandidates(t, 0)
+	setIndexBudget(finder, 0)
 
 	// The truncated d1 search returns partial (here: empty) candidates.
 	got := finder.getCachedFuzzySearch("Pars", 1)
@@ -197,7 +192,7 @@ func TestFuzzyBudgetExcludesTruncatedFromCache(t *testing.T) {
 	assert.Equal(t, baseCache, cacheSize, "a truncated result must never enter the fuzzy cache")
 
 	// Restore the full budget: the same query completes and caches.
-	withFuzzyMaxCandidates(t, -1)
+	setIndexBudget(finder, -1)
 	got = finder.getCachedFuzzySearch("Pars", 1)
 	if assert.NotEmpty(t, got) {
 		assert.Contains(t, got, "Paris")
@@ -208,7 +203,7 @@ func TestFuzzyBudgetExcludesTruncatedFromCache(t *testing.T) {
 	assert.True(t, cached, "the complete result must be cached")
 
 	// Budget back to zero: the cached complete entry is still served.
-	withFuzzyMaxCandidates(t, 0)
+	setIndexBudget(finder, 0)
 	got = finder.getCachedFuzzySearch("Pars", 1)
 	if assert.NotEmpty(t, got, "cache reads must ignore the budget") {
 		assert.Contains(t, got, "Paris")
@@ -232,7 +227,7 @@ func TestFuzzyBudgetOverflowStillScannedWhenTruncated(t *testing.T) {
 	baseCache := len(finder.fuzzyCache)
 	finder.cacheMutex.RUnlock()
 
-	withFuzzyMaxCandidates(t, 0)
+	setIndexBudget(finder, 0)
 	got := finder.getCachedFuzzySearch("Berlin2", 0)
 	assert.Contains(t, got, "Berlin2", "the overflow scan must run in full under a zero budget")
 
@@ -253,8 +248,8 @@ func TestFuzzyBudgetConcurrentSearches(t *testing.T) {
 	index, err := buildNGramIndex(budgetTestCorpus())
 	require.NoError(t, err)
 
-	withFuzzyMaxCandidates(t, 3)
-	before := FuzzyBudgetTrips()
+	index.budget = 3
+	before := index.stats.trips.Load()
 
 	const workers = 8
 	var wg sync.WaitGroup
@@ -282,5 +277,22 @@ func TestFuzzyBudgetConcurrentSearches(t *testing.T) {
 	// Every trip counted locally must be reflected globally; untruncated
 	// searches may also have tripped if their walks exceeded the budget, so
 	// the global counter only has a lower bound.
-	assert.GreaterOrEqual(t, FuzzyBudgetTrips()-before, uint64(trips.Load()))
+	assert.GreaterOrEqual(t, index.stats.trips.Load()-before, uint64(trips.Load()))
+}
+
+// TestFuzzyBudgetTripsArePerFinder pins counter ownership: a truncated search
+// on one Finder moves only that Finder's FuzzyBudgetTrips.
+func TestFuzzyBudgetTripsArePerFinder(t *testing.T) {
+	tripped := BuildIndex(fuzzyFixtureCities())
+	quiet := BuildIndex(fuzzyFixtureCities())
+	for _, f := range []*Finder{tripped, quiet} {
+		f.WarmFuzzy()
+		waitFuzzyBuilt(t, f)
+	}
+	setIndexBudget(tripped, 0)
+
+	require.Nil(t, tripped.getCachedFuzzySearch("Pars", 1))
+	assert.EqualValues(t, 1, tripped.FuzzyBudgetTrips())
+	assert.Equal(t, []string{"Paris"}, quiet.getCachedFuzzySearch("Pars", 1))
+	assert.EqualValues(t, 0, quiet.FuzzyBudgetTrips())
 }

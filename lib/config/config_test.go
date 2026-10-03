@@ -130,10 +130,10 @@ func TestLoadConfigRelativePathResolvedAgainstCWD(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to open config file")
 }
 
-// TestLoadConfigEnvVarHonored covers the CONFIG_FILE fallback: with an empty
-// configPath, LoadConfig reads the env var and resolves it under the same
-// rules. (The CONFIG_PATH env var is resolved by the binaries — directly or
-// via LoadFromEnv — which feed it into LoadConfig as configPath.)
+// TestLoadConfigEnvVarHonored covers the deprecated CONFIG_FILE fallback:
+// with an empty configPath, LoadConfig reads the env var and resolves it
+// under the same rules. (CONFIG_PATH is resolved by LoadRuntime or
+// LoadFromEnv, which feed it into LoadConfig as configPath.)
 func TestLoadConfigEnvVarHonored(t *testing.T) {
 	dir := t.TempDir()
 	path := writeConfig(t, dir, "config.json", validConfigJSON)
@@ -231,7 +231,7 @@ func TestLoadConfigRepoRootLayoutPreserved(t *testing.T) {
 }
 
 // TestIndexFilePaths pins the index path resolution shared by index producers
-// (cmd/build-index) and consumers (lib/initializer's indexFilePaths): each
+// (cmd/build-index) and consumers (lib/initializer): each
 // index file key joined with DatasetsFolder, using the folder value the
 // Config carries verbatim. LoadConfig always absolutizes a relative
 // datasets_folder against the config file's directory, so configs that
@@ -409,7 +409,7 @@ func TestLoadConfigIncludeFeatureClasses(t *testing.T) {
 
 // TestLoadFromEnvHonorsConfigPath pins the binary config resolution: with
 // CONFIG_PATH set, LoadFromEnv loads exactly that file — the same resolution
-// cmd/server/main.go performs inline.
+// LoadRuntime performs for cmd/server.
 func TestLoadFromEnvHonorsConfigPath(t *testing.T) {
 	dir := t.TempDir()
 	path := writeConfig(t, dir, "custom.json", validConfigJSON)

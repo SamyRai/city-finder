@@ -1,7 +1,6 @@
 package dataLoader
 
 import (
-	"bufio"
 	"fmt"
 	"log"
 	"os"
@@ -26,22 +25,18 @@ func LoadAdmin1Names(filepath string) (map[string]string, error) {
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-
 	names := make(map[string]string, 8192) // ~4K distinct admin1 pairs worldwide, with headroom
-	skipped := 0
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			continue
+	var skipped skipReport
+	err = forEachLine(file, &skipped, func(n int, raw []byte) bool {
+		if len(raw) == 0 {
+			return true
 		}
+		line := string(raw)
 		// Fields: code, name, name-ascii, geonameId — tab-separated.
 		tab := strings.IndexByte(line, '\t')
 		if tab <= 0 {
-			skipped++
-			continue
+			skipped.add(reasonMalformedLine, n)
+			return true
 		}
 		key := line[:tab]
 		rest := line[tab+1:]
@@ -50,17 +45,16 @@ func LoadAdmin1Names(filepath string) (map[string]string, error) {
 			name = rest[:end]
 		}
 		if key == "" || name == "" {
-			skipped++
-			continue
+			skipped.add(reasonMalformedLine, n)
+			return true
 		}
 		names[key] = name
-	}
-	if err := scanner.Err(); err != nil {
+		return true
+	})
+	if err != nil {
 		return nil, fmt.Errorf("failed to scan file: %v, %v", filepath, err)
 	}
-	if skipped > 0 {
-		log.Printf("Skipped %d malformed admin1-names lines in %s", skipped, filepath)
-	}
+	skipped.log("admin1-names", filepath)
 	log.Printf("Loaded %d admin1 names from %s\n", len(names), filepath)
 	return names, nil
 }

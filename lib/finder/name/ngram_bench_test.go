@@ -15,7 +15,7 @@ func benchFuzzyFinder(b *testing.B, count int) *Finder {
 	finder := NewNameFinder()
 	for i := 0; i < count; i++ {
 		name := fmt.Sprintf("BenchCity%06d", i)
-		finder.addNameToIndexDirect("BC", name, &city.City{Name: name, Country: "BC"})
+		finder.AddCity(city.SpatialCity{City: city.City{Name: name, Country: "BC"}})
 	}
 	return finder
 }

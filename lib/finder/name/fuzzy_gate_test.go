@@ -2,6 +2,7 @@ package name
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SamyRai/cityFinder/internal/testfixture"
 	"github.com/SamyRai/cityFinder/lib/city"
 )
 
@@ -18,39 +20,38 @@ import (
 // names, and this file needs a build that runs long enough (~1s at 200K on
 // Apple silicon) to overlap with concurrent exact lookups.
 func gateCities(count int) []city.SpatialCity {
-	cities := make([]city.SpatialCity, count)
-	for i := range cities {
-		cities[i] = city.SpatialCity{
-			City: city.City{
-				Name:      fmt.Sprintf("GateCity%06d", i),
-				Country:   "GC",
-				Latitude:  1,
-				Longitude: 1,
-			},
-		}
-	}
-	return cities
+	return testfixture.Cities(count, testfixture.Spec{
+		Name:    testfixture.Format("GateCity%06d"),
+		Country: testfixture.Const("GC"),
+		Lat:     testfixture.Const(1.0),
+		Lon:     testfixture.Const(1.0),
+	})
 }
 
 // waitFuzzyBuilt drives the lazy fuzzy state machine to fuzzyBuilt. The
 // build runs in a background goroutine, so any test that needs the built
 // index after triggering it (directly or via a lookup) waits here. The
 // ensureFuzzyBuilt nudge matters: a build discarded because AddCity raced
-// its snapshot resets to fuzzyNotBuilt and only a fresh call restarts it.
+// its snapshot settles at fuzzyNotBuilt and only a fresh call restarts it.
 // Must run on the test/benchmark goroutine (it calls tb.Fatal).
 func waitFuzzyBuilt(tb testing.TB, nf *Finder) {
 	tb.Helper()
-	deadline := time.Now().Add(60 * time.Second)
-	for nf.fuzzyState.Load() != fuzzyBuilt {
-		switch nf.fuzzyState.Load() {
-		case fuzzyDisabled:
-			tb.Fatal("fuzzy index reached fuzzyDisabled (FuzzyMaxNames gate or build failure); wanted fuzzyBuilt")
-		}
-		if time.Now().After(deadline) {
-			tb.Fatal("fuzzy index did not reach fuzzyBuilt within 60s")
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	for {
+		if err := ctx.Err(); err != nil {
+			tb.Fatalf("fuzzy index did not build within 60s (state %d): %v", nf.fuzzyState.Load(), err)
 		}
 		nf.ensureFuzzyBuilt()
-		time.Sleep(2 * time.Millisecond)
+		if err := nf.WaitFuzzy(ctx); err != nil {
+			tb.Fatalf("fuzzy index did not settle within 60s: %v", err)
+		}
+		switch nf.fuzzyState.Load() {
+		case fuzzyBuilt:
+			return
+		case fuzzyDisabled:
+			tb.Fatal("fuzzy index reached fuzzyDisabled (Options.FuzzyMaxNames gate or build failure); wanted fuzzyBuilt")
+		}
 	}
 }
 
@@ -132,22 +133,19 @@ func TestCityByNameBuildDoesNotBlockExactLookups(t *testing.T) {
 	}
 }
 
-// TestFuzzyDisabledOverThreshold covers the FuzzyMaxNames gate: an index over
+// TestFuzzyDisabledOverThreshold covers the Options.FuzzyMaxNames gate: an index over
 // the threshold must never build the n-gram structure, must log the disable
 // exactly once, must serve typo lookups as fast nils, must keep exact lookups
 // working, and must leave the fuzzy cache empty (no pollution from
 // not-ready results).
 func TestFuzzyDisabledOverThreshold(t *testing.T) {
-	orig := FuzzyMaxNames
-	FuzzyMaxNames = 4 // fuzzyFixtureCities has 5 (country,name) keys
-	t.Cleanup(func() { FuzzyMaxNames = orig })
-
 	var logBuf bytes.Buffer
 	oldLog := log.Writer()
 	log.SetOutput(&logBuf)
 	t.Cleanup(func() { log.SetOutput(oldLog) })
 
-	finder := BuildIndex(fuzzyFixtureCities())
+	// fuzzyFixtureCities has 5 (country,name) keys.
+	finder := BuildIndex(fuzzyFixtureCities(), Options{FuzzyMaxNames: 4, FuzzyMaxCandidates: DefaultFuzzyMaxCandidates})
 
 	start := time.Now()
 	if got := finder.CityByName("Pars", "FR"); got != nil {
@@ -166,6 +164,7 @@ func TestFuzzyDisabledOverThreshold(t *testing.T) {
 		t.Fatalf("second typo lookup over the threshold must return nil, got %q", got.Name)
 	}
 
+	waitFuzzySettled(t, finder) // the gate runs in the build goroutine
 	finder.mutex.RLock()
 	ngrams := finder.ngrams
 	finder.mutex.RUnlock()
@@ -367,27 +366,33 @@ func containsName(names []string, s string) bool {
 }
 
 // TestWarmFuzzyIdempotentNonBlocking pins the WarmFuzzy contract: the call
-// arranges the background build and returns immediately (well under the
-// build's wall time), further calls are no-ops that leave the built state
-// intact, and on an empty index it settles back to fuzzyNotBuilt (nothing to
-// build; later AddCity growth can still trigger a fresh build).
+// arranges the background build and returns without waiting on the index
+// lock (checked deterministically by holding the write lock, not by timing),
+// further calls are no-ops that leave the built state intact, and on an empty
+// index it settles back to fuzzyNotBuilt (nothing to build; later AddCity
+// growth can still trigger a fresh build).
 func TestWarmFuzzyIdempotentNonBlocking(t *testing.T) {
-	finder := BuildIndex(gateCities(50_000)) // build measurably outlasts the call
+	finder := BuildIndex(gateCities(50_000))
 
-	start := time.Now()
-	finder.WarmFuzzy()
-	callElapsed := time.Since(start)
-	if st := finder.fuzzyState.Load(); st != fuzzyBuilding && st != fuzzyBuilt {
-		t.Fatalf("after WarmFuzzy the state must be fuzzyBuilding (or already fuzzyBuilt), got %d", st)
+	finder.mutex.Lock()
+	returned := make(chan struct{})
+	go func() {
+		finder.WarmFuzzy()
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		finder.mutex.Unlock()
+		t.Fatal("WarmFuzzy blocked while the index write lock was held")
 	}
+	if st := finder.fuzzyState.Load(); st != fuzzyBuilding {
+		finder.mutex.Unlock()
+		t.Fatalf("after WarmFuzzy the state must be fuzzyBuilding, got %d", st)
+	}
+	finder.mutex.Unlock()
 
 	waitFuzzyBuilt(t, finder)
-	buildElapsed := time.Since(start)
-	if callElapsed >= buildElapsed/2 {
-		t.Fatalf("WarmFuzzy blocked on the build: call took %v vs build wall time %v (must be well under half)",
-			callElapsed, buildElapsed)
-	}
-	t.Logf("WarmFuzzy call: %v; background build wall time: %v", callElapsed, buildElapsed)
 
 	// Idempotent: calls from the built state are no-ops.
 	for i := 0; i < 3; i++ {

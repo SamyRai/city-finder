@@ -48,7 +48,7 @@ func buildAdminFixtureFinder(t *testing.T, names map[string]string) *S2Finder {
 	t.Helper()
 	f, err := BuildIndex(adminFixtureCities)
 	require.NoError(t, err)
-	f.Admin1Names = names
+	f.AttachAdmin1Names(names)
 	return f
 }
 
@@ -131,6 +131,26 @@ func TestNearestPlaceWithAdmin_CodesOnlyMode(t *testing.T) {
 	assert.Equal(t, AdminAttribution{Admin1Code: "06", Admin2Code: "075"}, attr)
 }
 
+// TestAttachAdmin1Names: the one way names reach a finder. Attaching enables
+// display names, attaching nil returns to codes-only mode.
+func TestAttachAdmin1Names(t *testing.T) {
+	f := buildAdminFixtureFinder(t, nil)
+	_, _, attr, err := f.NearestPlaceWithAdmin(37.78, -122.42, RankDistance)
+	require.NoError(t, err)
+	assert.Empty(t, attr.Admin1Name)
+
+	f.AttachAdmin1Names(adminFixtureNames)
+	_, _, attr, err = f.NearestPlaceWithAdmin(37.78, -122.42, RankDistance)
+	require.NoError(t, err)
+	assert.Equal(t, "California", attr.Admin1Name)
+
+	f.AttachAdmin1Names(nil)
+	_, _, attr, err = f.NearestPlaceWithAdmin(37.78, -122.42, RankDistance)
+	require.NoError(t, err)
+	assert.Empty(t, attr.Admin1Name)
+	assert.Equal(t, "06", attr.Admin1Code, "codes survive codes-only mode")
+}
+
 // TestNearestPlaceWithAdmin_BoundaryFollowsNearestCity documents the
 // attribution contract: a point in far eastern California that is closer to
 // Reno attributes to Nevada (US.32). The nearest city's admin wins, not the
@@ -187,7 +207,7 @@ func TestSerializeDeserialize_AdminRoundTrip(t *testing.T) {
 	// Attaching names after the load restores name serving (the initializer
 	// does exactly this on every boot, warm or cold) — the loop below then
 	// expects identical attribution end to end.
-	loaded.Admin1Names = adminFixtureNames
+	loaded.AttachAdmin1Names(adminFixtureNames)
 
 	for _, q := range [][2]float64{{37.78, -122.42}, {-36.85, 174.76}, {42.507, 1.534}, {42.58, 1.74}, {39.1, -119.9}} {
 		builtCity, _, err := built.NearestPlace(q[0], q[1], RankDistance)

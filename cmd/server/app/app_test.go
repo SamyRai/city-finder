@@ -51,6 +51,19 @@ func TestNewRecoversHandlerPanics(t *testing.T) {
 	assert.Equal(t, 500, resp.StatusCode)
 }
 
+// TestNewMetricsObserveRecoveredPanics pins the chain order the app owns:
+// recover sits inside the metrics middleware, so a recovered panic is counted
+// as the 500 the client received (not lost as an unwound panic).
+func TestNewMetricsObserveRecoveredPanics(t *testing.T) {
+	reg := metrics.NewRegistry()
+	a := New(&finder.Finder{}, reg, log.New(io.Discard, "", 0))
+	a.Get("/panic", func(c *fiber.Ctx) error { panic("boom") })
+	resp, err := a.Test(httptest.NewRequest("GET", "/panic", nil))
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	assert.Contains(t, reg.Render(), `http_requests_total{path="/panic",status="500"} 1`)
+}
+
 // TestRequestLoggerRecordsErrorAndPanicStatuses pins that the access log
 // carries the status the client received: router 404/405 and recovered
 // panics used to be logged as 200.

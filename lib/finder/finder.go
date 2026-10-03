@@ -1,11 +1,18 @@
 package finder
 
 import (
+	"context"
+	"errors"
+
 	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
 	"github.com/SamyRai/cityFinder/lib/finder/name"
 	"github.com/SamyRai/cityFinder/lib/finder/postalCode"
 )
+
+// ErrNoCoordinateIndex is returned by FindNearestCity on a Finder that has no
+// coordinate index.
+var ErrNoCoordinateIndex = errors.New("finder has no coordinate index")
 
 // Finder struct embeds all individual finders
 type Finder struct {
@@ -14,13 +21,21 @@ type Finder struct {
 	PostalCodeFinder *postalCode.Finder
 }
 
-// FindCityByPostalCode wraps the PostalCodeFinder method
+// FindCityByPostalCode wraps the PostalCodeFinder method. A finder without a
+// postal code index returns nil.
 func (f *Finder) FindCityByPostalCode(postalCode, countryCode string) *city.City {
+	if f.PostalCodeFinder == nil {
+		return nil
+	}
 	return f.PostalCodeFinder.CityByPostalCode(postalCode, countryCode)
 }
 
-// FindCityByName wraps the NameFinder method
+// FindCityByName wraps the NameFinder method. A finder without a name index
+// returns nil.
 func (f *Finder) FindCityByName(name, countryCode string) *city.City {
+	if f.NameFinder == nil {
+		return nil
+	}
 	return f.NameFinder.CityByName(name, countryCode)
 }
 
@@ -37,6 +52,17 @@ func (f *Finder) WarmFuzzy() {
 	f.NameFinder.WarmFuzzy()
 }
 
+// WaitFuzzy wraps the NameFinder method: it blocks until no fuzzy build is in
+// flight or ctx is done (see name.Finder.WaitFuzzy for the settled states and
+// the error). It starts no build. A finder without a name index returns nil
+// at once.
+func (f *Finder) WaitFuzzy(ctx context.Context) error {
+	if f.NameFinder == nil {
+		return nil
+	}
+	return f.NameFinder.WaitFuzzy(ctx)
+}
+
 // FuzzyBuildState wraps the NameFinder method: it reports the fuzzy index
 // build state (see name.Finder.FuzzyBuildState) — 0 = not built,
 // 1 = building, 2 = built, 3 = disabled. A finder without a name index
@@ -46,6 +72,16 @@ func (f *Finder) FuzzyBuildState() int32 {
 		return 0
 	}
 	return f.NameFinder.FuzzyBuildState()
+}
+
+// FuzzyBudgetTrips wraps the NameFinder method: it reports how many fuzzy
+// searches returned partial results because the candidate budget tripped
+// (see name.Finder.FuzzyBudgetTrips). A finder without a name index reports 0.
+func (f *Finder) FuzzyBudgetTrips() uint64 {
+	if f.NameFinder == nil {
+		return 0
+	}
+	return f.NameFinder.FuzzyBudgetTrips()
 }
 
 // PrefixNames wraps the NameFinder method: it returns up to maxNames indexed
@@ -59,8 +95,12 @@ func (f *Finder) PrefixNames(countryCode, prefix string, maxNames int) []name.Pr
 	return f.NameFinder.PrefixNames(countryCode, prefix, maxNames)
 }
 
-// FindNearestCity wraps the S2Finder method
+// FindNearestCity wraps the S2Finder method. A finder without a coordinate
+// index returns ErrNoCoordinateIndex.
 func (f *Finder) FindNearestCity(lat, lon float64, rank coordinates.Rank) (*city.City, float64, error) {
+	if f.S2Finder == nil {
+		return nil, 0, ErrNoCoordinateIndex
+	}
 	c, dist, err := f.S2Finder.NearestPlace(lat, lon, rank)
 	if err != nil {
 		return nil, 0, err
