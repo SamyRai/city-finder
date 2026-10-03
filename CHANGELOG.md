@@ -17,10 +17,11 @@ and this project adheres to
   `indexfile.DefaultMaxPayloadBytes`, tightenable per read with
   `Reader.LimitPayload`). A file over either limit is reported as a corrupt
   index, so the initializer rebuilds it. No format change; valid files decode
-  as before. Not covered: a tiny file of one-byte records under the default
-  budget still inflates to millions of entries, because legitimate repetitive
-  data compresses just as well; closing that needs each index package to pass
-  a header-derived limit.
+  as before. The S2 and postal headers carry an entry count, and
+  `Reader.BoundByEntries` now rejects a count that is implausible for the file
+  size and caps the payload at what that many entries can hold, so a tiny file
+  of millions of near-empty entries is refused with the default budget in
+  milliseconds. Not covered: the name index, which still relies on the default budget.
 
 ### Fixed
 

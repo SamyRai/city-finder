@@ -62,7 +62,15 @@ measured and rejected: real indexes compress 1.6x (S2), 1.9x (name) and 2.3x
 (postal), but 200k legitimate cities with identical name and coordinates
 reach 3900x (postal codes 100x, name 11x), the same range as a bomb of
 one-byte entries, so any ratio that stops the bomb would also force a
-rebuild loop for repetitive data. Going over the budget or the window is
+rebuild loop for repetitive data. The S2 and postal indexes close the gap
+differently, because their headers declare an entry count
+(`Reader.BoundByEntries`): the payload budget drops to count times 2 KiB per
+entry plus 1 MiB, and a count that is implausible for the file size is
+rejected before anything inflates (over 1000 entries per file byte for S2,
+over 64 for postal). The densities were measured: identical typical cities
+reach about 100 entries per byte, the degenerate one-letter row at 0/0 about
+500, and a bomb of empty cities 1500 or more; legitimate postal data stays
+near 3 because its codes are unique and sorted. Going over the budget or the window is
 `ErrFormat`, which each package reports as its `ErrCorruptIndex`, so the
 initializer rebuilds the file as for any other corruption.
 

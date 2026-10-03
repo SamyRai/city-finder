@@ -39,6 +39,22 @@ type indexHeader struct {
 	Count   int
 }
 
+// payloadBounds relates the header's entry count to the file, so a bomb is
+// rejected before it inflates (see indexfile.EntryBounds). Measured on the
+// gob encoding:
+//   - bytes per entry: 11-17 B (v4 columns and the legacy v3 map, with short
+//     codes and place names); the bound is 2 KiB, since only the average
+//     over all entries counts.
+//   - entries per file byte: codes are unique and sorted, which caps how
+//     repetitive legitimate data can be. Sequential codes with identical
+//     coordinates and place name, the most compressible case, reach 3 per
+//     byte (v4) and 0.3 (v3). A bomb of empty columns reaches thousands.
+//     The bound of 64 sits above the legitimate case by an order of
+//     magnitude and far below the bomb.
+//
+// payload_bounds_test.go re-measures both.
+var payloadBounds = indexfile.EntryBounds{MaxBytesPerEntry: 2 << 10, MaxEntriesPerFileByte: 64}
+
 // ErrCorruptIndex reports an index file that cannot be trusted: truncated,
 // undecodable, or written by an incompatible format version. Detect it with
 // errors.Is to decide whether a rebuild from source data is possible.
@@ -117,6 +133,10 @@ func DeserializeIndex(filepath string) (*Finder, error) {
 	}
 	if header.Version != indexVersion && header.Version != indexVersionV3 {
 		return nil, corrupt("unsupported version %d (want %d or %d)", header.Version, indexVersion, indexVersionV3)
+	}
+
+	if err := file.BoundByEntries(header.Count, payloadBounds); err != nil {
+		return nil, corrupt("%v", err)
 	}
 
 	var finder *Finder

@@ -58,6 +58,21 @@ type indexHeader struct {
 	Count   int
 }
 
+// payloadBounds relates the header's city count to the file, so a bomb is
+// rejected before it inflates (see indexfile.EntryBounds). Measured on the
+// gob encoding of one city plus its two admin ids:
+//   - bytes per entry: 45 B for a typical row, ~1.1 KB with a 1 KiB name;
+//     the bound is 2 KiB, since only the average over all cities counts.
+//   - entries per file byte: the loader admits only rows with a name, a
+//     country, and coordinates. Identical typical rows reach 104 per byte
+//     at 8M cities; the degenerate minimum row (one-letter name, 0/0
+//     coordinates, no population) reaches 498. A bomb of empty cities
+//     (3 B per entry) reaches 1500+. The bound of 1000 sits twice above the
+//     degenerate legitimate case and below the bomb.
+//
+// payload_bounds_test.go re-measures both.
+var payloadBounds = indexfile.EntryBounds{MaxBytesPerEntry: 2 << 10, MaxEntriesPerFileByte: 1000}
+
 // ErrCorruptIndex reports an index file that cannot be trusted: truncated,
 // undecodable, or written by an incompatible format version. Detect it with
 // errors.Is to decide whether a rebuild from source data is possible.
@@ -113,6 +128,9 @@ func DeserializeIndex(filepath string) (*S2Finder, error) {
 		return nil, corrupt("unsupported version %d (want %d)", header.Version, indexVersion)
 	}
 
+	if err := file.BoundByEntries(header.Count, payloadBounds); err != nil {
+		return nil, corrupt("%v", err)
+	}
 	var payload SerializableS2Finder
 	if err := file.Payload(&payload); err != nil {
 		return nil, corrupt("%v", err)
