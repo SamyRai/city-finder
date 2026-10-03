@@ -19,7 +19,14 @@ import (
 )
 
 func main() {
-	cfg, err := config.LoadFromEnv()
+	// The process environment is read once, here, and validated before the
+	// slow index load: a bad PORT must fail in milliseconds, not after the
+	// full index build.
+	rt, err := config.LoadRuntime()
+	if err != nil {
+		log.Fatalf("Invalid environment: %v", err)
+	}
+	cfg, err := rt.LoadConfig()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
@@ -44,7 +51,7 @@ func main() {
 	// set, and never on the public port. Started after initialization so
 	// profiles cover serving, not index loading.
 	var pprofServer *http.Server
-	if addr := os.Getenv("PPROF_ADDR"); addr != "" {
+	if addr := rt.PprofAddr; addr != "" {
 		pprofServer = diag.NewServer(addr)
 		go func() {
 			if err := pprofServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -52,11 +59,6 @@ func main() {
 			}
 		}()
 		log.Printf("pprof listening on %s (PPROF_ADDR)", addr)
-	}
-
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "3000"
 	}
 
 	// Graceful shutdown: SIGINT/SIGTERM stop the listener and give in-flight
@@ -71,7 +73,7 @@ func main() {
 
 	listenErr := make(chan error, 1)
 	go func() {
-		listenErr <- server.Listen(":" + port)
+		listenErr <- server.Listen(":" + rt.Port)
 	}()
 
 	select {
@@ -80,6 +82,10 @@ func main() {
 			log.Fatalf("Server error: %v", err)
 		}
 	case <-sigCtx.Done():
+		// Restore default signal handling now: a second SIGINT/SIGTERM during
+		// the drain then terminates the process immediately instead of being
+		// swallowed until the shutdown timeout expires.
+		stop()
 		log.Println("shutting down")
 		if pprofServer != nil {
 			_ = pprofServer.Close()

@@ -24,7 +24,7 @@ curl http://localhost:3000/healthz
 
 | Variable | Default in image | Purpose |
 |---|---|---|
-| `PORT` | `3000` | Listen port |
+| `PORT` | `3000` | Listen port (1-65535; an invalid value makes the server exit 1 at startup) |
 | `CONFIG_PATH` | `/etc/cityfinder/config.json` | Shipped config (`deploy/config.json`): the repo config with `datasets_folder` pinned to `/data/datasets`. To override, mount your own file and point `CONFIG_PATH` at it. A relative path resolves against `/app`. |
 
 Other runtime variables (`PPROF_ADDR`, `GOMAXPROCS`, `GOMEMLIMIT`) are in

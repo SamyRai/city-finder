@@ -32,12 +32,19 @@ var adminRouteNames = map[string]string{
 // the initializer would leave it (BuildIndex + names attached).
 func setupTestApp(t *testing.T, names map[string]string) *fiber.App {
 	t.Helper()
+	app, _ := setupTestHandlers(t, names)
+	return app
+}
+
+// setupTestHandlers is setupTestApp plus the handlers, for tests that reach
+// the population gate.
+func setupTestHandlers(t *testing.T, names map[string]string) (*fiber.App, *Handlers) {
+	t.Helper()
 	s2f, err := coordinates.BuildIndex(adminRouteCities)
 	require.NoError(t, err)
 	s2f.Admin1Names = names
 	app := fiber.New()
-	SetupRoutes(app, &finder.Finder{S2Finder: s2f})
-	return app
+	return app, SetupRoutes(app, &finder.Finder{S2Finder: s2f})
 }
 
 // get issues a GET and returns status + body.

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -232,10 +234,10 @@ func TestNearestBatch_UnknownFieldsRejected(t *testing.T) {
 // GET), and the failed request leaks no slot — with the gate drained, the
 // same batch succeeds.
 func TestNearestBatch_PopulationSaturationSheds503(t *testing.T) {
-	app := setupTestApp(t, adminRouteNames)
+	app, h := setupTestHandlers(t, adminRouteNames)
 
-	for i := 0; i < populationGateConcurrency(); i++ {
-		populationGate <- struct{}{}
+	for i := 0; i < cap(h.gate); i++ {
+		h.gate <- struct{}{}
 	}
 	req := httptest.NewRequest("POST", "/nearest/batch", strings.NewReader(
 		`{"points":[{"lat":37.78,"lon":-122.42},{"lat":37.78,"lon":-122.42,"rank":"population"}]}`))
@@ -244,8 +246,8 @@ func TestNearestBatch_PopulationSaturationSheds503(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 503, resp.StatusCode)
 	assert.Equal(t, "1", resp.Header.Get("Retry-After"))
-	for i := 0; i < populationGateConcurrency(); i++ {
-		<-populationGate
+	for i := 0; i < cap(h.gate); i++ {
+		<-h.gate
 	}
 
 	status, _ := post(t, app, "application/json",
@@ -367,14 +369,14 @@ func TestLowerFirstFailureKeepsTheMinimum(t *testing.T) {
 // batch whose FIRST point is population-ranked fails with 503 even though
 // every later distance point is skipped rather than executed.
 func TestNearestBatch_FailureFirstThenManyPoints(t *testing.T) {
-	app := setupTestApp(t, adminRouteNames)
+	app, h := setupTestHandlers(t, adminRouteNames)
 
-	for i := 0; i < populationGateConcurrency(); i++ {
-		populationGate <- struct{}{}
+	for i := 0; i < cap(h.gate); i++ {
+		h.gate <- struct{}{}
 	}
 	defer func() {
-		for i := 0; i < populationGateConcurrency(); i++ {
-			<-populationGate
+		for i := 0; i < cap(h.gate); i++ {
+			<-h.gate
 		}
 	}()
 	var sb strings.Builder
@@ -385,4 +387,87 @@ func TestNearestBatch_FailureFirstThenManyPoints(t *testing.T) {
 	sb.WriteString(`]}`)
 	status, _ := post(t, app, "application/json", sb.String())
 	assert.Equal(t, 503, status)
+}
+
+// TestNearestBatch_WorkerPanicIs500: a panic inside a batch worker goroutine
+// (outside fiber's recover middleware) must become the same 500 GET serves,
+// not kill the process; later points are skipped and the app keeps serving.
+func TestNearestBatch_WorkerPanicIs500(t *testing.T) {
+	var calls atomic.Int64
+	app := batchAppWithExecutor(func(lat, _ float64, _ coordinates.Rank, _ bool) (nearestCityResponse, nearestOutcome) {
+		calls.Add(1)
+		if lat == 1 {
+			panic("poisoned point")
+		}
+		return nearestCityResponse{}, nearestOK
+	})
+
+	status, body := post(t, app, "application/json",
+		`{"points":[{"lat":0,"lon":0},{"lat":1,"lon":0},{"lat":2,"lon":0}]}`)
+	assert.Equal(t, 500, status)
+	assert.Equal(t, "internal server error", body)
+
+	// The process survived: the same app answers the next request.
+	status, _ = post(t, app, "application/json", `{"points":[{"lat":0,"lon":0}]}`)
+	assert.Equal(t, 200, status)
+}
+
+// TestNearestBatch_WorkerPanicReleasesGateSlot: a population point whose
+// lookup panics (nil S2Finder) must give its gate slot back.
+func TestNearestBatch_WorkerPanicReleasesGateSlot(t *testing.T) {
+	app := fiber.New()
+	h := SetupRoutes(app, &finder.Finder{})
+
+	status, body := post(t, app, "application/json",
+		`{"points":[{"lat":1,"lon":1,"rank":"population"},{"lat":1,"lon":1,"rank":"population"}]}`)
+	assert.Equal(t, 500, status)
+	assert.Equal(t, "internal server error", body)
+	assert.Zero(t, len(h.gate), "a panicking point must release its population gate slot")
+}
+
+// TestNearestBatch_WorkerPanicLogsStackOnce: several panicking points in one
+// request produce a single log entry carrying the stack.
+func TestNearestBatch_WorkerPanicLogsStackOnce(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	app := batchAppWithExecutor(func(float64, float64, coordinates.Rank, bool) (nearestCityResponse, nearestOutcome) {
+		panic("boom")
+	})
+	status, _ := post(t, app, "application/json",
+		`{"points":[{"lat":0,"lon":0},{"lat":1,"lon":0},{"lat":2,"lon":0},{"lat":3,"lon":0}]}`)
+	assert.Equal(t, 500, status)
+	assert.Equal(t, 1, strings.Count(buf.String(), "panic in /nearest/batch worker"))
+	assert.Contains(t, buf.String(), "goroutine ")
+}
+
+// batchAppWithExecutor serves POST /nearest/batch over a stub per-point core.
+func batchAppWithExecutor(exec nearestExecutor) *fiber.App {
+	h := New(&finder.Finder{})
+	h.execute = exec
+	app := fiber.New()
+	app.Post("/nearest/batch", h.batch)
+	return app
+}
+
+// TestHandlersDoNotShareAPopulationGate: two apps in one process each own
+// their gate, so saturating one never sheds load on the other.
+func TestHandlersDoNotShareAPopulationGate(t *testing.T) {
+	appA, hA := setupTestHandlers(t, adminRouteNames)
+	appB, _ := setupTestHandlers(t, adminRouteNames)
+	for i := 0; i < cap(hA.gate); i++ {
+		hA.gate <- struct{}{}
+	}
+	status, _ := get(t, appA, "/nearest?lat=37.77&lon=-122.41&rank=population")
+	assert.Equal(t, 503, status, "the saturated app sheds")
+	status, _ = get(t, appB, "/nearest?lat=37.77&lon=-122.41&rank=population")
+	assert.Equal(t, 200, status, "an independent app is unaffected")
+}
+
+// TestGateSizeClamps pins the CPU-derived gate capacity: at least 1, at most 8.
+func TestGateSizeClamps(t *testing.T) {
+	for procs, want := range map[int]int{-1: 1, 0: 1, 1: 1, 3: 3, 8: 8, 9: 8, 64: 8} {
+		assert.Equal(t, want, gateSize(procs), "procs=%d", procs)
+	}
 }

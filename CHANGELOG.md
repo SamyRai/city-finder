@@ -23,6 +23,29 @@ and this project adheres to
 
 ### Fixed
 
+- **Oversized and malformed requests were invisible.** 413 (body over
+  1 MB) and 431 (headers over the read buffer) are produced by the HTTP
+  server before any middleware runs, so `/metrics` and the access log never
+  showed them. They are now counted under the `(rejected)` path label and
+  logged with method and path `-` (the raw request is never echoed).
+
+- **A second SIGTERM/SIGINT during shutdown was ignored.** The signal
+  handler stayed registered after the first signal, so a stalled connection
+  held the process for the full 10 s drain no matter how often it was
+  signalled. Default handling is restored after the first signal: the
+  second one terminates the process immediately.
+
+- **A bad `PORT` failed only after the full index load.** `PORT=abc`,
+  `0` or `99999` exited with status 1 after the 20 s (warm) to multi-minute
+  (cold) boot. It is now validated first (decimal, 1-65535) and the server
+  exits immediately with `invalid PORT ...`.
+
+- **A panic inside a `POST /nearest/batch` worker killed the process.**
+  Batch points run on their own goroutines, outside the recover middleware
+  that protects `GET /nearest`. A panicking point now becomes the same
+  `500 internal server error` GET serves (later points are skipped, the
+  population gate slot is released, and the stack is logged once per
+  request) and the server keeps running.
 - **Loaders accepted impossible coordinates and negative populations.**
   City and postal rows with a NaN/Inf, `|lat| > 90` or `|lon| > 180`
   coordinate, and city rows with a negative population, are now skipped
@@ -168,6 +191,19 @@ and this project adheres to
 
 ### Changed
 
+- **Process environment has one owner.** `PORT`, `PPROF_ADDR` and
+  `CONFIG_PATH` are read once, in `config.LoadRuntime`, and passed down;
+  `cmd/server` no longer reads the environment itself. The previously
+  undocumented `CONFIG_FILE` (a fallback used when `CONFIG_PATH` is empty)
+  is now documented as deprecated and logs a notice when used; it keeps
+  working.
+
+- **Server wiring (internal, no wire change).** The population gate, batch
+  fan-out limit and per-point query core are owned by a `routes.Handlers`
+  value instead of package variables, so two apps in one process no longer
+  share a gate. The app package owns the whole middleware chain (access log,
+  ETag, request metrics, then a single panic-recovery middleware); the
+  metrics middleware moved to `cmd/server/metrics`.
 - **Index footprint.** Measured with `cmd/memreport` on a 4M-city synthetic
   GeoNames dataset (answer transcripts byte-identical for nearest, prefix
   and postal lookups):

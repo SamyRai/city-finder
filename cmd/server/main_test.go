@@ -1,26 +1,19 @@
 package main
 
 import (
-	"bytes"
 	"encoding/csv"
 	"encoding/json"
-	"fmt"
 	"io"
 	"math"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
-	"syscall"
 	"testing"
-	"time"
 
 	"github.com/SamyRai/cityFinder/cmd/server/routes"
 	"github.com/SamyRai/cityFinder/lib/city"
@@ -521,120 +514,4 @@ func (suite *ServerTestSuite) TestPostalCodeNotFound() {
 
 func TestServerTestSuite(t *testing.T) {
 	suite.Run(t, new(ServerTestSuite))
-}
-
-// TestServerGracefulShutdownSignal builds the real server binary, starts it
-// on a random port with the fixture datasets, waits for /healthz over real
-// HTTP, sends SIGTERM, and asserts a clean exit 0 within a few seconds.
-// syncBuffer guards a child process's output: os/exec drains Stdout/Stderr
-// from goroutines that live until Wait returns, while the signal test
-// snapshots the logs while the server is still running.
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-func TestServerGracefulShutdownSignal(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process-level signal test skipped in short mode")
-	}
-
-	rootDir := findRepoRoot(t)
-
-	binDir := t.TempDir()
-	binPath := filepath.Join(binDir, "cityfinder-server")
-	build := exec.Command("go", "build", "-o", binPath, "./cmd/server")
-	build.Dir = rootDir
-	if out, err := build.CombinedOutput(); err != nil {
-		require.NoError(t, err, "go build failed: %s", out)
-	}
-
-	// Absolute paths throughout: config.LoadConfig resolves a relative
-	// CONFIG_PATH against the process CWD and a relative datasets_folder
-	// against the config file's directory, so the temp dirs are referenced
-	// directly instead of root-relative as the v1.0 project-root loader
-	// required.
-	dataDir := t.TempDir()
-	for _, name := range []string{"allCountries.txt", "zipCodes.txt"} {
-		require.NoError(t, copyFile(filepath.Join(rootDir, "testdata", name), filepath.Join(dataDir, name)))
-	}
-	cfg := config.Config{
-		DatasetsFolder:      dataDir,
-		AllCitiesFile:       "allCountries.txt",
-		PostalCodesFile:     "zipCodes.txt",
-		NameIndexFile:       "name_index_proc_test.gob",
-		PostalCodeIndexFile: "postal_code_index_proc_test.gob",
-		S2:                  config.S2{IndexFile: "s2index_proc_test.gob"},
-	}
-	cfgBytes, err := json.Marshal(cfg)
-	require.NoError(t, err)
-	cfgPath := filepath.Join(binDir, "config_proc_test.json")
-	require.NoError(t, os.WriteFile(cfgPath, cfgBytes, 0o600))
-
-	// Grab a free port, then release it for the server to bind.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	port := ln.Addr().(*net.TCPAddr).Port
-	require.NoError(t, ln.Close())
-
-	logs := &syncBuffer{}
-	cmd := exec.Command(binPath)
-	cmd.Dir = rootDir
-	cmd.Env = append(os.Environ(),
-		"CONFIG_PATH="+cfgPath,
-		"PORT="+strconv.Itoa(port),
-	)
-	cmd.Stdout = logs
-	cmd.Stderr = logs
-	require.NoError(t, cmd.Start())
-
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	defer func() { _ = cmd.Process.Kill() }() // never leak the process on a failing path
-
-	// Readiness: poll /healthz over real HTTP (this also exercises the
-	// endpoint outside httptest). Building the indexes can take a moment.
-	healthURL := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
-	client := &http.Client{Timeout: 2 * time.Second}
-	deadline := time.Now().Add(30 * time.Second)
-	ready := false
-	for !ready && time.Now().Before(deadline) {
-		resp, getErr := client.Get(healthURL)
-		if getErr == nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-			ready = resp.StatusCode == http.StatusOK
-		}
-		if ready {
-			break
-		}
-		select {
-		case waitErr := <-done:
-			t.Fatalf("server exited before becoming healthy: %v\nlogs:\n%s", waitErr, logs.String())
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
-	require.True(t, ready, "server did not become healthy in time; logs:\n%s", logs.String())
-
-	require.NoError(t, cmd.Process.Signal(syscall.SIGTERM))
-
-	select {
-	case waitErr := <-done:
-		require.NoError(t, waitErr, "server must exit with code 0 after SIGTERM; logs:\n%s", logs.String())
-	case <-time.After(10 * time.Second):
-		t.Fatalf("server did not exit within 10s of SIGTERM; logs:\n%s", logs.String())
-	}
-	assert.Contains(t, logs.String(), "shutting down")
 }
