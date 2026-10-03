@@ -62,6 +62,9 @@ func parseRates(s string) ([]float64, error) {
 		if err != nil || r <= 0 || math.IsInf(r, 0) || math.IsNaN(r) {
 			return nil, fmt.Errorf("invalid rate %q", f)
 		}
+		if n := len(rates); n > 0 && r <= rates[n-1] {
+			return nil, fmt.Errorf("-rates must be strictly ascending: %v follows %v", r, rates[n-1])
+		}
 		rates = append(rates, r)
 	}
 	return rates, nil

@@ -96,8 +96,10 @@ and this project adheres to
   default GC since Go 1.26).
 - `cmd/loadgen` accepted `-max-inflight <= 0`, `-timeout <= 0`, a
   `-stop-error-rate` outside [0,1], a negative `-warmup`, NaN/Inf rates and
-  a malformed `-url`, and then hung or measured nothing. Each is now
-  rejected up front with an error naming the flag.
+  a malformed `-url`, and then hung or measured nothing; `-rates` could be
+  unordered, which breaks stop-past-the-knee. Each is now
+  rejected up front with an error naming the flag (rates must be strictly
+  ascending).
 - `memreport measure` waited for the fuzzy index forever when the build
   failed (the state resets to "not built"). It now gives up after
   `-fuzzy-timeout` (default 30m) with an error. Usage errors exit 2.

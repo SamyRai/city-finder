@@ -24,6 +24,7 @@ func TestParseFlags_Defaults(t *testing.T) {
 	assert.Equal(t, 4096, o.maxInFlight)
 	assert.Equal(t, 5*time.Second, o.timeout)
 	assert.Equal(t, 0.05, o.stopErrorRate)
+	assert.Equal(t, []float64{250, 500, 1000, 2000}, o.rates)
 }
 
 func TestParseFlags_Accepts(t *testing.T) {
@@ -48,6 +49,9 @@ func TestParseFlags_RejectsNonsense(t *testing.T) {
 		"infinite rate":       {"-rates", "Inf"},
 		"empty rate":          {"-rates", ""},
 		"trailing comma":      {"-rates", "100,"},
+		"descending rates":    {"-rates", "200,100"},
+		"duplicate rates":     {"-rates", "100,100"},
+		"unsorted rates":      {"-rates", "100,300,200"},
 		"zero window":         {"-window", "0s"},
 		"negative window":     {"-window", "-1s"},
 		"negative warmup":     {"-warmup", "-1s"},
