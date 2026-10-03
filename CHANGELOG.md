@@ -20,6 +20,11 @@ and this project adheres to
   parsed the file as quoted CSV, so a place name such as `5" Rd` failed the
   whole load. GeoNames postal files are plain TSV; they are now split on
   tabs and quotes are ordinary characters. Valid files load identically.
+- **Loader input quirks.** A UTF-8 BOM at the start of the postal or admin1
+  file no longer glues itself to the first key (the first postal row was
+  unreachable). A single line over 1 MiB used to abort the whole load; it is
+  now skipped and counted in the per-file summary. CRLF files load like LF
+  ones. All three loaders share one line reader.
 - **A cached fuzzy result hid cities added later.** After `AddCity`, a
   typo whose result was already cached kept returning the old candidates
   for the full one-hour TTL. Cache entries now carry a generation that

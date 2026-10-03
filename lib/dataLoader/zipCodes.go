@@ -1,7 +1,6 @@
 package dataLoader
 
 import (
-	"bufio"
 	"os"
 	"strconv"
 )
@@ -36,28 +35,22 @@ func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, er
 	// startup) — such rows are counted and skipped below. The file is plain
 	// TSV, so lines are split on tabs and quotes mean nothing; encoding/csv's
 	// quote handling aborted the load on a place name like 5" Rd.
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-
 	// Pre-allocate with reasonable capacity based on typical postal code data size
 	postalCodes := make(map[string]map[string]PostalCodeEntry, 200) // ~200 countries
 
 	var skipped skipReport
 
 	var record []string
-	line := 0
-	for scanner.Scan() {
-		line++
-		text := scanner.Text()
-		if text == "" {
-			continue
+	err = forEachLine(file, &skipped, func(line int, raw []byte) bool {
+		if len(raw) == 0 {
+			return true
 		}
-		record = splitTab(text, record)
+		record = splitTab(string(raw), record)
 
 		// Skip malformed records
 		if len(record) < 12 {
 			skipped.add(reasonShortRow, line)
-			continue
+			return true
 		}
 
 		// A row whose latitude or longitude cannot be parsed, or is not a
@@ -69,7 +62,7 @@ func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, er
 		lat, lon, reason := parseCoordinate(record[9], record[10])
 		if reason != "" {
 			skipped.add(reason, line)
-			continue
+			return true
 		}
 		accuracy, _ := strconv.Atoi(record[11])
 
@@ -93,9 +86,9 @@ func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, er
 			postalCodes[countryCode] = make(map[string]PostalCodeEntry, 1000) // Pre-allocate reasonable capacity per country
 		}
 		postalCodes[countryCode][postalCode.PostalCode] = postalCode
-	}
-
-	if err := scanner.Err(); err != nil {
+		return true
+	})
+	if err != nil {
 		return nil, err
 	}
 	skipped.log("postal", filepath)

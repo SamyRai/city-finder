@@ -15,6 +15,8 @@ const (
 	reasonUnparsableCoord = "unparsable coordinates"
 	reasonBadCoordinate   = "non-finite or out-of-range coordinates"
 	reasonNegativePop     = "negative population"
+	reasonLineTooLong     = "line longer than 1 MiB"
+	reasonMalformedLine   = "malformed line"
 )
 
 // maxSampleLines caps how many line numbers a skip summary names per reason.
