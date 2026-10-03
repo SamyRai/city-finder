@@ -23,6 +23,12 @@ and this project adheres to
 
 ### Fixed
 
+- **A second SIGTERM/SIGINT during shutdown was ignored.** The signal
+  handler stayed registered after the first signal, so a stalled connection
+  held the process for the full 10 s drain no matter how often it was
+  signalled. Default handling is restored after the first signal: the
+  second one terminates the process immediately.
+
 - **A bad `PORT` failed only after the full index load.** `PORT=abc`,
   `0` or `99999` exited with status 1 after the 20 s (warm) to multi-minute
   (cold) boot. It is now validated first (decimal, 1-65535) and the server

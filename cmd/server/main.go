@@ -82,6 +82,10 @@ func main() {
 			log.Fatalf("Server error: %v", err)
 		}
 	case <-sigCtx.Done():
+		// Restore default signal handling now: a second SIGINT/SIGTERM during
+		// the drain then terminates the process immediately instead of being
+		// swallowed until the shutdown timeout expires.
+		stop()
 		log.Println("shutting down")
 		if pprofServer != nil {
 			_ = pprofServer.Close()

@@ -91,5 +91,5 @@ full `SW1A 1AA`.
 | ETag | enabled |
 | Panics | recovered per request (500), never fatal |
 | Access log | one line per request: method, path (no query string), status, latency, size — bodies and parameters are never logged |
-| Shutdown | SIGINT/SIGTERM drain in-flight requests for up to 10 s |
+| Shutdown | SIGINT/SIGTERM drain in-flight requests for up to 10 s; a second signal during the drain exits immediately |
 | Profiling | opt-in `PPROF_ADDR` listener, separate from the API port (see [configuration.md](configuration.md)) |
