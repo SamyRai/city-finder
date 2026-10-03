@@ -2,37 +2,34 @@ package initializer
 
 import (
 	"archive/zip"
-	"errors"
+	"context"
 	"fmt"
 	"io"
 	"log"
-	"net"
-	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/SamyRai/cityFinder/lib/config"
 )
 
 // ensureDatasets ensures that the datasets are downloaded and extracted
-func ensureDatasets(cfg *config.Config) error {
+func ensureDatasets(ctx context.Context, dl *downloader, cfg *config.Config) error {
 	log.Printf("Ensuring datasets are downloaded and extracted in %s", cfg.DatasetsFolder)
 
-	if err := downloadAndExtractDataset(cfg.AllCitiesURL, cfg.AllCitiesZip, cfg.AllCitiesFile, cfg); err != nil {
+	if err := downloadAndExtractDataset(ctx, dl, cfg.AllCitiesURL, cfg.AllCitiesZip, cfg.AllCitiesFile, cfg); err != nil {
 		return err
 	}
-	if err := downloadAndExtractDataset(cfg.PostalCodesURL, cfg.PostalCodesZip, cfg.PostalCodesFile, cfg); err != nil {
+	if err := downloadAndExtractDataset(ctx, dl, cfg.PostalCodesURL, cfg.PostalCodesZip, cfg.PostalCodesFile, cfg); err != nil {
 		return err
 	}
 	return nil
 }
 
 // downloadAndExtractDataset downloads and extracts the dataset if not already present
-func downloadAndExtractDataset(url, zipName, fileName string, cfg *config.Config) error {
+func downloadAndExtractDataset(ctx context.Context, dl *downloader, url, zipName, fileName string, cfg *config.Config) error {
 	if zipName == "" {
 		return nil
 	}
@@ -45,7 +42,7 @@ func downloadAndExtractDataset(url, zipName, fileName string, cfg *config.Config
 		// Check if the zip file exists before downloading
 		if _, err := os.Stat(zipPath); os.IsNotExist(err) {
 			log.Printf("Downloading %s...", url)
-			err := downloadFile(zipPath, url)
+			err := dl.download(ctx, zipPath, url)
 			if err != nil {
 				return fmt.Errorf("failed to download %s: %v", url, err)
 			}
@@ -67,7 +64,7 @@ func downloadAndExtractDataset(url, zipName, fileName string, cfg *config.Config
 			if rmErr := os.Remove(zipPath); rmErr != nil {
 				return fmt.Errorf("failed to extract %s; also failed to remove the suspect archive %s: %v", zipName, zipPath, rmErr)
 			}
-			if dlErr := downloadFile(zipPath, url); dlErr != nil {
+			if dlErr := dl.download(ctx, zipPath, url); dlErr != nil {
 				return fmt.Errorf("failed to re-download %s: %v", url, dlErr)
 			}
 			if err := unzipAndRename(zipPath, cfg.DatasetsFolder, fileName); err != nil {
@@ -95,118 +92,6 @@ func removeExtractedArchive(zipPath string) {
 		return
 	}
 	log.Printf("removed archive %s after successful extraction", zipPath)
-}
-
-// downloadTimeout bounds an entire dataset download (headers plus body).
-// The GeoNames allCountries archives are ~400MB, so the timeout must
-// accommodate slow links: 15 minutes still allows ~450KB/s.
-const downloadTimeout = 15 * time.Minute
-
-// httpClient is package-level so tests can inject a client with a short
-// timeout; production code always uses the default timeout above.
-var httpClient = &http.Client{Timeout: downloadTimeout}
-
-// downloadAttempts bounds how often downloadFile tries a transient failure;
-// downloadRetryDelay is the first backoff, doubled per retry (a variable so
-// tests need not sleep).
-const downloadAttempts = 3
-
-var downloadRetryDelay = 2 * time.Second
-
-// httpStatusError is a non-2xx download response.
-type httpStatusError struct {
-	status string
-	code   int
-}
-
-func (e *httpStatusError) Error() string { return "unexpected HTTP status: " + e.status }
-
-// transientError marks a network-side failure of one attempt (the request
-// or the body transfer), as opposed to a local file error.
-type transientError struct{ err error }
-
-func (e transientError) Error() string { return e.err.Error() }
-
-func (e transientError) Unwrap() error { return e.err }
-
-// retryableDownloadError reports whether a failed attempt may succeed when
-// repeated: network-side failures, 5xx and 429. Other 4xx responses are
-// permanent (a wrong URL stays wrong), a client timeout already spent the
-// whole downloadTimeout budget, and local file errors are not the network's,
-// so none of those is retried.
-func retryableDownloadError(err error) bool {
-	var statusErr *httpStatusError
-	if errors.As(err, &statusErr) {
-		return statusErr.code >= 500 || statusErr.code == http.StatusTooManyRequests
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return false
-	}
-	return errors.As(err, new(transientError))
-}
-
-// downloadFile downloads url into dst atomically. The body is streamed into
-// dst+".part" and only renamed to dst after a complete, status-verified
-// transfer, so a failed download (network error, non-2xx status, timeout)
-// never leaves a corrupt file behind that would poison every later startup.
-func downloadFile(dst string, url string) error {
-	partPath := dst + ".part"
-
-	fetch := func() error {
-		resp, err := httpClient.Get(url)
-		if err != nil {
-			return transientError{fmt.Errorf("request failed: %w", err)}
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode < 200 || resp.StatusCode > 299 {
-			return &httpStatusError{status: resp.Status, code: resp.StatusCode}
-		}
-
-		out, err := os.Create(partPath)
-		if err != nil {
-			return fmt.Errorf("failed to create %s: %w", partPath, err)
-		}
-
-		if _, err := io.Copy(out, resp.Body); err != nil {
-			_ = out.Close()
-			// Usually the connection dropped mid-body; a local write error
-			// (disk full) retries harmlessly and fails again.
-			return transientError{fmt.Errorf("failed to write response body: %w", err)}
-		}
-		// Durable before the rename publishes it: after a power loss the
-		// final path must never name a zero-length or partial file.
-		if err := out.Sync(); err != nil {
-			_ = out.Close()
-			return fmt.Errorf("failed to sync %s: %w", partPath, err)
-		}
-
-		if err := out.Close(); err != nil {
-			return fmt.Errorf("failed to finalize %s: %w", partPath, err)
-		}
-		return nil
-	}
-
-	for attempt := 1; ; attempt++ {
-		err := fetch()
-		if err == nil {
-			break
-		}
-		_ = os.Remove(partPath) // never leave a partial download behind
-		if attempt >= downloadAttempts || !retryableDownloadError(err) {
-			return fmt.Errorf("failed to download %s (attempt %d of %d): %w", url, attempt, downloadAttempts, err)
-		}
-		delay := downloadRetryDelay << (attempt - 1)
-		log.Printf("download %s failed (attempt %d of %d): %v; retrying in %s", url, attempt, downloadAttempts, err, delay)
-		time.Sleep(delay)
-	}
-
-	if err := os.Rename(partPath, dst); err != nil {
-		_ = os.Remove(partPath)
-		return fmt.Errorf("failed to move %s to %s: %w", partPath, dst, err)
-	}
-	return nil
 }
 
 // unzipAndRename extracts the single data file from the zip archive at src

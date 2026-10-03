@@ -55,19 +55,38 @@ writer's is 4 MiB, a test reads it back from the frame header), because the
 decoder allocates the declared window up front: a 9-byte frame declaring the
 library default of 512 MB used to cost 512 MB per attempt. The decompressed
 payload is also capped by a byte budget, `indexfile.DefaultMaxPayloadBytes`
-(1 GiB, gob's own per-message ceiling; a 13M-city S2 index is about 0.7 GB),
+(gob's own per-message ceiling: 8 GiB on 64-bit platforms, 1 GiB on 32-bit;
+a 13M-city S2 index is about 0.7 GB),
 which a caller can tighten with `Reader.LimitPayload`. A ratio cap was
 measured and rejected: real indexes compress 1.6x (S2), 1.9x (name) and 2.3x
 (postal), but 200k legitimate cities with identical name and coordinates
 reach 3900x (postal codes 100x, name 11x), the same range as a bomb of
 one-byte entries, so any ratio that stops the bomb would also force a
-rebuild loop for repetitive data. Going over the budget or the window is
+rebuild loop for repetitive data. The S2 and postal indexes close the gap
+differently, because their headers declare an entry count
+(`Reader.BoundByEntries`): the payload budget drops to count times 2 KiB per
+entry plus 1 MiB, and a count that is implausible for the file size is
+rejected before anything inflates (over 1000 entries per file byte for S2,
+over 64 for postal). The densities were measured: identical typical cities
+reach about 100 entries per byte, the degenerate one-letter row at 0/0 about
+500, and a bomb of empty cities 1500 or more; legitimate postal data stays
+near 3 because its codes are unique and sorted. Going over the budget or the window is
 `ErrFormat`, which each package reports as its `ErrCorruptIndex`, so the
 initializer rebuilds the file as for any other corruption.
 
 The previous formats (name v2, postal v3) still load. The initializer
 rewrites them in the current format on the first boot, with no rebuild and
 no dataset download. An index that does not match the S2 index is rebuilt.
+
+Boot guards in the initializer. An exclusive `flock` on
+`<datasets_folder>/.cityfinder-init.lock` serializes boots that share a
+volume. When every index file is present and the folder cannot be written
+(read-only mount, immutable image), the lock is skipped with a log line and
+the boot proceeds from the indexes: nothing is written then, and index files
+are replaced by atomic rename, so there is nothing to race. A boot that has
+to build an index still fails if the lock cannot be taken. A city load that
+yields zero rows aborts the boot before any index is built or written, so an
+empty or filtered-out dataset can never become a persistent empty index.
 
 ## Why S2
 

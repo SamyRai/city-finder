@@ -35,7 +35,6 @@ func TestDeserializeRejectsBombCheaply(t *testing.T) {
 	if fi, err := os.Stat(path); err != nil || fi.Size() > 10<<10 {
 		t.Fatalf("bomb should be tiny, stat = %v, err = %v", fi, err)
 	}
-	indexfiletest.TightenBudget(t, 1<<20)
 	indexfiletest.Bounded(t, time.Second, 256<<20, func() {
 		if _, err := DeserializeIndex(path); !errors.Is(err, ErrCorruptIndex) {
 			t.Errorf("err = %v, want ErrCorruptIndex", err)

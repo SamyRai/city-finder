@@ -12,14 +12,16 @@ and this project adheres to
 
 - **A corrupt or hostile index file could cost 512 MB per load attempt.**
   The zstd window a file declares is now capped at 64 MiB (the writer uses
-  4 MiB), and the decompressed payload has a byte budget (1 GiB by default,
+  4 MiB), and the decompressed payload has a byte budget (gob's own
+  per-message ceiling by default, 8 GiB on 64-bit platforms,
   `indexfile.DefaultMaxPayloadBytes`, tightenable per read with
   `Reader.LimitPayload`). A file over either limit is reported as a corrupt
   index, so the initializer rebuilds it. No format change; valid files decode
-  as before. Not covered: a tiny file of one-byte records under the 1 GiB
-  budget still inflates to millions of entries, because legitimate repetitive
-  data compresses just as well; closing that needs each index package to pass
-  a header-derived limit.
+  as before. The S2 and postal headers carry an entry count, and
+  `Reader.BoundByEntries` now rejects a count that is implausible for the file
+  size and caps the payload at what that many entries can hold, so a tiny file
+  of millions of near-empty entries is refused with the default budget in
+  milliseconds. Not covered: the name index, which still relies on the default budget.
 
 ### Fixed
 
@@ -46,6 +48,17 @@ and this project adheres to
   `500 internal server error` GET serves (later points are skipped, the
   population gate slot is released, and the stack is logged once per
   request) and the server keeps running.
+
+- **An empty city dataset was accepted, serialized and then served
+  forever.** A truncated or wrong dump, or an `include_feature_classes`
+  that matched nothing, produced empty index files; every later boot was a
+  warm start over them and every nearest query returned 500. The boot now
+  fails with an error naming the file and the filters, and writes nothing.
+  An empty postal file is still allowed.
+- **A read-only datasets volume with complete indexes could not boot.** The
+  init lock needed to create a file in the folder. When all indexes are
+  present and the folder is unwritable, the lock is skipped with a log line
+  (a warm boot writes nothing); a boot that must build still fails.
 - **Loaders accepted impossible coordinates and negative populations.**
   City and postal rows with a NaN/Inf, `|lat| > 90` or `|lon| > 180`
   coordinate, and city rows with a negative population, are now skipped
@@ -204,6 +217,23 @@ and this project adheres to
   share a gate. The app package owns the whole middleware chain (access log,
   ETag, request metrics, then a single panic-recovery middleware); the
   metrics middleware moved to `cmd/server/metrics`.
+
+- **Cold start overlaps independent work.** The city and postal files are
+  parsed concurrently, and once the S2, name and postal indexes are built
+  the three index files are written concurrently. The builds stay
+  sequential, because running them together raised peak memory by about half
+  in measurement. Index files are now written only after all three indexes
+  exist, so a failing build no longer leaves a partly updated set. On a
+  200k-city synthetic dataset on a shared 4-core host the gain was within
+  noise (1.34 s against 1.40 s mean of 8 interleaved runs, peak RSS
+  +3%); the overlap scales with file sizes, so production gains more. Answer
+  transcripts are byte-identical.
+- **Dataset downloads are owned by one `downloader`.** The HTTP client, the
+  attempt count and the retry delay are fields of a struct instead of
+  package variables that tests patched, and the pause between attempts now
+  ends when the context is cancelled (`initializer.InitializeContext`;
+  `Initialize` keeps its signature). Admin1 names reach the S2 finder
+  through one method, `AttachAdmin1Names`, called once per boot.
 - **Index footprint.** Measured with `cmd/memreport` on a 4M-city synthetic
   GeoNames dataset (answer transcripts byte-identical for nearest, prefix
   and postal lookups):

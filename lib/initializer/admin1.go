@@ -1,6 +1,7 @@
 package initializer
 
 import (
+	"context"
 	"log"
 	"os"
 	"path/filepath"
@@ -16,7 +17,7 @@ import (
 // configured = disabled. Every failure degrades to codes-only mode inside
 // ensureAdmin1Names — the dataset is enhancement data, never a startup
 // requirement.
-func ensureAdmin1NamesPath(cfg *config.Config) string {
+func ensureAdmin1NamesPath(ctx context.Context, dl *downloader, cfg *config.Config) string {
 	if cfg.Admin1CodesFile == "" {
 		return ""
 	}
@@ -26,7 +27,7 @@ func ensureAdmin1NamesPath(cfg *config.Config) string {
 	}
 	if _, err := os.Stat(path); os.IsNotExist(err) && cfg.Admin1CodesURL != "" {
 		log.Printf("Downloading %s...", cfg.Admin1CodesURL)
-		if err := downloadFile(path, cfg.Admin1CodesURL); err != nil {
+		if err := dl.download(ctx, path, cfg.Admin1CodesURL); err != nil {
 			// Logged and degradated, not fatal: ensureAdmin1Names sees the
 			// missing file and serves codes-only.
 			log.Printf("admin1 names download failed: %v", err)

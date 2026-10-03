@@ -108,7 +108,7 @@ func BenchmarkNearestWithAdmin(b *testing.B) {
 		names[fmt.Sprintf("TC.%02d", i%100)] = fmt.Sprintf("Region %d", i%100)
 	}
 	finder := buildBenchIndex(b, cities)
-	finder.Admin1Names = names
+	finder.AttachAdmin1Names(names)
 	queries := uniformSphereQueries(benchQueryCount, 42)
 
 	for _, mode := range []struct {

@@ -1,6 +1,7 @@
 package initializer
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,8 +14,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Retries in this package's tests back off by milliseconds, not seconds.
-func init() { downloadRetryDelay = time.Millisecond }
+// fastDownloader is the production downloader with retries that back off by
+// milliseconds, not seconds.
+func fastDownloader() *downloader {
+	d := newDownloader()
+	d.retryDelay = time.Millisecond
+	return d
+}
 
 // flakyServer fails the first `failures` requests with `status`, then serves
 // payload; it counts every request.
@@ -34,23 +40,23 @@ func flakyServer(t *testing.T, failures int64, status int, payload string) (*htt
 
 func TestDownloadFile_RetriesTransientStatus(t *testing.T) {
 	for _, status := range []int{http.StatusServiceUnavailable, http.StatusBadGateway, http.StatusTooManyRequests} {
-		srv, requests := flakyServer(t, downloadAttempts-1, status, "payload")
+		srv, requests := flakyServer(t, defaultDownloadAttempts-1, status, "payload")
 		dst := filepath.Join(t.TempDir(), "data.zip")
-		require.NoError(t, downloadFile(dst, srv.URL), "status %d", status)
+		require.NoError(t, fastDownloader().download(context.Background(), dst, srv.URL), "status %d", status)
 		got, err := os.ReadFile(dst)
 		require.NoError(t, err)
 		assert.Equal(t, "payload", string(got))
-		assert.EqualValues(t, downloadAttempts, requests.Load(), "status %d", status)
+		assert.EqualValues(t, defaultDownloadAttempts, requests.Load(), "status %d", status)
 	}
 }
 
 func TestDownloadFile_GivesUpAfterLastAttempt(t *testing.T) {
 	srv, requests := flakyServer(t, 100, http.StatusServiceUnavailable, "")
 	dst := filepath.Join(t.TempDir(), "data.zip")
-	err := downloadFile(dst, srv.URL)
+	err := fastDownloader().download(context.Background(), dst, srv.URL)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "attempt 3 of 3")
-	assert.EqualValues(t, downloadAttempts, requests.Load())
+	assert.EqualValues(t, defaultDownloadAttempts, requests.Load())
 	_, statErr := os.Stat(dst + ".part")
 	assert.True(t, os.IsNotExist(statErr), "no .part file may be left behind")
 }
@@ -58,7 +64,7 @@ func TestDownloadFile_GivesUpAfterLastAttempt(t *testing.T) {
 func TestDownloadFile_PermanentStatusIsNotRetried(t *testing.T) {
 	for _, status := range []int{http.StatusNotFound, http.StatusForbidden, http.StatusBadRequest} {
 		srv, requests := flakyServer(t, 100, status, "")
-		err := downloadFile(filepath.Join(t.TempDir(), "data.zip"), srv.URL)
+		err := fastDownloader().download(context.Background(), filepath.Join(t.TempDir(), "data.zip"), srv.URL)
 		require.Error(t, err, "status %d", status)
 		assert.EqualValues(t, 1, requests.Load(), "status %d must not be retried", status)
 	}
@@ -79,7 +85,7 @@ func TestDownloadFile_RetriesDroppedBody(t *testing.T) {
 	defer srv.Close()
 
 	dst := filepath.Join(t.TempDir(), "data.zip")
-	require.NoError(t, downloadFile(dst, srv.URL))
+	require.NoError(t, fastDownloader().download(context.Background(), dst, srv.URL))
 	got, err := os.ReadFile(dst)
 	require.NoError(t, err)
 	assert.Equal(t, "complete", string(got))
@@ -87,9 +93,8 @@ func TestDownloadFile_RetriesDroppedBody(t *testing.T) {
 }
 
 func TestDownloadFile_TimeoutIsNotRetried(t *testing.T) {
-	origClient := httpClient
-	t.Cleanup(func() { httpClient = origClient })
-	httpClient = &http.Client{Timeout: 50 * time.Millisecond}
+	dl := fastDownloader()
+	dl.client = &http.Client{Timeout: 50 * time.Millisecond}
 
 	var requests atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -98,6 +103,45 @@ func TestDownloadFile_TimeoutIsNotRetried(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	require.Error(t, downloadFile(filepath.Join(t.TempDir(), "data.zip"), srv.URL))
+	require.Error(t, dl.download(context.Background(), filepath.Join(t.TempDir(), "data.zip"), srv.URL))
 	assert.EqualValues(t, 1, requests.Load(), "a timeout already spent the download budget")
+}
+
+// TestDownload_CancelDuringBackoff: the pause between attempts ends when the
+// context does, instead of sleeping out an hour-long delay.
+func TestDownload_CancelDuringBackoff(t *testing.T) {
+	srv, requests := flakyServer(t, 100, http.StatusServiceUnavailable, "")
+	dl := newDownloader()
+	dl.retryDelay = time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		for requests.Load() == 0 {
+			time.Sleep(time.Millisecond)
+		}
+		cancel()
+	}()
+	done := make(chan error, 1)
+	dst := filepath.Join(t.TempDir(), "data.zip")
+	go func() { done <- dl.download(ctx, dst, srv.URL) }()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(5 * time.Second):
+		t.Fatal("download kept sleeping after its context was cancelled")
+	}
+	assert.EqualValues(t, 1, requests.Load(), "no second attempt after cancellation")
+	_, statErr := os.Stat(dst + ".part")
+	assert.True(t, os.IsNotExist(statErr), "no .part file may be left behind")
+}
+
+// TestDownload_CancelledContextNeverRequests: an already-cancelled context
+// fails fast without a retry cycle.
+func TestDownload_CancelledContextNeverRequests(t *testing.T) {
+	srv, requests := flakyServer(t, 0, 0, "payload")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := fastDownloader().download(ctx, filepath.Join(t.TempDir(), "data.zip"), srv.URL)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.EqualValues(t, 0, requests.Load())
 }

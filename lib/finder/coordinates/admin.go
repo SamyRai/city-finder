@@ -13,6 +13,16 @@ type AdminAttribution struct {
 	Admin2Code string
 }
 
+// AttachAdmin1Names sets the admin1 display names from the optional names
+// dataset: a map from composite Admin1Codes keys ("US.CA") to names, nil for
+// codes-only mode. Names are side data, never serialized, so the initializer
+// attaches them on every boot. It is the only way names reach a finder, and
+// must be called before the finder serves queries: the map is read without
+// locking, and the finder keeps the map it is given.
+func (f *S2Finder) AttachAdmin1Names(names map[string]string) {
+	f.Admin1Names = names
+}
+
 // rawAdminCode strips the "CC." country prefix from a composite table key.
 // Country codes contain no '.', so the first dot is the separator; a key
 // without one (defensive) is returned unchanged.

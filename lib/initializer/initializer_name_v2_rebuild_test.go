@@ -1,6 +1,7 @@
 package initializer
 
 import (
+	"context"
 	"encoding/gob"
 	"os"
 	"path/filepath"
@@ -54,7 +55,7 @@ func TestEnsureFinders_RebuildsV1NameIndexAsV2(t *testing.T) {
 	cfg := testConfig(dir)
 	writeTinyDatasets(t, cfg)
 
-	f1, err := ensureFinders(cfg, "")
+	f1, err := ensureFinders(context.Background(), fastDownloader(), cfg, "")
 	require.NoError(t, err)
 	require.NotNil(t, f1)
 
@@ -66,7 +67,7 @@ func TestEnsureFinders_RebuildsV1NameIndexAsV2(t *testing.T) {
 	_, err = name.DeserializeIndex(namePath)
 	require.ErrorIs(t, err, name.ErrCorruptIndex, "a v1 header must fail the version check")
 
-	f2, err := ensureFinders(cfg, "")
+	f2, err := ensureFinders(context.Background(), fastDownloader(), cfg, "")
 	require.NoError(t, err, "a v1 name index must trigger a rebuild, not a fatal error")
 	require.NotNil(t, f2)
 
@@ -94,7 +95,7 @@ func TestEnsureFinders_RebuildsV1NameIndexAsV2(t *testing.T) {
 	// raw datasets.
 	require.NoError(t, os.Remove(filepath.Join(dir, cfg.AllCitiesFile)))
 	require.NoError(t, os.Remove(filepath.Join(dir, cfg.PostalCodesFile)))
-	f3, err := ensureFinders(cfg, "")
+	f3, err := ensureFinders(context.Background(), fastDownloader(), cfg, "")
 	require.NoError(t, err, "warm start must succeed after the v1 file was repaired to v2")
 	require.NotNil(t, f3)
 	wp := f3.NameFinder.CityByName("les Escaldes", "AD")
@@ -111,7 +112,7 @@ func TestEnsureFinders_MigratesLegacyV2NameIndexInPlace(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
 	writeTinyDatasets(t, cfg)
-	f1, err := ensureFinders(cfg, "")
+	f1, err := ensureFinders(context.Background(), fastDownloader(), cfg, "")
 	require.NoError(t, err)
 	want := *f1.FindCityByName("les Escaldes", "AD")
 
@@ -136,7 +137,7 @@ func TestEnsureFinders_MigratesLegacyV2NameIndexInPlace(t *testing.T) {
 	// Warm start without the raw datasets: only an in-place migration works.
 	require.NoError(t, os.Remove(filepath.Join(dir, cfg.AllCitiesFile)))
 	require.NoError(t, os.Remove(filepath.Join(dir, cfg.PostalCodesFile)))
-	f2, err := ensureFinders(cfg, "")
+	f2, err := ensureFinders(context.Background(), fastDownloader(), cfg, "")
 	require.NoError(t, err)
 	got := f2.FindCityByName("les Escaldes", "AD")
 	require.NotNil(t, got)
@@ -145,7 +146,7 @@ func TestEnsureFinders_MigratesLegacyV2NameIndexInPlace(t *testing.T) {
 	assert.Equal(t, uint32(3), readFileVersion(t, namePath), "the file must be migrated to v3")
 
 	// And the migrated file warm-starts again.
-	f3, err := ensureFinders(cfg, "")
+	f3, err := ensureFinders(context.Background(), fastDownloader(), cfg, "")
 	require.NoError(t, err)
 	assert.Equal(t, want, *f3.FindCityByName("les Escaldes", "AD"))
 }
