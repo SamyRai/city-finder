@@ -153,8 +153,9 @@ func (nf *Finder) buildPayloadV3Locked() (nameIndexPayloadV3, error) {
 // A v3 file that references an external city table yields a DETACHED finder:
 // its lookups return nil until ShareCities attaches the matching table (the
 // initializer does this with the S2 index's Cities). Files that embed their
-// table (v2, standalone v3) are fully usable as returned.
-func DeserializeIndex(filepath string) (*Finder, error) {
+// table (v2, standalone v3) are fully usable as returned. opts optionally
+// overrides the fuzzy limits (see Options).
+func DeserializeIndex(filepath string, opts ...Options) (*Finder, error) {
 	file, err := indexfile.Open(filepath)
 	if err != nil {
 		return nil, err
@@ -195,7 +196,7 @@ func DeserializeIndex(filepath string) (*Finder, error) {
 	log.Printf("name index %s decoded (v%d): %d B -> %d B streamed (zstd+gob) in %s",
 		filepath, header.Version, stats.FileBytes, stats.PayloadBytes, stats.Decode)
 
-	finder := NewNameFinder()
+	finder := NewNameFinder(opts...)
 	finder.cities = cityTable{base: payload.Cities, baseCount: payload.CityCount, fingerprint: payload.Fingerprint}
 	if payload.Cities != nil {
 		// gob allocates a fresh backing for every decoded string; one intern
@@ -205,16 +206,23 @@ func DeserializeIndex(filepath string) (*Finder, error) {
 	for i := range payload.Extra {
 		finder.cities.add(payload.Extra[i])
 	}
-	for country, refs := range payload.Refs {
+	// The id range check rides in the per-country workers: it walks every id
+	// once anyway, and the loop is most of the decode after the zstd stream.
+	size := finder.cities.size()
+	tables, err := buildTables(payload.Refs, tableWorkers(), func(refs map[string][]int32) error {
 		for _, ids := range refs {
 			for _, id := range ids {
-				if id < 0 || int(id) >= finder.cities.size() {
-					return nil, fmt.Errorf("%w: name index %s references id %d outside the %d-city table; delete the file so the index is rebuilt",
-						ErrCorruptIndex, filepath, id, finder.cities.size())
+				if id < 0 || int(id) >= size {
+					return fmt.Errorf("%w: name index %s references id %d outside the %d-city table; delete the file so the index is rebuilt",
+						ErrCorruptIndex, filepath, id, size)
 				}
 			}
 		}
-		finder.countries[country] = buildTable(refs)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
+	finder.countries = tables
 	return finder, nil
 }

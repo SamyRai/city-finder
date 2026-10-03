@@ -3,7 +3,6 @@ package name
 import (
 	"encoding/binary"
 	"fmt"
-	"log"
 	"math"
 	"slices"
 	"sort"
@@ -15,7 +14,7 @@ import (
 // structure. The BK-tree was measured at ~650 ms per distance-2 query over
 // the 17.7M-name prod keyspace — worse than the typos it rescued — and its
 // sequential build stalls every concurrent lookup for minutes, so fuzzy
-// matching was hard-disabled above 2M keys (FuzzyMaxNames).
+// matching was hard-disabled above 2M keys (Options.FuzzyMaxNames).
 //
 // Structure: an immutable inverted index over the q-grams (q = 3 runes,
 // computed over the name padded with q−1 sentinel runes on each side),
@@ -39,8 +38,8 @@ import (
 //     name-side gram-count filter (Gm(name) = runes + q − 1 ≥ minCommon
 //     follows from the length bound), so no per-name gram counts are stored.
 //  4. Levenshtein verification of the survivors.
-//  5. Candidate budget: the walk in step 2 stops after FuzzyMaxCandidates
-//     posting entries have been read (see FuzzyMaxCandidates in name.go for
+//  5. Candidate budget: the walk in step 2 stops after Options.FuzzyMaxCandidates
+//     posting entries have been read (see Options for
 //     why the counter sits on raw entries, not on verifications).
 //
 // Postings may list a name id more than once (a gram repeated inside one
@@ -83,6 +82,16 @@ type ngramIndex struct {
 	postOff  []int64          // gram id -> byte offset into post; one sentinel entry
 	postLen  []int32          // gram id -> number of postings (ids) in its list
 	gramIDs  map[string]int32 // distinct padded gram -> CSR column
+
+	budget int         // max posting entries one search may read; negative = unlimited (Options.FuzzyMaxCandidates)
+	stats  *fuzzyStats // owner's diagnostics sink; never nil
+}
+
+// bind points the index at its Finder's budget and diagnostics. It runs
+// before the index is published, so the fields stay read-only afterwards.
+func (ix *ngramIndex) bind(budget int, stats *fuzzyStats) *ngramIndex {
+	ix.budget, ix.stats = budget, stats
+	return ix
 }
 
 // appendPostings delta-encodes one ascending id list.
@@ -200,7 +209,7 @@ func buildNGramIndex(names []string) (*ngramIndex, error) {
 	// Explicit overflow gate: the CSR payload and offsets are int32 by
 	// construction, so more than MaxInt32 postings would wrap the prefix
 	// sums into negative offsets and corrupt the index. Refuse to build.
-	// (Unreachable under the default FuzzyMaxNames gate; it exists so a
+	// (Unreachable under the default Options.FuzzyMaxNames gate; it exists so a
 	// pathological corpus fails loudly instead of silently.)
 	if totalPostings > math.MaxInt32 {
 		return nil, fmt.Errorf("n-gram index requires %d gram postings, exceeding the int32 offset limit (%d); refusing to build a corrupt index", totalPostings, int64(math.MaxInt32))
@@ -252,6 +261,8 @@ func buildNGramIndex(names []string) (*ngramIndex, error) {
 		postOff:  encOff,
 		postLen:  counts,
 		gramIDs:  gramIDs,
+		budget:   DefaultFuzzyMaxCandidates,
+		stats:    new(fuzzyStats),
 	}, nil
 }
 
@@ -279,9 +290,9 @@ type fuzzyMatch struct {
 
 // search returns the indexed names within Levenshtein distance d of query,
 // in arbitrary order, plus whether the result is partial: the posting walk
-// stopped early after FuzzyMaxCandidates entries (see FuzzyMaxCandidates in
-// name.go). A partial result is best-effort for that one query — every name
-// it does return is a verified true match — and must not be cached or
+// stopped early after the index's budget of entries (see
+// Options.FuzzyMaxCandidates). A partial result is best-effort for that one
+// query — every name it does return is a verified true match — and must not be cached or
 // otherwise treated as complete. See the filtering-chain comment for the
 // full completeness argument.
 func (ix *ngramIndex) search(query string, d int) (matches []string, truncated bool) {
@@ -337,9 +348,8 @@ func (ix *ngramIndex) search(query string, d int) (matches []string, truncated b
 	// would leave the dominant cost of degenerate short queries unbounded:
 	// measured at prod, adversarial 1–3-rune queries walk up to 4.0M entries
 	// but verify at most 69,727 (d2) / 7,886 (d1) — the tail lives in the
-	// walk, not the verification. Read once per search, like FuzzyMaxNames;
-	// negative means unlimited.
-	budget := int64(FuzzyMaxCandidates)
+	// walk, not the verification. Negative means unlimited.
+	budget := int64(ix.budget)
 	if budget < 0 {
 		budget = math.MaxInt64
 	}
@@ -406,18 +416,7 @@ walk:
 		sort.Strings(matches)
 	}
 
-	fuzzyWalkedLast.Store(walked)
-	fuzzyVerifiedLast.Store(verified)
-	if truncated {
-		fuzzyBudgetTrips.Add(1)
-		// One-time summary, mirroring the FuzzyMaxNames disable log: the
-		// trip itself is the rare event worth surfacing, per-query logging
-		// is not.
-		if fuzzyBudgetLogged.CompareAndSwap(false, true) {
-			log.Printf("fuzzy search candidate budget reached (%d posting entries); the query returned partial results — raise name.FuzzyMaxCandidates (negative disables the cap) if this workload needs full completeness",
-				FuzzyMaxCandidates)
-		}
-	}
+	ix.stats.record(walked, verified, truncated, ix.budget)
 	return matches, truncated
 }
 

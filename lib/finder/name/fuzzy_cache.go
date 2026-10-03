@@ -38,7 +38,7 @@ const (
 
 // fuzzyCandidates returns the names within maxDistance of query, from the
 // immutable n-gram index plus the post-build overflow list, and whether the
-// result is partial (the n-gram walk hit the FuzzyMaxCandidates cap). The
+// result is partial (the n-gram walk hit the Options.FuzzyMaxCandidates cap). The
 // caller must handle caching; this is the uncached core of
 // getCachedFuzzySearch.
 //
@@ -75,7 +75,7 @@ func (nf *Finder) fuzzyCandidates(query string, maxDistance int) ([]string, bool
 
 // getCachedFuzzySearch performs fuzzy search with caching. Every complete
 // result enters the cache, empty ones included; truncated results
-// (FuzzyMaxCandidates tripped) are computed fresh on every call. An entry is
+// (Options.FuzzyMaxCandidates tripped) are computed fresh on every call. An entry is
 // served only while it is younger than fuzzyCacheTTL and no name was added
 // since it was computed (fuzzyGen), so AddCity is visible on the very next
 // search, cached query or not.
@@ -96,7 +96,7 @@ func (nf *Finder) getCachedFuzzySearch(query string, maxDistance int) []string {
 	nf.cacheMutex.RUnlock()
 
 	// Ensure the fuzzy index is built before searching. While a build is in
-	// flight (or matching is disabled over the FuzzyMaxNames threshold)
+	// flight (or matching is disabled over the Options.FuzzyMaxNames threshold)
 	// there is no index to search: return no candidates for this one request
 	// and do NOT cache the empty result — the 1h TTL would pin it long past
 	// the build completing.
@@ -115,7 +115,7 @@ func (nf *Finder) getCachedFuzzySearch(query string, maxDistance int) []string {
 	// later identical queries as if complete. Exclusion (rather than a
 	// truncated-tag on entries) is the simpler correct option: the only cost
 	// is that a repeated degenerate query re-pays the (now budget-bounded)
-	// search, and raising FuzzyMaxCandidates immediately takes effect for
+	// search, and raising Options.FuzzyMaxCandidates immediately takes effect for
 	// fresh searches instead of waiting out stale tagged entries.
 	if truncated {
 		return candidates

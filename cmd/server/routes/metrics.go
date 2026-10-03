@@ -7,7 +7,6 @@ import (
 
 	"github.com/SamyRai/cityFinder/cmd/server/metrics"
 	"github.com/SamyRai/cityFinder/lib/finder"
-	"github.com/SamyRai/cityFinder/lib/finder/name"
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -19,13 +18,13 @@ const heapAllocMetricName = "/memory/classes/heap/objects:bytes"
 // metricsHandler serves GET /metrics: it refreshes the scrape-time gauges and
 // counters in reg, then renders it.
 func metricsHandler(mainFinder *finder.Finder, reg *metrics.Registry) fiber.Handler {
-	// fuzzy_budget_trips_total is scraped from the library counter as a
+	// fuzzy_budget_trips_total is scraped from the Finder's counter as a
 	// delta since the previous scrape; Swap makes concurrent scrapes
 	// count each trip exactly once.
 	var lastTrips atomic.Uint64
-	lastTrips.Store(name.FuzzyBudgetTrips())
+	lastTrips.Store(mainFinder.FuzzyBudgetTrips())
 	return func(c *fiber.Ctx) error {
-		cur := name.FuzzyBudgetTrips()
+		cur := mainFinder.FuzzyBudgetTrips()
 		if delta := cur - lastTrips.Swap(cur); delta > 0 {
 			reg.AddCounter("fuzzy_budget_trips_total", int64(delta))
 		}

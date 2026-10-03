@@ -74,21 +74,28 @@ type Finder struct {
 	fuzzyGen      atomic.Uint64                        // bumped whenever a name becomes fuzzy-visible after construction; invalidates cached results
 	cacheMutex    sync.RWMutex                         // Mutex for fuzzy search cache and fuzzyCacheAge
 	mutex         sync.RWMutex                         // Mutex for thread-safe operations
+	opts          Options                              // Fuzzy limits, fixed at construction; read without locking
+	fuzzyStats    fuzzyStats                           // Per-Finder fuzzy search diagnostics (budget trips); safe for concurrent use
+	fuzzyWaitMu   sync.Mutex                           // Guards fuzzySettled
+	fuzzySettled  chan struct{}                        // Closed (and cleared) when a build leaves fuzzyBuilding; created lazily by WaitFuzzy
 	fuzzyState    atomic.Int32                         // Lazy fuzzy-index state (fuzzyNotBuilt*, above); runtime-only, not serialized
 }
 
 // Memory pools removed - they were causing excessive memory usage
 
-// NewNameFinder creates a new NameFinder instance with default capacity
-func NewNameFinder() *Finder {
-	return NewFinderWithCapacity(300)
+// NewNameFinder creates a new NameFinder instance with default capacity.
+// opts optionally overrides the fuzzy limits (see Options).
+func NewNameFinder(opts ...Options) *Finder {
+	return NewFinderWithCapacity(300, opts...)
 }
 
 // NewFinderWithCapacity creates a new NameFinder with a pre-allocated
 // countries-map capacity. (The former names parameter was removed with the
-// nested-map index — the flat tables are sized exactly at build time.)
-func NewFinderWithCapacity(countries int) *Finder {
+// nested-map index — the flat tables are sized exactly at build time.) opts
+// optionally overrides the fuzzy limits (see Options).
+func NewFinderWithCapacity(countries int, opts ...Options) *Finder {
 	return &Finder{
+		opts:       resolveOptions(opts),
 		countries:  make(map[string]*nameTable, countries),
 		fuzzyCache: make(map[fuzzyCacheKey]*fuzzySearchResult, 100), // Pre-allocate cache capacity
 	}
@@ -147,7 +154,7 @@ func (nf *Finder) namesFromIndex() []string {
 }
 
 // totalIndexKeys returns the total number of (country, name) keys across the
-// sorted tables and the overflow — the gate metric for FuzzyMaxNames.
+// sorted tables and the overflow — the gate metric for Options.FuzzyMaxNames.
 // O(#countries) additions, no allocations. The caller must hold nf.mutex
 // (read or write): AddCity mutates the overflow under the write lock.
 func (nf *Finder) totalIndexKeys() int {
@@ -202,7 +209,7 @@ func (nf *Finder) CityByName(name string, countryCode string) *city.City {
 
 	// Phases 2/3: approximate matching as a pre-filter, then full fuzzy. Both
 	// are cheap no-ops unless the fuzzy index is actually built: over the
-	// FuzzyMaxNames threshold matching is disabled (exact-only) for this
+	// Options.FuzzyMaxNames threshold matching is disabled (exact-only) for this
 	// Finder's lifetime, and while the background build is still running —
 	// including the very lookup that triggered it — this lookup reports
 	// not-ready rather than waiting. Either way no fuzzy work runs and no
