@@ -47,7 +47,9 @@ type S2Finder struct {
 	// Admin1Names maps a composite Admin1Codes key to its display name from
 	// the OPTIONAL admin1CodesASCII.txt dataset. nil when that file is absent
 	// (codes-only mode). Never serialized: it is a ~120 KB side dataset the
-	// initializer (re)attaches on every boot, warm or cold.
+	// initializer (re)attaches on every boot, warm or cold, through
+	// AttachAdmin1Names. The field stays exported only because server tests
+	// build finders without the initializer; production code writes it once.
 	Admin1Names map[string]string
 
 	// maxPopulation is the largest Population across Cities (0 when no city

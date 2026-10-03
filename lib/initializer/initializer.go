@@ -53,19 +53,32 @@ func ensureDatasetsFolder(cfg *config.Config) error {
 	return nil
 }
 
-// ensureFinders ensures that the indexes are built and serialized.
-// When every serialized index already exists, the expensive dataset load
-// (multi-GB TSV parse) is skipped entirely: each ensure*Index call then
-// deserializes its index from disk instead. An index that fails to decode
-// is rebuilt once from the source data (see the ensure*Index functions),
-// which re-materializes the datasets on demand.
+// ensureFinders returns the finders with the admin1 names attached.
 //
 // admin1NamesPath points at the OPTIONAL admin1CodesASCII.txt dataset: empty
 // disables names entirely; a present file attaches the composite-key ->
 // name map to the S2 finder; a configured-but-missing file degrades to
 // codes-only mode with one log line (responses carry admin1 CODE, no name —
-// the dataset is enhancement data, never a startup requirement).
+// the dataset is enhancement data, never a startup requirement). Names are
+// attached on every boot (warm or cold): the map is ~120 KB and deliberately
+// not serialized with the index, so updating the names file never
+// invalidates it.
 func ensureFinders(cfg *config.Config, admin1NamesPath string) (*finder.Finder, error) {
+	f, err := loadOrBuildFinders(cfg)
+	if err != nil {
+		return nil, err
+	}
+	f.S2Finder.AttachAdmin1Names(ensureAdmin1Names(admin1NamesPath))
+	return f, nil
+}
+
+// loadOrBuildFinders ensures that the indexes are built and serialized.
+// When every serialized index already exists, the expensive dataset load
+// (multi-GB TSV parse) is skipped entirely: each ensure*Index call then
+// deserializes its index from disk instead. An index that fails to decode
+// is rebuilt once from the source data (see the ensure*Index functions),
+// which re-materializes the datasets on demand.
+func loadOrBuildFinders(cfg *config.Config) (*finder.Finder, error) {
 	s2IndexPath, nameIndexPath, postalCodeIndexPath := cfg.IndexFilePaths()
 
 	data := &datasetSource{cfg: cfg}
@@ -116,13 +129,8 @@ func ensureFinders(cfg *config.Config, admin1NamesPath string) (*finder.Finder, 
 		}
 		if s2Res.err == nil && nameRes.err == nil && postalRes.err == nil {
 			migratePostalIndex(postalCodeIndexPath, postalRes.finder)
-			s2Finder := s2Res.finder
-			// Names are attached on every boot (warm or cold): the map is
-			// ~120 KB and deliberately not serialized with the index, so
-			// updating the names file never invalidates it.
-			s2Finder.Admin1Names = ensureAdmin1Names(admin1NamesPath)
 			return &finder.Finder{
-				S2Finder:         s2Finder,
+				S2Finder:         s2Res.finder,
 				NameFinder:       nameRes.finder,
 				PostalCodeFinder: postalRes.finder,
 			}, nil
@@ -137,11 +145,6 @@ func ensureFinders(cfg *config.Config, admin1NamesPath string) (*finder.Finder, 
 	if err != nil {
 		return nil, err
 	}
-	// Names are attached on every boot (warm or cold): the map is ~120 KB
-	// and deliberately not serialized with the index, so updating the
-	// names file never invalidates it.
-	s2Finder.Admin1Names = ensureAdmin1Names(admin1NamesPath)
-
 	nameFinder, err := ensureNameIndex(nameIndexPath, data, s2Finder.Cities)
 	if err != nil {
 		return nil, err
