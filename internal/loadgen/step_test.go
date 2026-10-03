@@ -63,15 +63,11 @@ func TestRunStepSchedulesRateTimesWindow(t *testing.T) {
 }
 
 func TestRunStepDropsBeyondInFlightCap(t *testing.T) {
-	release := make(chan struct{})
-	samples := make(chan []Sample, 1)
-	go func() {
-		samples <- RunStep(context.Background(), StepConfig{RPS: 1000, Window: 50 * time.Millisecond, MaxInFlight: 5},
-			func(context.Context, int) Outcome { <-release; return OK })
-	}()
-	time.Sleep(150 * time.Millisecond) // every arrival is due by now
-	close(release)
-	got := <-samples
+	// The admitted requests hold until their own timeout, 40x the arrival
+	// window, so every arrival is dispatched while they are outstanding even
+	// on a slow runner (a fixed sleep-then-release raced the dispatcher).
+	got := RunStep(context.Background(), StepConfig{RPS: 1000, Window: 50 * time.Millisecond, MaxInFlight: 5, Timeout: 2 * time.Second},
+		func(ctx context.Context, _ int) Outcome { <-ctx.Done(); return OK })
 
 	s := Summarize(1000, 50*time.Millisecond, got)
 	assert.Equal(t, 5, s.OK, "only MaxInFlight requests can be outstanding")

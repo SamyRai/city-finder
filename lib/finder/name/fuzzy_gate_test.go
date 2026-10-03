@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"log"
-	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -144,8 +143,9 @@ func TestFuzzyDisabledOverThreshold(t *testing.T) {
 	t.Cleanup(func() { FuzzyMaxNames = orig })
 
 	var logBuf bytes.Buffer
+	oldLog := log.Writer()
 	log.SetOutput(&logBuf)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	t.Cleanup(func() { log.SetOutput(oldLog) })
 
 	finder := BuildIndex(fuzzyFixtureCities())
 

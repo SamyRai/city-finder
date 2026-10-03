@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -140,8 +139,9 @@ func TestFuzzyBudgetTripCounterAndOneTimeLog(t *testing.T) {
 	require.NoError(t, err)
 
 	var logBuf bytes.Buffer
+	oldLog := log.Writer()
 	log.SetOutput(&logBuf)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	t.Cleanup(func() { log.SetOutput(oldLog) })
 
 	// The one-time log guard is process-global; earlier tests may have
 	// already spent it. Re-arm it so this test owns the first trip.
