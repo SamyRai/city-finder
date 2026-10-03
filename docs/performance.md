@@ -159,6 +159,26 @@ single runs. Without the release, the resident set stays near the boot peak
 until the background scavenger returns the pages, which takes minutes. A
 container's memory metric then reports the boot peak, not the working set.
 
+### Index compression level (decision record)
+
+The index files use zstd `SpeedFastest` (`lib/indexfile`). Measured on the
+same 4M-city files (synthetic data; real GeoNames text may compress
+differently):
+
+| Level | S2 + name + postal | Encode (cold build only) | Decode |
+|---|---|---|---|
+| fastest (used) | 182.6 MB | 1.4 s | 0.85 / 0.40 / 0.07 s |
+| default | 168.7 MB | 2.7 s | about the same |
+| better | 157.0 MB (−14 %) | 5.2 s | about the same |
+| best | 141.0 MB (−23 %) | 20.2 s | up to 2× slower |
+
+Decode speed barely depends on the level, so a warm boot gains nothing from
+a higher one. A cold build pays the encode on the path where a fresh pod
+waits to become ready: "better" would add ~10 % to the 4M cold boot
+(~12 s at production scale) to save 14 % disk. Disk is the cheaper resource,
+so the level stays `fastest`. Re-evaluate if index files ever ship over a
+network.
+
 ## Memory sizing
 
 Figures below are the v1.3 production measurements. See the reduction above
