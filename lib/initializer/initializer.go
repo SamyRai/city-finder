@@ -13,6 +13,7 @@ import (
 	"github.com/SamyRai/cityFinder/lib/finder/postalCode"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path"
@@ -232,6 +233,45 @@ const downloadTimeout = 15 * time.Minute
 // timeout; production code always uses the default timeout above.
 var httpClient = &http.Client{Timeout: downloadTimeout}
 
+// downloadAttempts bounds how often downloadFile tries a transient failure;
+// downloadRetryDelay is the first backoff, doubled per retry (a variable so
+// tests need not sleep).
+const downloadAttempts = 3
+
+var downloadRetryDelay = 2 * time.Second
+
+// httpStatusError is a non-2xx download response.
+type httpStatusError struct {
+	status string
+	code   int
+}
+
+func (e *httpStatusError) Error() string { return "unexpected HTTP status: " + e.status }
+
+// transientError marks a network-side failure of one attempt (the request
+// or the body transfer), as opposed to a local file error.
+type transientError struct{ err error }
+
+func (e transientError) Error() string { return e.err.Error() }
+func (e transientError) Unwrap() error { return e.err }
+
+// retryableDownloadError reports whether a failed attempt may succeed when
+// repeated: network-side failures, 5xx and 429. Other 4xx responses are
+// permanent (a wrong URL stays wrong), a client timeout already spent the
+// whole downloadTimeout budget, and local file errors are not the network's,
+// so none of those is retried.
+func retryableDownloadError(err error) bool {
+	var statusErr *httpStatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.code >= 500 || statusErr.code == http.StatusTooManyRequests
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return false
+	}
+	return errors.As(err, new(transientError))
+}
+
 // downloadFile downloads url into dst atomically. The body is streamed into
 // dst+".part" and only renamed to dst after a complete, status-verified
 // transfer, so a failed download (network error, non-2xx status, timeout)
@@ -242,12 +282,12 @@ func downloadFile(dst string, url string) error {
 	fetch := func() error {
 		resp, err := httpClient.Get(url)
 		if err != nil {
-			return fmt.Errorf("request failed: %w", err)
+			return transientError{fmt.Errorf("request failed: %w", err)}
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode < 200 || resp.StatusCode > 299 {
-			return fmt.Errorf("unexpected HTTP status: %s", resp.Status)
+			return &httpStatusError{status: resp.Status, code: resp.StatusCode}
 		}
 
 		out, err := os.Create(partPath)
@@ -257,7 +297,9 @@ func downloadFile(dst string, url string) error {
 
 		if _, err := io.Copy(out, resp.Body); err != nil {
 			_ = out.Close()
-			return fmt.Errorf("failed to write response body: %w", err)
+			// Usually the connection dropped mid-body; a local write error
+			// (disk full) retries harmlessly and fails again.
+			return transientError{fmt.Errorf("failed to write response body: %w", err)}
 		}
 		// Durable before the rename publishes it: after a power loss the
 		// final path must never name a zero-length or partial file.
@@ -272,9 +314,18 @@ func downloadFile(dst string, url string) error {
 		return nil
 	}
 
-	if err := fetch(); err != nil {
+	for attempt := 1; ; attempt++ {
+		err := fetch()
+		if err == nil {
+			break
+		}
 		_ = os.Remove(partPath) // never leave a partial download behind
-		return fmt.Errorf("failed to download %s: %w", url, err)
+		if attempt >= downloadAttempts || !retryableDownloadError(err) {
+			return fmt.Errorf("failed to download %s (attempt %d of %d): %w", url, attempt, downloadAttempts, err)
+		}
+		delay := downloadRetryDelay << (attempt - 1)
+		log.Printf("download %s failed (attempt %d of %d): %v; retrying in %s", url, attempt, downloadAttempts, err, delay)
+		time.Sleep(delay)
 	}
 
 	if err := os.Rename(partPath, dst); err != nil {
