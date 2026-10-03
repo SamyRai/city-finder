@@ -1,10 +1,6 @@
 package dataLoader
 
 import (
-	"encoding/csv"
-	"errors"
-	"io"
-	"log"
 	"os"
 	"strconv"
 )
@@ -34,54 +30,39 @@ func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, er
 	}
 	defer file.Close()
 
-	reader := csv.NewReader(file)
-	reader.Comma = '\t'
-	reader.ReuseRecord = true // Reuse record slice to reduce allocations
 	// GeoNames ships ~14M rows and is hand-curated upstream: a row with a
 	// stray extra field must not abort the whole load (and with it server
-	// startup) — FieldsPerRecord=-1 defers to the len(record) check below.
-	// LazyQuotes is deliberately NOT set: with it, an unterminated leading
-	// quote silently swallows every row after the malformed one, losing the
-	// file tail into a single skipped record; a structurally ambiguous quote
-	// fails the load loudly instead, which is the honest failure for an
-	// index that must stay complete.
-	reader.FieldsPerRecord = -1
-
+	// startup) — such rows are counted and skipped below. The file is plain
+	// TSV, so lines are split on tabs and quotes mean nothing; encoding/csv's
+	// quote handling aborted the load on a place name like 5" Rd.
 	// Pre-allocate with reasonable capacity based on typical postal code data size
 	postalCodes := make(map[string]map[string]PostalCodeEntry, 200) // ~200 countries
 
-	skippedCoords := 0
-	skippedShort := 0
+	var skipped skipReport
 
-	for {
-		record, err := reader.Read()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			return nil, err
+	var record []string
+	err = forEachLine(file, &skipped, func(line int, raw []byte) bool {
+		if len(raw) == 0 {
+			return true
 		}
+		record = splitTab(string(raw), record)
 
 		// Skip malformed records
 		if len(record) < 12 {
-			skippedShort++
-			continue
+			skipped.add(reasonShortRow, line)
+			return true
 		}
 
-		// A row whose latitude or longitude cannot be parsed is not indexed:
-		// silently defaulting it to (0,0) put Null-Island coordinates behind
-		// /postalCode lookups. Accuracy stays lenient on purpose (it is a
-		// 0-6 hint, not a coordinate). One summary line at end of load — no
-		// per-row logging, prod files hold ~14M rows.
-		lat, err := strconv.ParseFloat(record[9], 64)
-		if err != nil {
-			skippedCoords++
-			continue
-		}
-		lon, err := strconv.ParseFloat(record[10], 64)
-		if err != nil {
-			skippedCoords++
-			continue
+		// A row whose latitude or longitude cannot be parsed, or is not a
+		// finite in-range point, is not indexed: silently defaulting it to
+		// (0,0) put Null-Island coordinates behind /postalCode lookups.
+		// Accuracy stays lenient on purpose (it is a 0-6 hint, not a
+		// coordinate). One summary line at end of load — no per-row
+		// logging, prod files hold ~14M rows.
+		lat, lon, reason := parseCoordinate(record[9], record[10])
+		if reason != "" {
+			skipped.add(reason, line)
+			return true
 		}
 		accuracy, _ := strconv.Atoi(record[11])
 
@@ -105,14 +86,12 @@ func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, er
 			postalCodes[countryCode] = make(map[string]PostalCodeEntry, 1000) // Pre-allocate reasonable capacity per country
 		}
 		postalCodes[countryCode][postalCode.PostalCode] = postalCode
+		return true
+	})
+	if err != nil {
+		return nil, err
 	}
-
-	if skippedCoords > 0 {
-		log.Printf("skipped %d postal rows with unparsable coordinates in %s", skippedCoords, filepath)
-	}
-	if skippedShort > 0 {
-		log.Printf("skipped %d postal rows with fewer than 12 fields in %s", skippedShort, filepath)
-	}
+	skipped.log("postal", filepath)
 
 	return postalCodes, nil
 }

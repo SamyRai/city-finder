@@ -73,14 +73,14 @@ func TestLoadGeoNames_PopulationOverflowClampsToZero(t *testing.T) {
 	assert.Equal(t, int32(0), cities[0].City.Population)
 }
 
+// A negative population marks a corrupt row and is rejected, not loaded.
 func TestLoadGeoNames_PopulationMaxInt32AndNegative(t *testing.T) {
 	cities := loadPopulationFixture(t,
 		populationLine("2147483647"),
 		populationLine("-12345"),
 	)
-	require.Len(t, cities, 2)
+	require.Len(t, cities, 1)
 	assert.Equal(t, int32(2147483647), cities[0].City.Population)
-	assert.Equal(t, int32(-12345), cities[1].City.Population)
 }
 
 func TestLoadGeoNames_PopulationMixedWithSkippedRows(t *testing.T) {

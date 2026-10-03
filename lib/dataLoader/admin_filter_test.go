@@ -158,17 +158,17 @@ func TestLoadGeoNames_ExcludeAdminDivisionsStillsSkipsMalformedRows(t *testing.T
 		require.Len(t, cities, 2, "the A-class row loads alongside the valid P-class row")
 		assert.Equal(t, []string{"Springfield", "California"}, loadedNames(cities))
 		assert.NotContains(t, buf.String(), "admin division rows")
-		assert.Contains(t, buf.String(), "Error parsing lat",
-			"the unparsable-latitude row is still reported by the pre-existing per-row error path")
+		assert.Contains(t, buf.String(), "unparsable coordinates",
+			"the unparsable-latitude row is still reported in the skip summary")
 	})
 }
 
 // TestLoadGeoNames_ClassACheckPrecedesFieldValidation pins the documented
 // ordering: the feature-class check runs before the mandatory-field and
 // coordinate checks, so a class-A row with a broken latitude is counted as an
-// excluded admin division — never reaching (or logging) the lat parse error.
-// With the knob off the same row follows the historical path: parse error,
-// row dropped.
+// excluded admin division — never reaching (or reporting) the lat parse failure.
+// With the knob off the same row follows the historical path: skipped
+// and counted as malformed.
 func TestLoadGeoNames_ClassACheckPrecedesFieldValidation(t *testing.T) {
 	rows := []string{
 		featureClassRow("6252001", "United States", "not-a-number", "-98.5", "A", "PCLI", "US", "", "331002651"),
@@ -176,7 +176,7 @@ func TestLoadGeoNames_ClassACheckPrecedesFieldValidation(t *testing.T) {
 	}
 	path := writeFixture(t, rows...)
 
-	t.Run("enabled: counted as admin skip, no lat error logged", func(t *testing.T) {
+	t.Run("enabled: counted as admin skip, no malformed-row summary", func(t *testing.T) {
 		buf, restore := captureLoaderLogs(t)
 		defer restore()
 
@@ -185,11 +185,11 @@ func TestLoadGeoNames_ClassACheckPrecedesFieldValidation(t *testing.T) {
 		require.Len(t, cities, 1)
 		assert.Equal(t, "Springfield", cities[0].City.Name)
 		assert.Contains(t, buf.String(), "skipped 1 admin division rows (feature class A)")
-		assert.NotContains(t, buf.String(), "Error parsing lat",
-			"a class-A row must not reach coordinate parsing and must not log a per-row error")
+		assert.NotContains(t, buf.String(), "unparsable coordinates",
+			"a class-A row must not reach coordinate parsing and must not be reported as malformed")
 	})
 
-	t.Run("default: historical parse-error path", func(t *testing.T) {
+	t.Run("default: historical skip path", func(t *testing.T) {
 		buf, restore := captureLoaderLogs(t)
 		defer restore()
 
@@ -197,7 +197,7 @@ func TestLoadGeoNames_ClassACheckPrecedesFieldValidation(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, cities, 1)
 		assert.Equal(t, "Springfield", cities[0].City.Name)
-		assert.Contains(t, buf.String(), "Error parsing lat")
+		assert.Contains(t, buf.String(), "unparsable coordinates")
 		assert.NotContains(t, buf.String(), "admin division rows")
 	})
 }
