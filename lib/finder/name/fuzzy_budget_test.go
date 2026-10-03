@@ -203,7 +203,7 @@ func TestFuzzyBudgetExcludesTruncatedFromCache(t *testing.T) {
 		assert.Contains(t, got, "Paris")
 	}
 	finder.cacheMutex.RLock()
-	_, cached := finder.fuzzyCache["Pars_1"]
+	_, cached := finder.fuzzyCache[fuzzyCacheKey{"Pars", 1}]
 	finder.cacheMutex.RUnlock()
 	assert.True(t, cached, "the complete result must be cached")
 

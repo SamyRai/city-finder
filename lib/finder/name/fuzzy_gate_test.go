@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -277,9 +278,9 @@ func TestFuzzyMissDuringBuildIsNotCached(t *testing.T) {
 
 	finder.cacheMutex.RLock()
 	size := len(finder.fuzzyCache)
-	_, pars1 := finder.fuzzyCache["Pars_1"]
-	_, pars2 := finder.fuzzyCache["Pars_2"]
-	_, paars2 := finder.fuzzyCache["Paars_2"]
+	_, pars1 := finder.fuzzyCache[fuzzyCacheKey{"Pars", 1}]
+	_, pars2 := finder.fuzzyCache[fuzzyCacheKey{"Pars", 2}]
+	_, paars2 := finder.fuzzyCache[fuzzyCacheKey{"Paars", 2}]
 	finder.cacheMutex.RUnlock()
 	if size != 0 || pars1 || pars2 || paars2 {
 		t.Fatalf("not-ready misses must not be cached: size=%d pars1=%v pars2=%v paars2=%v", size, pars1, pars2, paars2)
@@ -297,7 +298,7 @@ func TestFuzzyMissDuringBuildIsNotCached(t *testing.T) {
 		t.Fatalf("state after the build = %d, want fuzzyBuilt (%d)", st, fuzzyBuilt)
 	}
 	finder.cacheMutex.RLock()
-	_, pars1 = finder.fuzzyCache["Pars_1"]
+	_, pars1 = finder.fuzzyCache[fuzzyCacheKey{"Pars", 1}]
 	finder.cacheMutex.RUnlock()
 	if !pars1 {
 		t.Fatal("post-build fuzzy results must be cached again")
@@ -465,43 +466,50 @@ func TestCityByNameUnknownCountrySkipsFuzzy(t *testing.T) {
 	}
 }
 
-// TestAddCityVisibleAfterUncachedEmptyMiss is the L1 regression test: an
-// empty fuzzy miss must NOT be cached, so a name AddCity adds afterwards is
-// visible to the very next identical query (via the always-scanned overflow
-// list). Under the old behavior the empty result was pinned for the 1h TTL
-// and the repeat kept serving the stale nil. Non-empty results keep being
-// cached unchanged.
-func TestAddCityVisibleAfterUncachedEmptyMiss(t *testing.T) {
+// TestAddCityVisibleAfterCachedEmptyMiss is the L1 regression test: a
+// name AddCity adds is visible to the very next identical query even though
+// the earlier empty miss was cached — the generation check retires every
+// entry computed before the addition.
+func TestAddCityVisibleAfterCachedEmptyMiss(t *testing.T) {
 	finder := BuildIndex(fuzzyFixtureCities())
 	finder.WarmFuzzy()
 	waitFuzzyBuilt(t, finder)
 
+	// GB is indexed, so the lookup reaches the fuzzy phases (an unknown
+	// country exits before them and would test nothing).
 	query := "Springfielm" // distance 1 from "Springfield"; nothing indexed is within distance 2
-	if got := finder.CityByName(query, "US"); got != nil {
+	if got := finder.CityByName(query, "GB"); got != nil {
 		t.Fatalf("query with no indexed match must return nil, got %q", got.Name)
 	}
 	finder.cacheMutex.RLock()
-	_, q1 := finder.fuzzyCache[query+"_1"]
-	_, q2 := finder.fuzzyCache[query+"_2"]
+	_, q1 := finder.fuzzyCache[fuzzyCacheKey{query, 1}]
 	finder.cacheMutex.RUnlock()
-	if q1 || q2 {
-		t.Fatalf("empty fuzzy results must not be cached: %q_1=%v %q_2=%v", query, q1, query, q2)
+	if !q1 {
+		t.Fatal("a complete empty result must be cached")
 	}
 
-	finder.AddCity(city.SpatialCity{City: city.City{Name: "Springfield", Country: "US", Latitude: 39.78, Longitude: -89.65}})
+	finder.AddCity(city.SpatialCity{City: city.City{Name: "Springfield", Country: "GB", Latitude: 39.78, Longitude: -89.65}})
 
-	// The same query must now resolve through the overflow scan.
-	got := finder.CityByName(query, "US")
+	got := finder.CityByName(query, "GB")
 	if got == nil || got.Name != "Springfield" {
 		t.Fatalf("repeat query after AddCity must find the new name, got %+v", got)
 	}
+}
 
-	// Non-empty results are cached as before (unchanged behavior).
-	finder.cacheMutex.RLock()
-	_, cached := finder.fuzzyCache[query+"_1"]
-	finder.cacheMutex.RUnlock()
-	if !cached {
-		t.Fatal("the now non-empty fuzzy result must be cached")
+// TestAddCityVisibleAfterCachedHit covers the case the old empty-only rule
+// missed: a cached NON-empty result must not hide a closer name added later.
+func TestAddCityVisibleAfterCachedHit(t *testing.T) {
+	finder := NewNameFinder()
+	finder.AddCity(city.SpatialCity{City: city.City{Name: "Bxrlin", Country: "DE", Latitude: 1, Longitude: 1}})
+	finder.WarmFuzzy()
+	waitFuzzyBuilt(t, finder)
+
+	if got := finder.getCachedFuzzySearch("Berlin", 1); !slices.Equal(got, []string{"Bxrlin"}) {
+		t.Fatalf("first search = %v, want [Bxrlin]", got)
+	}
+	finder.AddCity(city.SpatialCity{City: city.City{Name: "Berlim", Country: "DE", Latitude: 2, Longitude: 2}})
+	if got := finder.getCachedFuzzySearch("Berlin", 1); !slices.Contains(got, "Berlim") {
+		t.Fatalf("search after AddCity = %v, must include the added Berlim", got)
 	}
 }
 
