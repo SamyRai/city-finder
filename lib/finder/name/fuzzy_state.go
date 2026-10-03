@@ -81,7 +81,7 @@ func (nf *Finder) buildFuzzyIndex(names []string, totalKeys int) {
 		return
 	}
 
-	index.withBudget(nf.opts.FuzzyMaxCandidates)
+	index.bind(nf.opts.FuzzyMaxCandidates, &nf.fuzzyStats)
 
 	// Commit under the write lock. The index only ever grows — every
 	// insertion path appends under this same lock, nothing removes — so an

@@ -3,7 +3,6 @@ package name
 import (
 	"encoding/binary"
 	"fmt"
-	"log"
 	"math"
 	"slices"
 	"sort"
@@ -84,13 +83,14 @@ type ngramIndex struct {
 	postLen  []int32          // gram id -> number of postings (ids) in its list
 	gramIDs  map[string]int32 // distinct padded gram -> CSR column
 
-	budget int // max posting entries one search may read; negative = unlimited (Options.FuzzyMaxCandidates)
+	budget int         // max posting entries one search may read; negative = unlimited (Options.FuzzyMaxCandidates)
+	stats  *fuzzyStats // owner's diagnostics sink; never nil
 }
 
-// withBudget sets the index's per-search posting budget. It runs before the
-// index is published, so the field stays read-only afterwards.
-func (ix *ngramIndex) withBudget(budget int) *ngramIndex {
-	ix.budget = budget
+// bind points the index at its Finder's budget and diagnostics. It runs
+// before the index is published, so the fields stay read-only afterwards.
+func (ix *ngramIndex) bind(budget int, stats *fuzzyStats) *ngramIndex {
+	ix.budget, ix.stats = budget, stats
 	return ix
 }
 
@@ -262,6 +262,7 @@ func buildNGramIndex(names []string) (*ngramIndex, error) {
 		postLen:  counts,
 		gramIDs:  gramIDs,
 		budget:   DefaultFuzzyMaxCandidates,
+		stats:    new(fuzzyStats),
 	}, nil
 }
 
@@ -415,18 +416,7 @@ walk:
 		sort.Strings(matches)
 	}
 
-	fuzzyWalkedLast.Store(walked)
-	fuzzyVerifiedLast.Store(verified)
-	if truncated {
-		fuzzyBudgetTrips.Add(1)
-		// One-time summary, mirroring the Options.FuzzyMaxNames disable log:
-		// the trip itself is the rare event worth surfacing, per-query
-		// logging is not.
-		if fuzzyBudgetLogged.CompareAndSwap(false, true) {
-			log.Printf("fuzzy search candidate budget reached (%d posting entries); the query returned partial results — raise Options.FuzzyMaxCandidates (negative disables the cap) if this workload needs full completeness",
-				ix.budget)
-		}
-	}
+	ix.stats.record(walked, verified, truncated, ix.budget)
 	return matches, truncated
 }
 

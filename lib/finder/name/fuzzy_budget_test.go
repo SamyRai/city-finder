@@ -117,7 +117,7 @@ func TestFuzzyBudgetDefaultNeverTripsAtSmallScale(t *testing.T) {
 	index, err := buildNGramIndex(budgetTestCorpus())
 	require.NoError(t, err)
 
-	before := FuzzyBudgetTrips()
+	before := index.stats.trips.Load()
 	for _, q := range []string{"Paris", "Londinium", "BudgCity01234", "sa199", "zzz"} {
 		for _, d := range []int{1, 2} {
 			got, truncated := index.search(q, d)
@@ -127,12 +127,12 @@ func TestFuzzyBudgetDefaultNeverTripsAtSmallScale(t *testing.T) {
 			}
 		}
 	}
-	assert.Equal(t, before, FuzzyBudgetTrips(), "no default-budget search at this scale may count a trip")
+	assert.Equal(t, before, index.stats.trips.Load(), "no default-budget search at this scale may count a trip")
 }
 
 // TestFuzzyBudgetTripCounterAndOneTimeLog pins the observability contract:
-// every truncated search increments FuzzyBudgetTrips exactly once, and the
-// summary log fires exactly once for the first trip ever — never per query.
+// every truncated search increments the Finder's trip counter exactly once, and
+// the summary log fires exactly once for the first trip — never per query.
 func TestFuzzyBudgetTripCounterAndOneTimeLog(t *testing.T) {
 	index, err := buildNGramIndex(budgetTestCorpus())
 	require.NoError(t, err)
@@ -142,18 +142,14 @@ func TestFuzzyBudgetTripCounterAndOneTimeLog(t *testing.T) {
 	log.SetOutput(&logBuf)
 	t.Cleanup(func() { log.SetOutput(oldLog) })
 
-	// The one-time log guard is process-global; earlier tests may have
-	// already spent it. Re-arm it so this test owns the first trip.
-	fuzzyBudgetLogged.Store(false)
-
 	index.budget = 5
-	before := FuzzyBudgetTrips()
+	before := index.stats.trips.Load()
 	const trips = 10
 	for i := 0; i < trips; i++ {
 		_, truncated := index.search(fmt.Sprintf("BudgCity%05d", i), 2)
 		require.Truef(t, truncated, "trip %d must truncate", i)
 	}
-	assert.Equal(t, before+trips, FuzzyBudgetTrips(), "one counter increment per truncated search")
+	assert.Equal(t, before+trips, index.stats.trips.Load(), "one counter increment per truncated search")
 
 	// The very first trip logged once; later trips stay silent.
 	if n := strings.Count(logBuf.String(), "candidate budget"); n != 1 {
@@ -162,9 +158,9 @@ func TestFuzzyBudgetTripCounterAndOneTimeLog(t *testing.T) {
 
 	// Untruncated searches do not count or log.
 	index.budget = -1
-	after := FuzzyBudgetTrips()
+	after := index.stats.trips.Load()
 	index.search("BudgCity00001", 2)
-	assert.Equal(t, after, FuzzyBudgetTrips())
+	assert.Equal(t, after, index.stats.trips.Load())
 	assert.Equal(t, 1, strings.Count(logBuf.String(), "candidate budget"))
 }
 
@@ -253,7 +249,7 @@ func TestFuzzyBudgetConcurrentSearches(t *testing.T) {
 	require.NoError(t, err)
 
 	index.budget = 3
-	before := FuzzyBudgetTrips()
+	before := index.stats.trips.Load()
 
 	const workers = 8
 	var wg sync.WaitGroup
@@ -281,5 +277,22 @@ func TestFuzzyBudgetConcurrentSearches(t *testing.T) {
 	// Every trip counted locally must be reflected globally; untruncated
 	// searches may also have tripped if their walks exceeded the budget, so
 	// the global counter only has a lower bound.
-	assert.GreaterOrEqual(t, FuzzyBudgetTrips()-before, uint64(trips.Load()))
+	assert.GreaterOrEqual(t, index.stats.trips.Load()-before, uint64(trips.Load()))
+}
+
+// TestFuzzyBudgetTripsArePerFinder pins counter ownership: a truncated search
+// on one Finder moves only that Finder's FuzzyBudgetTrips.
+func TestFuzzyBudgetTripsArePerFinder(t *testing.T) {
+	tripped := BuildIndex(fuzzyFixtureCities())
+	quiet := BuildIndex(fuzzyFixtureCities())
+	for _, f := range []*Finder{tripped, quiet} {
+		f.WarmFuzzy()
+		waitFuzzyBuilt(t, f)
+	}
+	setIndexBudget(tripped, 0)
+
+	require.Nil(t, tripped.getCachedFuzzySearch("Pars", 1))
+	assert.EqualValues(t, 1, tripped.FuzzyBudgetTrips())
+	assert.Equal(t, []string{"Paris"}, quiet.getCachedFuzzySearch("Pars", 1))
+	assert.EqualValues(t, 0, quiet.FuzzyBudgetTrips())
 }

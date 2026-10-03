@@ -148,8 +148,8 @@ func measureScaleWorkload(t *testing.T, index *ngramIndex, workload, label strin
 			start := time.Now()
 			_, trunc := index.search(q[0], d)
 			lat = append(lat, time.Since(start))
-			walked = append(walked, fuzzyWalkedLast.Load())
-			verified = append(verified, fuzzyVerifiedLast.Load())
+			walked = append(walked, index.stats.walkedLast.Load())
+			verified = append(verified, index.stats.verifiedLast.Load())
 			if trunc {
 				truncated++
 			}

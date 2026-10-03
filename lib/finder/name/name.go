@@ -75,6 +75,7 @@ type Finder struct {
 	cacheMutex    sync.RWMutex                         // Mutex for fuzzy search cache and fuzzyCacheAge
 	mutex         sync.RWMutex                         // Mutex for thread-safe operations
 	opts          Options                              // Fuzzy limits, fixed at construction; read without locking
+	fuzzyStats    fuzzyStats                           // Per-Finder fuzzy search diagnostics (budget trips); safe for concurrent use
 	fuzzyState    atomic.Int32                         // Lazy fuzzy-index state (fuzzyNotBuilt*, above); runtime-only, not serialized
 }
 

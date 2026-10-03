@@ -48,6 +48,16 @@ func (f *Finder) FuzzyBuildState() int32 {
 	return f.NameFinder.FuzzyBuildState()
 }
 
+// FuzzyBudgetTrips wraps the NameFinder method: it reports how many fuzzy
+// searches returned partial results because the candidate budget tripped
+// (see name.Finder.FuzzyBudgetTrips). A finder without a name index reports 0.
+func (f *Finder) FuzzyBudgetTrips() uint64 {
+	if f.NameFinder == nil {
+		return 0
+	}
+	return f.NameFinder.FuzzyBudgetTrips()
+}
+
 // PrefixNames wraps the NameFinder method: it returns up to maxNames indexed
 // names under countryCode that start with prefix, each paired with its
 // first-referenced city (see name.Finder.PrefixNames for the limit and
