@@ -1,11 +1,20 @@
 package routes
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"math"
 	"runtime"
+	"strings"
+	"sync"
 	"sync/atomic"
 
+	"github.com/SamyRai/cityFinder/lib/finder"
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
+	"github.com/gofiber/fiber/v2"
 )
 
 // maxBatchPoints caps a POST /nearest/batch request. The batch exists so a
@@ -115,5 +124,132 @@ func lowerFirstFailure(first *atomic.Int64, i int64) {
 		if i >= cur || first.CompareAndSwap(cur, i) {
 			return
 		}
+	}
+}
+
+// batchHandler serves POST /nearest/batch: one round trip for many /nearest
+// lookups. Each point carries the GET endpoint's parameters (lat/lon
+// required, rank/include optional with the same whitelist); the reply is a
+// parallel results array — the object GET would return for that point, or
+// null where GET would 404. Points execute concurrently through the same
+// query core (population gate included), so a batch observes the same
+// per-point semantics as the GETs it replaces.
+func batchHandler(mainFinder *finder.Finder) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if c.Get(fiber.HeaderContentType) != "application/json" {
+			return c.Status(fiber.StatusBadRequest).
+				SendString("Content-Type must be application/json")
+		}
+
+		// Strict decode: unknown fields are named in the 400 (this handler
+		// ignores nothing, like it is case-sensitive everywhere else); a
+		// second Decode must then hit EOF, so trailing garbage is malformed
+		// too. Schema type mismatches (e.g. a string for lat) share the
+		// "invalid JSON body" fate: the body is not a valid request document.
+		dec := json.NewDecoder(bytes.NewReader(c.Body()))
+		dec.DisallowUnknownFields()
+		var req batchRequest
+		if err := dec.Decode(&req); err != nil {
+			var typeErr *json.UnmarshalTypeError
+			if errors.As(err, &typeErr) ||
+				!strings.HasPrefix(err.Error(), "json: unknown field ") {
+				return c.Status(fiber.StatusBadRequest).SendString("invalid JSON body")
+			}
+			return c.Status(fiber.StatusBadRequest).SendString(err.Error())
+		}
+		var trailing any
+		if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+			return c.Status(fiber.StatusBadRequest).SendString("invalid JSON body")
+		}
+
+		if len(req.Points) == 0 {
+			return c.Status(fiber.StatusBadRequest).
+				SendString("points must contain at least one entry")
+		}
+		if len(req.Points) > maxBatchPoints {
+			return c.Status(fiber.StatusBadRequest).
+				SendString(fmt.Sprintf("points must contain at most %d entries", maxBatchPoints))
+		}
+
+		// Validate every point before executing any, in request order; the
+		// first failure wins and names the offending index.
+		queries := make([]validatedPoint, 0, len(req.Points))
+		for i, point := range req.Points {
+			query, reason := validateBatchPoint(point)
+			if reason != "" {
+				return c.Status(fiber.StatusBadRequest).
+					SendString(fmt.Sprintf("points[%d]: %s", i, reason))
+			}
+			queries = append(queries, query)
+		}
+
+		// Execute the points concurrently: lookups are independent, and a
+		// sequential batch of far-from-land rank=population points would run
+		// for minutes (each scan takes seconds). Fan-out is bounded by
+		// maxBatchWorkers; the expensive class stays additionally bounded by
+		// the populationGate inside executeNearest, exactly like parallel
+		// GETs would be. Results land at each point's index, so the response
+		// array stays parallel to the request regardless of completion
+		// order; the first saturated/error outcome in REQUEST order still
+		// fails the whole request.
+		//
+		// Once a point fails, every LATER point is skipped: its result would
+		// be discarded, and a population point would hold a gate slot for
+		// nothing. Earlier points still run, so the first failure in request
+		// order is still the one reported (firstFailure only ever decreases,
+		// and a skipped index is always above a failed one).
+		responses := make([]nearestCityResponse, len(queries))
+		outcomes := make([]nearestOutcome, len(queries))
+		var firstFailure atomic.Int64
+		firstFailure.Store(int64(len(queries)))
+		work := make(chan int)
+		hasPopulation := false
+		for _, q := range queries {
+			hasPopulation = hasPopulation || q.rank == coordinates.RankPopulation
+		}
+		workers := batchWorkerCount(len(queries), hasPopulation)
+		var wg sync.WaitGroup
+		wg.Add(workers)
+		for w := 0; w < workers; w++ {
+			go func() {
+				defer wg.Done()
+				for i := range work {
+					if int64(i) > firstFailure.Load() {
+						continue // a result after the first failure is never used
+					}
+					responses[i], outcomes[i] = executeNearest(
+						mainFinder, queries[i].lat, queries[i].lon,
+						queries[i].rank, queries[i].includeAdmin)
+					if outcomes[i] == nearestSaturated || outcomes[i] == nearestError {
+						lowerFirstFailure(&firstFailure, int64(i))
+					}
+				}
+			}()
+		}
+		for i := range queries {
+			work <- i
+		}
+		close(work)
+		wg.Wait()
+
+		results := make([]*nearestCityResponse, 0, len(queries))
+		for i, outcome := range outcomes {
+			switch outcome {
+			case nearestSaturated:
+				// A saturated gate mid-batch fails the whole request. Slots
+				// are released inside executeNearest before it returns, so
+				// this request holds none on the way out.
+				c.Set(fiber.HeaderRetryAfter, "1")
+				return c.Status(fiber.StatusServiceUnavailable).
+					SendString("population ranking is saturated, retry shortly")
+			case nearestError:
+				return c.Status(fiber.StatusInternalServerError).SendString("internal server error")
+			case nearestNotFound:
+				results = append(results, nil) // the batch form of GET's 404
+			default: // nearestOK
+				results = append(results, &responses[i])
+			}
+		}
+		return c.JSON(batchResponse{Results: results})
 	}
 }
