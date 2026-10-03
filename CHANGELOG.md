@@ -23,6 +23,12 @@ and this project adheres to
 
 ### Fixed
 
+- **Oversized and malformed requests were invisible.** 413 (body over
+  1 MB) and 431 (headers over the read buffer) are produced by the HTTP
+  server before any middleware runs, so `/metrics` and the access log never
+  showed them. They are now counted under the `(rejected)` path label and
+  logged with method and path `-` (the raw request is never echoed).
+
 - **A second SIGTERM/SIGINT during shutdown was ignored.** The signal
   handler stayed registered after the first signal, so a stalled connection
   held the process for the full 10 s drain no matter how often it was

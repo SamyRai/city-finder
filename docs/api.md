@@ -18,7 +18,11 @@ Prometheus text format:
 
 - `http_requests_total{path,status}` and the
   `http_request_duration_seconds` histogram per route pattern (scrapes of
-  `/metrics` itself are not counted);
+  `/metrics` itself are not counted). Requests no route matched are labelled
+  `(unrouted)`; requests the HTTP server rejects before routing (413 body
+  too large, 431 headers too large, 408 read timeout, malformed requests)
+  are labelled `(rejected)` and also get an access-log line with method and
+  path `-`;
 - `fuzzy_budget_trips_total`: fuzzy searches that returned budget-truncated,
   partial results;
 - `fuzzy_build_state`: 0 not built, 1 building, 2 built, 3 disabled;

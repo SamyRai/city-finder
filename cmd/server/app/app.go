@@ -41,7 +41,9 @@ func Config() fiber.Config {
 // metrics middleware and GET /metrics), panic recovery, and every data route
 // over f. The app owns the whole middleware chain and its order.
 func New(f *finder.Finder, reg *metrics.Registry, requestLog *log.Logger) *fiber.App {
-	a := fiber.New(Config())
+	cfg := Config()
+	cfg.ErrorHandler = errorHandler(reg, requestLog)
+	a := fiber.New(cfg)
 	a.Use(RequestLogger(requestLog))
 	a.Use(ETag())
 	if reg != nil {
@@ -65,6 +67,7 @@ func New(f *finder.Finder, reg *metrics.Registry, requestLog *log.Logger) *fiber
 // Request bodies, query parameters, and multipart forms are never logged.
 func RequestLogger(l *log.Logger) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		c.Locals(chainEnteredKey{}, true)
 		start := time.Now()
 		err := c.Next()
 		bp := accessLineBuf.Get().(*[]byte)
