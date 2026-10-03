@@ -2,11 +2,13 @@ package app
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"log"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SamyRai/cityFinder/cmd/server/metrics"
 	"github.com/SamyRai/cityFinder/lib/finder"
@@ -64,4 +66,25 @@ func TestRequestLoggerRecordsErrorAndPanicStatuses(t *testing.T) {
 	}
 	assert.Contains(t, logBuf.String(), "GET /no-such-route 404")
 	assert.Contains(t, logBuf.String(), "GET /panic 500")
+}
+
+// TestAppendAccessLineMatchesPrintfFormat: the hand-built access-log line is
+// byte-identical to the format it replaced, for every field shape.
+func TestAppendAccessLineMatchesPrintfFormat(t *testing.T) {
+	zones := []*time.Location{time.UTC, time.FixedZone("x", 5*3600+1800), time.FixedZone("y", -7*3600)}
+	for i, tc := range []struct {
+		method, path string
+		status, size int
+		elapsed      time.Duration
+	}{
+		{"GET", "/nearest", 200, 81, 1234567 * time.Nanosecond},
+		{"POST", "/nearest/batch", 503, 0, 3 * time.Second},
+		{"GET", "/", 404, 9, 0},
+		{"DELETE", "/a b/%C3%A9", 405, 1 << 20, 999 * time.Nanosecond},
+		{"GET", "", 500, 21, 90 * time.Minute},
+	} {
+		start := time.Date(2026, 10, 3, 1, 2, 3, 456789, zones[i%len(zones)])
+		want := fmt.Sprintf("%s %s %s %d %s %d", start.Format(time.RFC3339), tc.method, tc.path, tc.status, tc.elapsed, tc.size)
+		assert.Equal(t, want, string(appendAccessLine(nil, start, tc.method, tc.path, tc.status, tc.elapsed, tc.size)))
+	}
 }
