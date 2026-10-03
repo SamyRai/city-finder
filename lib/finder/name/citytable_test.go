@@ -8,20 +8,21 @@ import (
 	"testing"
 	"unsafe"
 
+	"github.com/SamyRai/cityFinder/internal/testfixture"
 	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func shareFixture(n int) []city.SpatialCity {
-	cities := make([]city.SpatialCity, n)
-	for i := range cities {
-		cities[i] = city.SpatialCity{
-			City:     city.City{Name: fmt.Sprintf("Place %d", i%(n/3+1)), Country: []string{"FR", "DE", "US"}[i%3], Latitude: float64(i) / 100, Longitude: float64(-i) / 100, Population: int32(i)},
-			AltNames: []string{fmt.Sprintf("Alt %d", i)},
-		}
-	}
-	return cities
+	return testfixture.Cities(n, testfixture.Spec{
+		Name:       func(i int) string { return fmt.Sprintf("Place %d", i%(n/3+1)) },
+		Country:    testfixture.Cycle([]string{"FR", "DE", "US"}),
+		Lat:        func(i int) float64 { return float64(i) / 100 },
+		Lon:        func(i int) float64 { return float64(-i) / 100 },
+		Alts:       func(i int) []string { return []string{fmt.Sprintf("Alt %d", i)} },
+		Population: func(i int) int32 { return int32(i) },
+	})
 }
 
 // rowTable is the S2-side table: the input's City values in row order.

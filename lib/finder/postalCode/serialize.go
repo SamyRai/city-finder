@@ -33,11 +33,7 @@ const (
 )
 
 // indexHeader is the first gob value of every serialized postal code index.
-type indexHeader struct {
-	Magic   string
-	Version uint32
-	Count   int
-}
+type indexHeader = indexfile.Header
 
 // payloadBounds relates the header's entry count to the file, so a bomb is
 // rejected before it inflates (see indexfile.EntryBounds). Measured on the
@@ -79,6 +75,9 @@ type payloadV3 struct {
 	PostalCode map[string]map[string]dataLoader.PostalCodeEntry
 }
 
+// indexSpec is what indexfile.OpenIndex checks a file against.
+var indexSpec = indexfile.Spec{Magic: indexMagic, Versions: []uint32{indexVersion, indexVersionV3}, Corrupt: ErrCorruptIndex, Bounds: &payloadBounds}
+
 // SerializeIndex saves the postal code index (format v4) atomically.
 func (pcf *Finder) SerializeIndex(filepath string) error {
 	pcf.mutex.RLock()
@@ -113,31 +112,12 @@ func (pcf *Finder) SerializeIndex(filepath string) error {
 // initializer can fall back to a rebuild. A v3 file loads into the compact
 // table and reports LegacyFormat() so the caller can rewrite it.
 func DeserializeIndex(filepath string) (*Finder, error) {
-	file, err := indexfile.Open(filepath)
+	file, header, err := indexfile.OpenIndex(filepath, indexSpec)
 	if err != nil {
-		return nil, fmt.Errorf("error opening file: %w", err)
+		return nil, err
 	}
 	defer file.Close()
-
-	corrupt := func(format string, args ...any) error {
-		return fmt.Errorf("%w: index file %s appears truncated or from an incompatible version; delete %s or rebuild the index: "+format,
-			append([]any{ErrCorruptIndex, filepath, filepath}, args...)...)
-	}
-
-	var header indexHeader
-	if err := file.Header(&header); err != nil {
-		return nil, corrupt("%v", err)
-	}
-	if header.Magic != indexMagic {
-		return nil, corrupt("bad magic %q (want %q)", header.Magic, indexMagic)
-	}
-	if header.Version != indexVersion && header.Version != indexVersionV3 {
-		return nil, corrupt("unsupported version %d (want %d or %d)", header.Version, indexVersion, indexVersionV3)
-	}
-
-	if err := file.BoundByEntries(header.Count, payloadBounds); err != nil {
-		return nil, corrupt("%v", err)
-	}
+	corrupt := func(format string, args ...any) error { return indexSpec.Corruptf(filepath, format, args...) }
 
 	var finder *Finder
 	if header.Version == indexVersionV3 {

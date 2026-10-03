@@ -223,6 +223,22 @@ and this project adheres to
   writing empty indexes, and a postal file that fails to load is an error
   instead of a warning plus an empty postal index. A postal file with zero rows
   is still allowed. Both rules live in `lib/builder`.
+- **Index header handling has one owner.** The S2, name and postal code
+  loaders shared a copy of the header struct, the magic/version check and the
+  corruption mapping; `indexfile.OpenIndex` now does it once. Each package
+  keeps its own `ErrCorruptIndex`, and the header's gob field names and types
+  are unchanged, so existing index files load as before (a fixture written by
+  the previous code is loaded in each package's tests). Corruption error
+  messages now share one wording.
+- `finder.Finder.WaitFuzzy(ctx)` forwards the name finder's method (a finder
+  without a name index returns nil). `memreport` uses it instead of polling
+  the build state, and a build that settles back at "not built" now fails
+  right away instead of at `-fuzzy-timeout`.
+- A name finder that holds no names no longer spawns a goroutine and takes a
+  snapshot each time something triggers the fuzzy build; answers are
+  unchanged. The first name added re-arms the build.
+- Test fixtures: nine copies of the synthetic city loop now share
+  `internal/testfixture` (output byte-identical).
 - **Process environment has one owner.** `PORT`, `PPROF_ADDR` and
   `CONFIG_PATH` are read once, in `config.LoadRuntime`, and passed down;
   `cmd/server` no longer reads the environment itself. The previously

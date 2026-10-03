@@ -6,6 +6,7 @@ import (
 	"runtime/debug"
 	"testing"
 
+	"github.com/SamyRai/cityFinder/internal/testfixture"
 	"github.com/SamyRai/cityFinder/lib/city"
 )
 
@@ -14,18 +15,12 @@ import (
 // not collapse the per-city allocations being counted, and nil AltNames keep
 // the measurement focused on the SpatialCity backing array itself.
 func generateUniqueCities(count int) []city.SpatialCity {
-	cities := make([]city.SpatialCity, count)
-	for i := range cities {
-		cities[i] = city.SpatialCity{
-			City: city.City{
-				Name:      fmt.Sprintf("RetentionCity%07d", i),
-				Country:   fmt.Sprintf("C%02d", i%50),
-				Latitude:  float64(i%9000) / 100,
-				Longitude: float64(i%18000) / 100,
-			},
-		}
-	}
-	return cities
+	return testfixture.Cities(count, testfixture.Spec{
+		Name:    testfixture.Format("RetentionCity%07d"),
+		Country: func(i int) string { return fmt.Sprintf("C%02d", i%50) },
+		Lat:     func(i int) float64 { return float64(i%9000) / 100 },
+		Lon:     func(i int) float64 { return float64(i%18000) / 100 },
+	})
 }
 
 // buildStaged replicates BuildIndex's load sequence without its logging and

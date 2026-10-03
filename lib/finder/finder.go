@@ -1,6 +1,7 @@
 package finder
 
 import (
+	"context"
 	"errors"
 
 	"github.com/SamyRai/cityFinder/lib/city"
@@ -49,6 +50,17 @@ func (f *Finder) WarmFuzzy() {
 		return
 	}
 	f.NameFinder.WarmFuzzy()
+}
+
+// WaitFuzzy wraps the NameFinder method: it blocks until no fuzzy build is in
+// flight or ctx is done (see name.Finder.WaitFuzzy for the settled states and
+// the error). It starts no build. A finder without a name index returns nil
+// at once.
+func (f *Finder) WaitFuzzy(ctx context.Context) error {
+	if f.NameFinder == nil {
+		return nil
+	}
+	return f.NameFinder.WaitFuzzy(ctx)
 }
 
 // FuzzyBuildState wraps the NameFinder method: it reports the fuzzy index

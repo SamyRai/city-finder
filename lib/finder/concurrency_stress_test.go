@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SamyRai/cityFinder/internal/testfixture"
 	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/SamyRai/cityFinder/lib/dataLoader"
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
@@ -19,18 +20,12 @@ import (
 
 // generateStressTestCities creates a large dataset for stress testing
 func generateStressTestCities(count int) []city.SpatialCity {
-	cities := make([]city.SpatialCity, count)
-	for i := 0; i < count; i++ {
-		cities[i] = city.SpatialCity{
-			City: city.City{
-				Name:      fmt.Sprintf("StressCity%d", i),
-				Country:   fmt.Sprintf("C%d", i%100), // 100 different countries
-				Latitude:  float64(i%180) - 90.0,
-				Longitude: float64(i%360) - 180.0,
-			},
-		}
-	}
-	return cities
+	return testfixture.Cities(count, testfixture.Spec{
+		Name:    testfixture.Format("StressCity%d"),
+		Country: func(i int) string { return fmt.Sprintf("C%d", i%100) }, // 100 different countries
+		Lat:     func(i int) float64 { return float64(i%180) - 90.0 },
+		Lon:     func(i int) float64 { return float64(i%360) - 180.0 },
+	})
 }
 
 // generateStressTestPostalCodes creates postal code data for stress testing

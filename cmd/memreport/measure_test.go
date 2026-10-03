@@ -6,10 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/SamyRai/cityFinder/lib/city"
+	"github.com/SamyRai/cityFinder/lib/finder"
+	"github.com/SamyRai/cityFinder/lib/finder/name"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,46 +46,31 @@ func TestFileMB(t *testing.T) {
 	assert.Equal(t, -1.0, fileMB(p+".missing"))
 }
 
-func TestWaitFuzzy_ReturnsWhenBuilt(t *testing.T) {
-	for _, final := range []int32{2, 3} { // built, disabled
-		var polls atomic.Int32
-		state := func() int32 {
-			switch polls.Add(1) {
-			case 1:
-				return 0
-			case 2:
-				return 1
-			}
-			return final
-		}
-		require.NoError(t, waitFuzzy(context.Background(), state, time.Millisecond), "final state %d", final)
-		assert.EqualValues(t, 3, polls.Load())
-	}
+func smallNameFinder() *finder.Finder {
+	return &finder.Finder{NameFinder: name.BuildIndex([]city.SpatialCity{
+		{City: city.City{Name: "Paris", Country: "FR", Latitude: 48.85, Longitude: 2.35, Population: 2100000}},
+		{City: city.City{Name: "Lyon", Country: "FR", Latitude: 45.76, Longitude: 4.84, Population: 500000}},
+	})}
 }
 
-func TestWaitFuzzy_NeverReadyTimesOut(t *testing.T) {
-	for _, stuck := range []int32{0, 1} {
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-		start := time.Now()
-		err := waitFuzzy(ctx, func() int32 { return stuck }, time.Millisecond)
-		cancel()
-		require.Error(t, err, "stuck state %d", stuck)
-		assert.ErrorIs(t, err, context.DeadlineExceeded)
-		assert.Contains(t, err.Error(), "fuzzy index not built")
-		assert.Less(t, time.Since(start), 5*time.Second)
-	}
+func TestEnsureFuzzy_BuildsAndWaits(t *testing.T) {
+	f := smallNameFinder()
+	require.NoError(t, ensureFuzzy(context.Background(), f, time.Minute))
+	assert.EqualValues(t, 2, f.FuzzyBuildState(), "built once ensureFuzzy returns")
 }
 
-func TestWaitFuzzy_CancelledContextIsAnError(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	assert.ErrorIs(t, waitFuzzy(ctx, func() int32 { return 1 }, time.Hour), context.Canceled)
-}
-
-func TestWaitFuzzy_AlreadyBuiltDoesNotWait(t *testing.T) {
+func TestEnsureFuzzy_AlreadyBuiltDoesNotWait(t *testing.T) {
+	f := smallNameFinder()
+	require.NoError(t, ensureFuzzy(context.Background(), f, time.Minute))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // even a dead context is fine when there is nothing to wait for
-	assert.NoError(t, waitFuzzy(ctx, func() int32 { return 2 }, time.Hour))
+	assert.NoError(t, ensureFuzzy(ctx, f, time.Minute))
+}
+
+func TestEnsureFuzzy_NoNameIndexIsAnError(t *testing.T) {
+	err := ensureFuzzy(context.Background(), &finder.Finder{}, time.Minute)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fuzzy index not built")
 }
 
 // genConfig generates a small dataset and returns its config path.
