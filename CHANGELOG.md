@@ -218,6 +218,11 @@ and this project adheres to
   `log.Fatalf`, usage errors go to stderr, `-h` prints usage and exits 0, and
   the index files are written concurrently after all builds succeed. Answers
   are unchanged: indexes built before and after load to the same transcript.
+- **`cmd/build-index` follows the initializer's dataset policies.** A city
+  load with zero rows now fails (naming the file and any filters) instead of
+  writing empty indexes, and a postal file that fails to load is an error
+  instead of a warning plus an empty postal index. A postal file with zero rows
+  is still allowed. Both rules live in `lib/builder`.
 - **Process environment has one owner.** `PORT`, `PPROF_ADDR` and
   `CONFIG_PATH` are read once, in `config.LoadRuntime`, and passed down;
   `cmd/server` no longer reads the environment itself. The previously

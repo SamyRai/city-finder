@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/SamyRai/cityFinder/lib/builder"
 	"github.com/SamyRai/cityFinder/lib/finder/coordinates"
 	"github.com/SamyRai/cityFinder/lib/finder/name"
 	"github.com/SamyRai/cityFinder/lib/finder/postalCode"
@@ -110,16 +111,60 @@ func TestRun_ProdModeAppliesConfigFilters(t *testing.T) {
 	assert.Len(t, s2.Cities, 1)
 }
 
-func TestRun_MissingPostalDatasetIsTolerated(t *testing.T) {
+func TestRun_MissingPostalDatasetFails(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "cities.txt"), tinyCities)
 	prodConfig(t, dir, "")
 
 	var stdout, stderr bytes.Buffer
+	err := run([]string{"prod"}, &stdout, &stderr)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to load postal codes")
+	assert.NoFileExists(t, filepath.Join(dir, "s2.gob"))
+	assert.NoFileExists(t, filepath.Join(dir, "postal.gob"))
+}
+
+func TestRun_EmptyPostalDatasetIsAllowed(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "cities.txt"), tinyCities)
+	writeFile(t, filepath.Join(dir, "postal.txt"), "")
+	prodConfig(t, dir, "")
+
+	var stdout, stderr bytes.Buffer
 	require.NoError(t, run([]string{"prod"}, &stdout, &stderr))
 
-	assert.Contains(t, stderr.String(), "Warning: failed to load postal codes")
 	assert.FileExists(t, filepath.Join(dir, "postal.gob"))
+}
+
+func TestRun_ZeroCitiesWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "cities.txt"), "")
+	writeFile(t, filepath.Join(dir, "postal.txt"), tinyPostal)
+	prodConfig(t, dir, "")
+
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"prod"}, &stdout, &stderr)
+
+	require.ErrorIs(t, err, builder.ErrNoCities)
+	assert.Contains(t, err.Error(), filepath.Join(dir, "cities.txt"))
+	for _, f := range []string{"s2.gob", "name.gob", "postal.gob"} {
+		assert.NoFileExists(t, filepath.Join(dir, f))
+	}
+}
+
+func TestRun_FilteredOutCitiesNamesTheFilter(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "cities.txt"), tinyCities)
+	writeFile(t, filepath.Join(dir, "postal.txt"), tinyPostal)
+	prodConfig(t, dir, `, "include_feature_classes": "H"`)
+
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"prod"}, &stdout, &stderr)
+
+	require.ErrorIs(t, err, builder.ErrNoCities)
+	assert.Contains(t, err.Error(), "include_feature_classes")
+	assert.NoFileExists(t, filepath.Join(dir, "s2.gob"))
 }
 
 func TestRun_MissingCitiesFails(t *testing.T) {

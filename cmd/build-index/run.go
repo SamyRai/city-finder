@@ -37,7 +37,7 @@ func parseMode(args []string) (string, error) {
 }
 
 // run builds the indexes for the mode named in args, reporting progress on
-// stdout and warnings on stderr. Every failure is returned; only main exits.
+// stdout and usage on stderr. Every failure is returned; only main exits.
 func run(args []string, stdout, stderr io.Writer) error {
 	mode, err := parseMode(args)
 	if errors.Is(err, flag.ErrHelp) {
@@ -72,7 +72,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 	sum := summary{mode: mode, initialMem: initialMem}
 	overallStart := time.Now()
-	if err := buildAll(paths, stdout, stderr, &sum); err != nil {
+	if err := buildAll(paths, stdout, &sum); err != nil {
 		return err
 	}
 	sum.total = time.Since(overallStart)
@@ -83,7 +83,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 // buildAll runs the timed steps (load, S2, name, postal, write) through
 // lib/builder and records the results in sum.
-func buildAll(paths buildPaths, stdout, stderr io.Writer, sum *summary) error {
+func buildAll(paths buildPaths, stdout io.Writer, sum *summary) error {
 	// The filters thread the same way as the initializer's loadData so a
 	// pre-built index matches what a first boot would build from the same
 	// config (they apply only when an index is (re)built).
@@ -126,20 +126,19 @@ func buildAll(paths buildPaths, stdout, stderr io.Writer, sum *summary) error {
 	sum.cities = len(cities)
 	sum.load.ItemsProcessed = len(cities)
 	sum.load.Throughput = float64(len(cities)) / sum.load.Duration.Seconds()
-	// The postal measurement is printed after its item count is known, so
-	// the step is timed here and reported below.
-	postalLoad, _ := measureOperation("2. Loading Postal Codes", 0, func() error {
-		// A missing or unreadable postal dataset is tolerated here, unlike in
-		// the initializer: build-index stays usable on a checkout that has
-		// only the city dump, and writes an empty postal index.
-		var err error
+	// A postal file that fails to load is fatal, as in the initializer; one
+	// with zero rows is allowed. The step is reported after the loop below
+	// because its item count is only known once the table is loaded.
+	postalLoad, err := measureOperation("2. Loading Postal Codes", 0, func() (err error) {
 		postalCodes, err = src.LoadPostal()
 		if err != nil {
-			fmt.Fprintf(stderr, "Warning: failed to load postal codes: %v\n", err)
-			postalCodes = make(builder.PostalCodes)
+			return fmt.Errorf("failed to load postal codes: %w", err)
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
 	for _, countryCodes := range postalCodes {
 		sum.postalCodes += len(countryCodes)
 	}

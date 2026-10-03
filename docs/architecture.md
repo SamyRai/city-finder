@@ -96,8 +96,11 @@ it, each taking the steps it needs: builds run one after another (they are the
 memory peak), and the files are written concurrently only after every build
 has succeeded. The name index is always built on the S2 index's city table.
 If sharing that table ever failed, the index would keep its own copy and log a
-warning; the same policy applies to both callers. `cmd/build-index` differs
-only in tolerating a missing postal dataset (it writes an empty postal index).
+warning; the same policy applies to both callers. The dataset policies live
+there too, so the callers cannot differ: a city load with zero rows is
+`builder.ErrNoCities` (naming the file and the filters) and nothing is built or
+written; a postal file that fails to load is an error, while one with zero rows
+is allowed.
 
 ## Why S2
 
