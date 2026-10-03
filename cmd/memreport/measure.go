@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/SamyRai/cityFinder/lib/config"
+	"github.com/SamyRai/cityFinder/lib/finder"
 	"github.com/SamyRai/cityFinder/lib/initializer"
 )
 
@@ -92,6 +93,20 @@ func waitFuzzy(ctx context.Context, state func() int32, interval time.Duration) 
 	return nil
 }
 
+// ensureFuzzy starts the fuzzy build and waits for it, for at most timeout.
+// It returns at once when the index is already built or disabled. Typo
+// lookups answer differently mid-build, so anything that records answers
+// must call it first.
+func ensureFuzzy(ctx context.Context, f *finder.Finder, timeout time.Duration) error {
+	f.WarmFuzzy()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if err := waitFuzzy(ctx, f.FuzzyBuildState, fuzzyPollInterval); err != nil {
+		return fmt.Errorf("waiting %s: %w", timeout, err)
+	}
+	return nil
+}
+
 func measure(ctx context.Context, o measureOptions, stdout io.Writer) error {
 	cfgPath, dumpPath, profilePath := o.cfgPath, o.dumpPath, o.profilePath
 	cfg, err := config.LoadConfig(cfgPath)
@@ -120,11 +135,8 @@ func measure(ctx context.Context, o measureOptions, stdout io.Writer) error {
 	rssReleased := rssMB()
 
 	start = time.Now()
-	f.WarmFuzzy()
-	fuzzyCtx, cancel := context.WithTimeout(ctx, o.fuzzyTimeout)
-	defer cancel()
-	if err := waitFuzzy(fuzzyCtx, f.FuzzyBuildState, fuzzyPollInterval); err != nil {
-		return fmt.Errorf("waiting %s: %w", o.fuzzyTimeout, err)
+	if err := ensureFuzzy(ctx, f, o.fuzzyTimeout); err != nil {
+		return err
 	}
 	fuzzyDur := time.Since(start)
 	heapFuzzy := liveHeapMB()
@@ -156,7 +168,7 @@ func measure(ctx context.Context, o measureOptions, stdout io.Writer) error {
 		}
 	}
 	if dumpPath != "" {
-		if err := dumpTranscript(f, cfg, dumpPath); err != nil {
+		if err := dumpTranscript(ctx, f, cfg, dumpPath, o.fuzzyTimeout); err != nil {
 			return err
 		}
 	}

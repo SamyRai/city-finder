@@ -25,18 +25,13 @@ func transcriptFor(t *testing.T, n int, seed int64) []byte {
 	require.NoError(t, err)
 	f, err := initializer.Initialize(cfg)
 	require.NoError(t, err)
-	// Typo lookups answer differently while the background fuzzy build is
-	// still running, so wait for it exactly as `measure` does.
-	f.WarmFuzzy()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	require.NoError(t, waitFuzzy(ctx, f.FuzzyBuildState, time.Millisecond))
+	// No fuzzy wait here: dumpTranscript owns that precondition.
 	return dumpTo(t, f, cfg, filepath.Join(t.TempDir(), "answers.txt"))
 }
 
 func dumpTo(t *testing.T, f *finder.Finder, cfg *config.Config, path string) []byte {
 	t.Helper()
-	require.NoError(t, dumpTranscript(f, cfg, path))
+	require.NoError(t, dumpTranscript(context.Background(), f, cfg, path, time.Minute))
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	return data
@@ -62,7 +57,7 @@ func TestDumpTranscript_UnwritablePathFails(t *testing.T) {
 	require.NoError(t, err)
 	f, err := initializer.Initialize(cfg)
 	require.NoError(t, err)
-	assert.Error(t, dumpTranscript(f, cfg, filepath.Join(t.TempDir(), "no-dir", "x")))
+	assert.Error(t, dumpTranscript(context.Background(), f, cfg, filepath.Join(t.TempDir(), "no-dir", "x"), time.Minute))
 }
 
 func TestSampleRowsAndPostal(t *testing.T) {
@@ -129,4 +124,17 @@ func TestTypo(t *testing.T) {
 	// Strings of fewer than two runes are extended, never panic.
 	assert.Equal(t, "a", typo("", rand.New(rand.NewSource(1))))
 	assert.Equal(t, "Xa", typo("X", rand.New(rand.NewSource(1))))
+}
+
+// TestDumpTranscript_WaitsForTheFuzzyBuild pins that the dump itself waits: a
+// freshly initialised finder is handed over with the fuzzy index unbuilt, and
+// afterwards the index must be built.
+func TestDumpTranscript_WaitsForTheFuzzyBuild(t *testing.T) {
+	cfg, err := config.LoadConfig(genConfig(t, 300, 1))
+	require.NoError(t, err)
+	f, err := initializer.Initialize(cfg)
+	require.NoError(t, err)
+	require.NotEqual(t, int32(2), f.FuzzyBuildState(), "precondition: not built yet")
+	dumpTo(t, f, cfg, filepath.Join(t.TempDir(), "answers.txt"))
+	assert.EqualValues(t, 2, f.FuzzyBuildState())
 }
