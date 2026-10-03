@@ -83,9 +83,12 @@ type nameIndexPayloadV3 struct {
 // order makes the file bytes non-deterministic — acceptable, indexes are
 // regenerable artifacts gated by count validation and round-trip tests.
 func (nf *Finder) SerializeIndex(filepath string) error {
-	nf.mutex.Lock()
+	// The payload build only reads, so lookups keep running meanwhile. What
+	// the payload shares (the base city table) is never mutated after the
+	// build; AddCity only appends extras.
+	nf.mutex.RLock()
 	payload, err := nf.buildPayloadV3Locked()
-	nf.mutex.Unlock()
+	nf.mutex.RUnlock()
 	if err != nil {
 		return err
 	}
@@ -95,9 +98,10 @@ func (nf *Finder) SerializeIndex(filepath string) error {
 }
 
 // buildPayloadV3Locked reduces the flat tables plus the overflow to the v3
-// payload. The caller must hold nf.mutex. A country present in both the
-// sorted tables and the overflow serializes as one Refs map whose per-name id
-// lists carry the sorted-table ids first, then the overflow ids.
+// payload. The caller must hold nf.mutex; a read lock suffices. A country
+// present in both the sorted tables and the overflow serializes as one Refs
+// map whose per-name id lists carry the sorted-table ids first, then the
+// overflow ids.
 func (nf *Finder) buildPayloadV3Locked() (nameIndexPayloadV3, error) {
 	t := &nf.cities
 	if t.base == nil && t.baseCount > 0 {
