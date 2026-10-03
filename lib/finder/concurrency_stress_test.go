@@ -275,46 +275,32 @@ func TestMemoryPressure_Concurrent(t *testing.T) {
 	postalFinder := postalCode.BuildIndex(postalCodes)
 
 	var wg sync.WaitGroup
-	numWorkers := runtime.NumCPU() // Reduced concurrency to avoid deadlocks
+	numWorkers := runtime.NumCPU()
 	operationsPerWorker := 5000
 
 	startTime := time.Now()
 
-	// Run concurrent operations under memory pressure
+	// Run concurrent operations under memory pressure. Each operation runs
+	// inline: a hang must fail the test (via the test timeout), not be
+	// logged and skipped past as the old per-operation timeout did.
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
 
 			for j := 0; j < operationsPerWorker; j++ {
-				// Mix operations across all finders with timeouts
-				done := make(chan bool, 1)
-				go func(operationType int) {
-					switch operationType {
-					case 0: // Name lookup
-						cityIndex := (workerID*operationsPerWorker + j) % len(cities)
-						testCity := cities[cityIndex]
-						nameFinder.CityByName(testCity.Name, testCity.Country)
+				n := workerID*operationsPerWorker + j
+				switch j % 3 {
+				case 0: // Name lookup
+					testCity := cities[n%len(cities)]
+					nameFinder.CityByName(testCity.Name, testCity.Country)
 
-					case 1: // Coordinate lookup
-						cityIndex := (workerID*operationsPerWorker + j) % len(cities)
-						testCity := cities[cityIndex]
-						coordFinder.NearestPlace(testCity.Latitude, testCity.Longitude, coordinates.RankDistance)
+				case 1: // Coordinate lookup
+					testCity := cities[n%len(cities)]
+					coordFinder.NearestPlace(testCity.Latitude, testCity.Longitude, coordinates.RankDistance)
 
-					case 2: // Postal code lookup
-						countryCode := fmt.Sprintf("C%d", (workerID*operationsPerWorker+j)%100)
-						postalCodeStr := fmt.Sprintf("%05d", (workerID*operationsPerWorker+j)%10000)
-						postalFinder.CityByPostalCode(postalCodeStr, countryCode)
-					}
-					done <- true
-				}(j % 3)
-
-				select {
-				case <-done:
-					// Operation completed
-				case <-time.After(200 * time.Millisecond):
-					// Timeout - continue to next operation
-					t.Logf("Worker %d operation %d timed out", workerID, j)
+				case 2: // Postal code lookup
+					postalFinder.CityByPostalCode(fmt.Sprintf("%05d", n%10000), fmt.Sprintf("C%d", n%100))
 				}
 			}
 		}(i)
