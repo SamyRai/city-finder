@@ -1,6 +1,7 @@
 package finder
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,6 +16,7 @@ func TestFinderFacadeNilSubFinders(t *testing.T) {
 	assert.Nil(t, bare.FindCityByPostalCode("75001", "FR"))
 	assert.Nil(t, bare.PrefixNames("FR", "Pa", 10))
 	assert.NotPanics(t, bare.WarmFuzzy)
+	assert.NoError(t, bare.WaitFuzzy(context.Background()))
 	assert.EqualValues(t, 0, bare.FuzzyBuildState())
 	assert.EqualValues(t, 0, bare.FuzzyBudgetTrips())
 

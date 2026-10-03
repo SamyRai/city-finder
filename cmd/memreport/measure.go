@@ -68,29 +68,9 @@ func fileMB(path string) float64 {
 // largest production-scale build takes minutes, not hours.
 const defaultFuzzyTimeout = 30 * time.Minute
 
-// fuzzyPollInterval is how often waitFuzzy samples the build state.
-const fuzzyPollInterval = 20 * time.Millisecond
-
 type measureOptions struct {
 	cfgPath, dumpPath, profilePath string
 	fuzzyTimeout                   time.Duration
-}
-
-// waitFuzzy polls state (finder.FuzzyBuildState: 0 not built, 1 building,
-// 2 built, 3 disabled) until the build has finished or been disabled. A build
-// that failed resets the state to 0, which polling alone cannot tell from
-// "not started yet", so it ends with an error when ctx is done first.
-func waitFuzzy(ctx context.Context, state func() int32, interval time.Duration) error {
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for s := state(); s == 0 || s == 1; s = state() {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("fuzzy index not built (state %d): %w", s, ctx.Err())
-		case <-t.C:
-		}
-	}
-	return nil
 }
 
 // ensureFuzzy starts the fuzzy build and waits for it, for at most timeout.
@@ -101,8 +81,13 @@ func ensureFuzzy(ctx context.Context, f *finder.Finder, timeout time.Duration) e
 	f.WarmFuzzy()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if err := waitFuzzy(ctx, f.FuzzyBuildState, fuzzyPollInterval); err != nil {
-		return fmt.Errorf("waiting %s: %w", timeout, err)
+	if err := f.WaitFuzzy(ctx); err != nil {
+		return fmt.Errorf("fuzzy index still building after %s: %w", timeout, err)
+	}
+	// A build that was discarded (or a finder without a name index) settles
+	// back at not-built, which WaitFuzzy reports as success.
+	if state := f.FuzzyBuildState(); state == 0 {
+		return fmt.Errorf("fuzzy index not built (state %d)", state)
 	}
 	return nil
 }
