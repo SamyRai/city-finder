@@ -131,10 +131,9 @@ func TestCityByNameConcurrentMixedRace(t *testing.T) {
 }
 
 // TestFuzzyCacheIsBounded drives more distinct MATCHING queries than the
-// cache cap and asserts the cache never grows past it. The queries must
-// produce non-empty results: empty results are not cached (a later AddCity
-// must become visible to the same query), so only matches exercise the
-// bound. The names carry a multiplicative-hash suffix (a bijection on
+// cache cap and asserts the cache never grows past it. The queries
+// produce non-empty results so the test also exercises real candidate
+// lists, not only cached misses. The names carry a multiplicative-hash suffix (a bijection on
 // uint32, so names stay unique) — with near-identical names every query's
 // grams would be shared by the whole corpus and each d2 walk would visit
 // every name, making the test minutes slow under -race for no extra

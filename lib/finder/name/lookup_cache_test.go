@@ -68,7 +68,7 @@ func TestFuzzyCacheHitMissExpiry(t *testing.T) {
 	assert.Contains(t, got, "Paris")
 
 	finder.cacheMutex.RLock()
-	entry, cached := finder.fuzzyCache["Pars_1"]
+	entry, cached := finder.fuzzyCache[fuzzyCacheKey{"Pars", 1}]
 	finder.cacheMutex.RUnlock()
 	if !assert.True(t, cached, "cold lookup must populate the cache") {
 		return
@@ -93,9 +93,8 @@ func TestFuzzyCacheHitMissExpiry(t *testing.T) {
 // TestFuzzyCacheEvictionAtCapOldest drives the cache to its cap with fresh
 // entries and then issues one more distinct query. Nothing has expired at
 // that point, so eviction must fall through to dropping the oldest entry
-// while the cache stays bounded at the cap. Every query must MATCH an
-// indexed name: empty results are not cached (a later AddCity must become
-// visible to the same query), so only matching fillers exercise eviction.
+// while the cache stays bounded at the cap. Every filler matches an indexed
+// name, so the entries are real candidate lists.
 func TestFuzzyCacheEvictionAtCapOldest(t *testing.T) {
 	cities := make([]city.SpatialCity, 0, maxFuzzyCacheEntries+1)
 	for i := 0; i < maxFuzzyCacheEntries; i++ {
@@ -114,7 +113,7 @@ func TestFuzzyCacheEvictionAtCapOldest(t *testing.T) {
 
 	finder.cacheMutex.RLock()
 	size := len(finder.fuzzyCache)
-	_, oldestPresent := finder.fuzzyCache["fill00000_1"]
+	_, oldestPresent := finder.fuzzyCache[fuzzyCacheKey{"fill00000", 1}]
 	finder.cacheMutex.RUnlock()
 	assert.Equal(t, maxFuzzyCacheEntries, size, "cache must reach but not exceed the cap")
 	assert.True(t, oldestPresent, "first inserted entry must still be present before overflow")
@@ -123,8 +122,8 @@ func TestFuzzyCacheEvictionAtCapOldest(t *testing.T) {
 
 	finder.cacheMutex.RLock()
 	size = len(finder.fuzzyCache)
-	_, oldestPresent = finder.fuzzyCache["fill00000_1"]
-	_, newestPresent := finder.fuzzyCache["overflow_1"]
+	_, oldestPresent = finder.fuzzyCache[fuzzyCacheKey{"fill00000", 1}]
+	_, newestPresent := finder.fuzzyCache[fuzzyCacheKey{"overflow", 1}]
 	finder.cacheMutex.RUnlock()
 	assert.Equal(t, maxFuzzyCacheEntries, size, "cache must stay at the cap after overflow")
 	assert.False(t, oldestPresent, "oldest entry must be evicted when no entry is expired")

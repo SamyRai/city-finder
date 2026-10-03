@@ -2,7 +2,6 @@ package name
 
 import (
 	"container/list"
-	"fmt"
 	"log"
 	"runtime"
 	"slices"
@@ -26,10 +25,22 @@ func internString(s string) string {
 	return handle.Value()
 }
 
+// fuzzyCacheKey identifies one cached fuzzy search. A struct key costs no
+// formatting on the lookup path; the query is cloned on insert only (callers
+// may pass strings backed by reused request buffers).
+type fuzzyCacheKey struct {
+	query       string
+	maxDistance int
+}
+
 // fuzzySearchResult caches fuzzy search results to avoid repeated computations
 type fuzzySearchResult struct {
 	candidates []string
 	timestamp  time.Time
+	// gen is Finder.fuzzyGen as read before the search that produced this
+	// entry; a hit requires it to still be current, so a name added since
+	// (AddCity) is never hidden behind a cached answer.
+	gen uint64
 	// age is this entry's element in Finder.fuzzyCacheAge, which orders
 	// entries oldest-first so eviction is O(1) instead of a full-map scan.
 	age *list.Element
@@ -172,16 +183,17 @@ func (t *nameTable) lookup(name string) ([]int32, bool) {
 // consulted after the sorted-table miss. Every name of a city stores the
 // same row id, so all of them resolve to the same *city.City.
 type Finder struct {
-	countries     map[string]*nameTable         // per-country exact-lookup tables
-	cities        cityTable                     // every id in a table or the overflow resolves here
-	overflow      map[string]map[string][]int32 // post-construction additions: country -> name -> city ids into cities
-	ngrams        *ngramIndex                   // Immutable q-gram fuzzy index (lazy-built, never serialized)
-	fuzzyOverflow []string                      // Names added after the last fuzzy build; linearly scanned until the next build folds them in
-	fuzzyCache    map[string]*fuzzySearchResult // Cache for fuzzy search results
-	fuzzyCacheAge list.List                     // fuzzyCache keys, oldest insertion first (values are string keys)
-	cacheMutex    sync.RWMutex                  // Mutex for fuzzy search cache and fuzzyCacheAge
-	mutex         sync.RWMutex                  // Mutex for thread-safe operations
-	fuzzyState    atomic.Int32                  // Lazy fuzzy-index state (fuzzyNotBuilt*, above); runtime-only, not serialized
+	countries     map[string]*nameTable                // per-country exact-lookup tables
+	cities        cityTable                            // every id in a table or the overflow resolves here
+	overflow      map[string]map[string][]int32        // post-construction additions: country -> name -> city ids into cities
+	ngrams        *ngramIndex                          // Immutable q-gram fuzzy index (lazy-built, never serialized)
+	fuzzyOverflow []string                             // Names added after the last fuzzy build; linearly scanned until the next build folds them in
+	fuzzyCache    map[fuzzyCacheKey]*fuzzySearchResult // Cache for fuzzy search results
+	fuzzyCacheAge list.List                            // fuzzyCache keys, oldest insertion first (values are fuzzyCacheKey)
+	fuzzyGen      atomic.Uint64                        // bumped whenever a name becomes fuzzy-visible after construction; invalidates cached results
+	cacheMutex    sync.RWMutex                         // Mutex for fuzzy search cache and fuzzyCacheAge
+	mutex         sync.RWMutex                         // Mutex for thread-safe operations
+	fuzzyState    atomic.Int32                         // Lazy fuzzy-index state (fuzzyNotBuilt*, above); runtime-only, not serialized
 }
 
 // Memory pools removed - they were causing excessive memory usage
@@ -229,7 +241,7 @@ func NewNameFinder() *Finder {
 func NewFinderWithCapacity(countries int) *Finder {
 	return &Finder{
 		countries:  make(map[string]*nameTable, countries),
-		fuzzyCache: make(map[string]*fuzzySearchResult, 100), // Pre-allocate cache capacity
+		fuzzyCache: make(map[fuzzyCacheKey]*fuzzySearchResult, 100), // Pre-allocate cache capacity
 	}
 }
 
@@ -470,6 +482,7 @@ func (nf *Finder) addOverflowLocked(country string, names []string, c city.City)
 		// it.
 		nf.fuzzyOverflow = append(nf.fuzzyOverflow, name)
 	}
+	nf.fuzzyGen.Add(1) // cached fuzzy results predate these names
 }
 
 // addNameToIndexDirect adds a single name-city pair to the index with minimal overhead
@@ -716,15 +729,20 @@ func (nf *Finder) fuzzyCandidates(query string, maxDistance int) ([]string, bool
 	return candidates, truncated
 }
 
-// getCachedFuzzySearch performs fuzzy search with caching. Only complete,
-// non-empty results enter the cache: truncated results (FuzzyMaxCandidates
-// tripped) and empty results (a later AddCity must become visible to the
-// same query) are computed fresh on every call.
+// getCachedFuzzySearch performs fuzzy search with caching. Every complete
+// result enters the cache, empty ones included; truncated results
+// (FuzzyMaxCandidates tripped) are computed fresh on every call. An entry is
+// served only while it is younger than fuzzyCacheTTL and no name was added
+// since it was computed (fuzzyGen), so AddCity is visible on the very next
+// search, cached query or not.
 func (nf *Finder) getCachedFuzzySearch(query string, maxDistance int) []string {
-	cacheKey := fmt.Sprintf("%s_%d", query, maxDistance)
+	cacheKey := fuzzyCacheKey{query: query, maxDistance: maxDistance}
+	// Read before the search: a name added while it runs leaves the entry
+	// stale on arrival (conservative), never current while missing the name.
+	gen := nf.fuzzyGen.Load()
 
 	nf.cacheMutex.RLock()
-	if cached, exists := nf.fuzzyCache[cacheKey]; exists {
+	if cached, exists := nf.fuzzyCache[cacheKey]; exists && cached.gen == gen {
 		// Check if cache is still valid (not too old)
 		if time.Since(cached.timestamp) < fuzzyCacheTTL {
 			nf.cacheMutex.RUnlock()
@@ -759,20 +777,12 @@ func (nf *Finder) getCachedFuzzySearch(query string, maxDistance int) []string {
 		return candidates
 	}
 
-	// An EMPTY complete result is just as unsafe to pin. AddCity makes new
-	// names fuzzy-visible on the very next search (post-build additions are
-	// scanned from the overflow list every time), so a cached empty miss
-	// would keep serving stale nils for the full TTL after the city
-	// appeared — contradicting the "overflow is always scanned" guarantee.
-	// Skipping the cache only costs one re-search per repeated no-hit query,
-	// bounded by FuzzyMaxCandidates like every other walk.
-	if len(candidates) == 0 {
-		return candidates
-	}
-
-	// Cache the result
+	// Empty complete results are cached too: the generation check keeps a
+	// cached miss from hiding a name AddCity adds later, so a repeated
+	// no-hit query (the cheapest one to send) no longer re-walks every time.
+	cacheKey.query = strings.Clone(query)
 	nf.cacheMutex.Lock()
-	nf.storeFuzzyCacheLocked(cacheKey, candidates, time.Now())
+	nf.storeFuzzyCacheLocked(cacheKey, candidates, gen, time.Now())
 	nf.cacheMutex.Unlock()
 
 	return candidates
@@ -790,14 +800,14 @@ func (nf *Finder) getCachedFuzzySearch(query string, maxDistance int) []string {
 // map (twice) on every insert at capacity, which at the 10k cap cost more
 // than the fuzzy search it was caching under a churning typo workload (see
 // BenchmarkCityByNameFuzzy/cache-churn).
-func (nf *Finder) storeFuzzyCacheLocked(key string, candidates []string, now time.Time) {
+func (nf *Finder) storeFuzzyCacheLocked(key fuzzyCacheKey, candidates []string, gen uint64, now time.Time) {
 	if prev, exists := nf.fuzzyCache[key]; exists {
 		// An expired entry being recomputed: drop its stale age slot.
 		nf.fuzzyCacheAge.Remove(prev.age)
 		delete(nf.fuzzyCache, key)
 	}
 	for front := nf.fuzzyCacheAge.Front(); front != nil; front = nf.fuzzyCacheAge.Front() {
-		oldestKey := front.Value.(string)
+		oldestKey := front.Value.(fuzzyCacheKey)
 		expired := now.Sub(nf.fuzzyCache[oldestKey].timestamp) >= fuzzyCacheTTL
 		if !expired && len(nf.fuzzyCache) < maxFuzzyCacheEntries {
 			break
@@ -808,6 +818,7 @@ func (nf *Finder) storeFuzzyCacheLocked(key string, candidates []string, now tim
 	nf.fuzzyCache[key] = &fuzzySearchResult{
 		candidates: candidates,
 		timestamp:  now,
+		gen:        gen,
 		age:        nf.fuzzyCacheAge.PushBack(key),
 	}
 }
