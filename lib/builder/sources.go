@@ -2,6 +2,7 @@ package builder
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/SamyRai/cityFinder/lib/city"
@@ -21,12 +22,35 @@ type Sources struct {
 	Options    dataLoader.LoadOptions
 }
 
-// LoadCities parses the GeoNames city dump.
+// ErrNoCities reports a city load that succeeded but yielded no rows.
+// Building indexes from it would succeed, serialize empty files, and make
+// every later boot a "warm" start that serves nothing (every nearest query a
+// 500), so every caller refuses and writes nothing. It is not a load failure:
+// re-ensuring the datasets cannot fix it, so callers must not retry on it.
+var ErrNoCities = errors.New("no cities loaded")
+
+// LoadCities parses the GeoNames city dump. An empty result is an error
+// wrapping ErrNoCities that names the file and any filters that may have
+// emptied it.
 func (s Sources) LoadCities() ([]city.SpatialCity, error) {
-	return dataLoader.LoadGeoNamesCSVWithOptions(s.CitiesFile, s.Options)
+	cities, err := dataLoader.LoadGeoNamesCSVWithOptions(s.CitiesFile, s.Options)
+	if err != nil {
+		return nil, err
+	}
+	if len(cities) == 0 {
+		hint := "the file is empty, truncated or not a GeoNames dump"
+		if len(s.Options.IncludeFeatureClasses) > 0 || s.Options.ExcludeAdminDivisions {
+			hint += ", or include_feature_classes/exclude_admin_divisions filtered out every row"
+		}
+		return nil, fmt.Errorf("%w from %s (%s); refusing to build empty indexes", ErrNoCities, s.CitiesFile, hint)
+	}
+	return cities, nil
 }
 
-// LoadPostal parses the postal code dump.
+// LoadPostal parses the postal code dump. A file that fails to load is an
+// error; one that loads with zero rows is allowed (lookups just find
+// nothing), because the postal table is a separate, optional-in-content
+// dataset.
 func (s Sources) LoadPostal() (PostalCodes, error) {
 	return dataLoader.LoadPostalCodes(s.PostalFile)
 }
@@ -55,6 +79,8 @@ func (s Sources) Load(ctx context.Context) ([]city.SpatialCity, PostalCodes, err
 	})
 	groupErr := g.Wait()
 	switch {
+	case errors.Is(citiesErr, ErrNoCities):
+		return nil, nil, citiesErr
 	case citiesErr != nil:
 		return nil, nil, fmt.Errorf("failed to load GeoNames data from CSV: %v", citiesErr)
 	case postalErr != nil:

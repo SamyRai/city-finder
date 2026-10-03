@@ -2,6 +2,7 @@ package initializer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 
@@ -27,14 +28,17 @@ type datasetSource struct {
 // failed load retries once after re-running ensureDatasets: a warm start that
 // found all indexes skips the dataset ensure, so a rebuild triggered by a
 // corrupt/legacy index may reach this point with the raw files absent. A load
-// that succeeds but yields no cities is an error, not an empty index: see
-// errNoCities.
+// that succeeds but yields no cities is an error, not an empty index, and
+// is not retried: see builder.ErrNoCities.
 func (s *datasetSource) load(ctx context.Context) error {
 	if s.loaded {
 		return nil
 	}
 	cities, postalCodes, err := loadData(ctx, s.cfg)
 	if err != nil {
+		if errors.Is(err, builder.ErrNoCities) {
+			return err // the file is there; re-ensuring the datasets cannot fix it
+		}
 		if ensureErr := ensureDatasets(ctx, s.dl, s.cfg); ensureErr != nil {
 			return fmt.Errorf("%v (additionally, ensuring the missing datasets failed: %v)", err, ensureErr)
 		}
@@ -42,25 +46,8 @@ func (s *datasetSource) load(ctx context.Context) error {
 			return err
 		}
 	}
-	if len(cities) == 0 {
-		return s.errNoCities()
-	}
 	s.cities, s.postalCodes, s.loaded = cities, postalCodes, true
 	return nil
-}
-
-// errNoCities explains an empty city load. Building indexes from it would
-// succeed, serialize empty files, and make every later boot a "warm" start
-// that serves nothing (every nearest query a 500), so the boot fails instead
-// and writes nothing; fix the data and restart. The postal table may be
-// empty: it is a separate dataset and lookups just find nothing.
-func (s *datasetSource) errNoCities() error {
-	path := filepath.Join(s.cfg.DatasetsFolder, s.cfg.AllCitiesFile)
-	hint := "the file is empty, truncated or not a GeoNames dump"
-	if len(s.cfg.IncludeFeatureClasses) > 0 || s.cfg.ExcludeAdminDivisions {
-		hint += ", or include_feature_classes/exclude_admin_divisions filtered out every row"
-	}
-	return fmt.Errorf("no cities loaded from %s (%s); refusing to build empty indexes", path, hint)
 }
 
 // loadData parses the city and postal datasets named by cfg (see

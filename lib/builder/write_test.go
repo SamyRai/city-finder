@@ -161,3 +161,27 @@ func TestWrites_ReportSerializeFailures(t *testing.T) {
 	assert.ErrorContains(t, writeName(), "failed to serialize name index")
 	assert.ErrorContains(t, writePostal(), "failed to serialize postal code index")
 }
+
+func TestSourcesLoad_ZeroCitiesIsErrNoCities(t *testing.T) {
+	src := tinySources(t)
+	require.NoError(t, os.WriteFile(src.CitiesFile, nil, 0o600))
+	src.Options.ExcludeAdminDivisions = true
+
+	_, _, err := src.Load(context.Background())
+	require.ErrorIs(t, err, ErrNoCities)
+	assert.Contains(t, err.Error(), src.CitiesFile)
+	assert.Contains(t, err.Error(), "exclude_admin_divisions")
+
+	_, err = src.LoadCities()
+	require.ErrorIs(t, err, ErrNoCities)
+}
+
+func TestSourcesLoad_EmptyPostalIsAllowed(t *testing.T) {
+	src := tinySources(t)
+	require.NoError(t, os.WriteFile(src.PostalFile, nil, 0o600))
+
+	cities, postal, err := src.Load(context.Background())
+	require.NoError(t, err)
+	assert.Len(t, cities, 2)
+	assert.Empty(t, postal)
+}
