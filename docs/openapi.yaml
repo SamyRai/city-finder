@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: cityFinder API
-  version: 1.1.0
+  version: 1.5.0
   description: |
     HTTP API of the city-finder server (cmd/server/routes/routes.go), which
     serves nearest-city, name, and postal-code lookups over pre-built

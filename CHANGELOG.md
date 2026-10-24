@@ -8,6 +8,21 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-24
+
+Robustness and release-hardening release. The HTTP API, configuration file and
+on-disk index formats are unchanged. The Go library adds API: new
+`name.Options.FuzzyMaxConcurrent` and `city.ValidCoordinate`, and new error
+returns from `coordinates.BuildIndex` for invalid rows.
+
+### Security
+
+- **The 1.4.0 image was built with Go 1.26.9 or older**, whose crypto/x509 did
+  not distrust compromised intermediate certificates (GO-2026-6809, fixed in
+  Go 1.26.10). In this server it affects only the HTTPS GeoNames dataset
+  download. The 1.5.0 image is built on the newest Go 1.26 patch, and the
+  release now publishes only after govulncheck passes.
+
 ### Added
 
 - `name.Options.FuzzyMaxConcurrent` caps concurrent fuzzy walks per finder
