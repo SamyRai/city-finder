@@ -33,31 +33,71 @@ var errLockHeld = errors.New("init lock held by another process")
 // Living holder → fail fast: the caller exits and the orchestrator restarts
 // it once the first boot finishes.
 //
-// writesNeeded says whether this boot will write into the folder (some
-// index is missing, so it builds and serializes). When it will not, an
-// unwritable folder (read-only mount, immutable image, restrictive mode)
-// must not stop the boot: a warm start only reads, and its one write, the
-// best-effort format migration, fails harmlessly there. Running unlocked is
-// safe in that case because nothing can race: the folder is unwritable
-// through this mount, and index files are replaced by atomic rename, so a
-// reader never sees a partial file. Only "cannot write here" errors take
-// this path; any other failure to open the lock still fails the boot.
+// writesNeeded says whether this boot is certain to write into the folder
+// (some index is missing, so it builds and serializes). Even a warm boot can
+// write: a corrupt index is rebuilt and the name/postal formats are migrated
+// in place, both through the same fixed "<index>.part" paths a concurrent
+// boot would use. So an open failure alone never justifies running unlocked:
+// a lock file created 0600 by another uid on a writable shared volume fails
+// to open read-write while the folder stays fully writable to us.
+//
+// The degradation order is therefore:
+//  1. open the lock read-write (the normal case);
+//  2. the open says "cannot write" but the FOLDER is writable: open the lock
+//     read-only and flock that descriptor (flock needs no write access, and
+//     it conflicts with the other process's read-write descriptor); if even
+//     that fails, fail the boot rather than race;
+//  3. the open says "cannot write" and the FOLDER is not writable (read-only
+//     mount, immutable image, restrictive mode): no other initializer can be
+//     writing through this mount, index files are replaced by atomic rename
+//     so a reader never sees a partial file, and the warm boot's only writes
+//     fail harmlessly. With every index present the boot continues unlocked;
+//     if it must build, it fails with a clear error.
+//
+// Any other open failure still fails the boot.
 func acquireInitLock(datasetsFolder string, writesNeeded bool) (release func(), err error) {
-	return acquireInitLockVia(os.OpenFile, datasetsFolder, writesNeeded)
+	return acquireInitLockVia(os.OpenFile, folderWritable, datasetsFolder, writesNeeded)
 }
 
 // openFileFunc is os.OpenFile's signature, so the unwritable-folder path can
 // be tested as root, where no real folder is unwritable.
 type openFileFunc func(name string, flag int, perm os.FileMode) (*os.File, error)
 
-func acquireInitLockVia(open openFileFunc, datasetsFolder string, writesNeeded bool) (release func(), err error) {
+// folderWritableFunc reports whether this process can create files in dir.
+type folderWritableFunc func(dir string) bool
+
+// folderWritable probes dir by creating and removing a temp file. Probing
+// beats an access(2) check: it also sees read-only mounts and ACLs, and it
+// behaves the same on every platform.
+func folderWritable(dir string) bool {
+	f, err := os.CreateTemp(dir, ".cityfinder-write-probe-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return true
+}
+
+func acquireInitLockVia(open openFileFunc, writable folderWritableFunc, datasetsFolder string, writesNeeded bool) (release func(), err error) {
 	lockPath := filepath.Join(datasetsFolder, initLockName)
 	f, err := open(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
-	if err != nil {
-		if !writesNeeded && cannotWrite(err) {
+	if err != nil && cannotWrite(err) {
+		if writable(datasetsFolder) {
+			// The folder is ours to write but the lock file is not (another
+			// uid's 0600 file): lock it through a read-only descriptor.
+			var roErr error
+			if f, roErr = open(lockPath, os.O_RDONLY, 0); roErr != nil {
+				return nil, fmt.Errorf("failed to open init lock %s read-write (%v) or read-only: %w", lockPath, err, roErr)
+			}
+			err = nil
+		} else if !writesNeeded {
 			log.Printf("datasets folder %s is not writable (%v) and every index is present: continuing without the init lock", datasetsFolder, err)
 			return func() {}, nil
 		}
+	}
+	if err != nil {
 		return nil, fmt.Errorf("failed to open init lock %s: %w", lockPath, err)
 	}
 	if err := lockExclusive(f); err != nil {
