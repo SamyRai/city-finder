@@ -131,27 +131,25 @@ func (nf *Finder) namesFromIndex() []string {
 		total += len(countryOverflow)
 	}
 
-	nameSet := make(map[string]struct{}, total)
+	// Append every name, then sort and compact. A name indexed in several
+	// countries repeats, so the slice is sized to the key total (an upper
+	// bound on the distinct count) and Compact removes the repeats in place.
+	// This replaces a map[string]struct{} of every key: at prod scale (~18.7M
+	// keys) the map's buckets dwarfed the slice we returned from it.
+	names := make([]string, 0, total)
 	for _, t := range nf.countries {
-		for _, name := range t.names {
-			nameSet[name] = struct{}{}
-		}
+		names = append(names, t.names...)
 	}
 	for _, countryOverflow := range nf.overflow {
 		for name := range countryOverflow {
-			nameSet[name] = struct{}{}
+			names = append(names, name)
 		}
-	}
-
-	names := make([]string, 0, len(nameSet))
-	for name := range nameSet {
-		names = append(names, name)
 	}
 	// Sorted, so the fuzzy index numbers names deterministically: map
 	// iteration order would otherwise leak into search order (and, via the
 	// candidate budget, into which matches a truncated search returns).
 	slices.Sort(names)
-	return names
+	return slices.Compact(names)
 }
 
 // totalIndexKeys returns the total number of (country, name) keys across the
