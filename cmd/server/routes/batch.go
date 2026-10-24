@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"mime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -141,6 +142,27 @@ func runPoint(exec nearestExecutor, q validatedPoint, onPanic func(v any, stack 
 	return exec(q.lat, q.lon, q.rank, q.includeAdmin)
 }
 
+// isJSONContentType reports whether a Content-Type header names a JSON
+// body this handler can decode: media type application/json, bare or with
+// a charset=utf-8 parameter (both case-insensitive). Many clients (OkHttp,
+// Spring) always append the charset, so rejecting it would break them for
+// no benefit; any other parameter or charset is refused because the decoder
+// reads UTF-8 only.
+func isJSONContentType(header string) bool {
+	mediaType, params, err := mime.ParseMediaType(header)
+	if err != nil || mediaType != "application/json" {
+		return false
+	}
+	switch len(params) {
+	case 0:
+		return true
+	case 1:
+		charset, ok := params["charset"]
+		return ok && strings.EqualFold(charset, "utf-8")
+	}
+	return false
+}
+
 // batch serves POST /nearest/batch: one round trip for many /nearest
 // lookups. Each point carries the GET endpoint's parameters (lat/lon
 // required, rank/include optional with the same whitelist); the reply is a
@@ -149,7 +171,7 @@ func runPoint(exec nearestExecutor, q validatedPoint, onPanic func(v any, stack 
 // query core (population gate included), so a batch observes the same
 // per-point semantics as the GETs it replaces.
 func (h *Handlers) batch(c *fiber.Ctx) error {
-	if c.Get(fiber.HeaderContentType) != "application/json" {
+	if !isJSONContentType(c.Get(fiber.HeaderContentType)) {
 		return c.Status(fiber.StatusBadRequest).
 			SendString("Content-Type must be application/json")
 	}

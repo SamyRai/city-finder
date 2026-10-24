@@ -200,14 +200,34 @@ func TestNearestBatch_MalformedBodyRejected(t *testing.T) {
 	}
 }
 
-// TestNearestBatch_ContentTypeEnforced: like every other parameter on this
-// API, the check is exact and case-sensitive — only the bare media type is
-// accepted, with no parameters.
+// TestNearestBatch_ContentTypeEnforced: the media type must be
+// application/json (case-insensitive), bare or with charset=utf-8 (the form
+// OkHttp, Spring and many clients always send). Any other media type,
+// charset, extra parameter or unparsable value is a 400.
 func TestNearestBatch_ContentTypeEnforced(t *testing.T) {
 	app := setupTestApp(t, adminRouteNames)
+	const reqBody = `{"points":[{"lat":37.78,"lon":-122.42}]}`
 
-	for _, contentType := range []string{"", "text/plain", "application/json; charset=utf-8"} {
-		status, body := post(t, app, contentType, `{"points":[{"lat":37.78,"lon":-122.42}]}`)
+	for _, contentType := range []string{
+		"application/json",
+		"application/json; charset=utf-8",
+		"application/json;charset=UTF-8",
+		"Application/JSON; Charset=\"utf-8\"",
+	} {
+		status, body := post(t, app, contentType, reqBody)
+		assert.Equal(t, 200, status, "content-type %q: %s", contentType, body)
+	}
+
+	for _, contentType := range []string{
+		"",
+		"text/plain",
+		"application/json; charset=latin1",
+		"application/json; charset=utf-8; boundary=x",
+		"application/json; foo=bar",
+		"application/jsonx",
+		"application/json; charset",
+	} {
+		status, body := post(t, app, contentType, reqBody)
 		assert.Equal(t, 400, status, "content-type %q", contentType)
 		assert.Equal(t, "Content-Type must be application/json", body)
 	}
