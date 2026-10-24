@@ -20,10 +20,19 @@ var etagTable = crc32.MakeTable(0xD5828281)
 // and Sprintf (measured ~4–5 µs and ~1 KB of garbage per response). Like
 // fiber, it only tags successful (200) non-empty responses of requests that
 // reached a handler without error.
+//
+// Only GET and HEAD are tagged: a validator describes a representation of
+// the resource, and a conditional 304 on a state-changing or computed
+// request (POST /nearest/batch carrying a stale-looking If-None-Match)
+// would swallow a response the client never received (RFC 9110 13.1.2).
+// Other methods pass through untouched, without an ETag header.
 func ETag() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if err := c.Next(); err != nil {
 			return err
+		}
+		if m := c.Method(); m != fiber.MethodGet && m != fiber.MethodHead {
+			return nil
 		}
 		resp := c.Response()
 		if resp.StatusCode() != fiber.StatusOK {
