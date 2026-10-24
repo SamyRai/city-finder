@@ -12,8 +12,30 @@ RATES    ?= 250,500,1000,2000
 WINDOW   ?= 30s
 WORKLOAD ?= nearest
 
-.PHONY: test test-race build build-pgo build-test build-prod rebuild-test-indexes \
+# Tool versions shared with .github/workflows/ci.yml; bump both together.
+STATICCHECK_VERSION   ?= v0.8.2
+GOVULNCHECK_VERSION   ?= v1.6.0
+GOLANGCI_LINT_VERSION ?= v2.15.0
+
+.PHONY: test test-race lint verify build build-pgo build-test build-prod rebuild-test-indexes \
 	bench bench-ab bench-smoke bench-env loadtest
+
+# The CI go-ci job, locally: run before pushing. Cheap checks first.
+verify:
+	@unformatted="$$(gofmt -l .)"; if [ -n "$$unformatted" ]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
+	go mod tidy -diff
+	go mod verify
+	go build ./...
+	go vet ./...
+	go run honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION) ./...
+	$(MAKE) lint
+	go test -race ./...
+	benchmarks/bench.sh smoke
+	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
+
+# Linter set and exclusions live in .golangci.yml.
+lint:
+	go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
 
 test:
 	go test ./...
