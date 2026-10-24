@@ -31,6 +31,9 @@ and this project adheres to
 - CI resolves the newest Go 1.26 patch (`check-latest`) instead of the runner
   image's cached one: go1.26.9 failed govulncheck on GO-2026-6809
   (crypto/x509, fixed in go1.26.10).
+- CI's push trigger covers only `main` and `v*` tags. Pull requests run once,
+  on the `pull_request` event, instead of also starting a branch-push run that
+  the shared concurrency group cancelled.
 - Removed `lib/zz`, a leftover scratch test with no assertions that wrote
   index files of up to 8M cities on every `go test ./...` (it dominated the
   `-race` run).
