@@ -23,7 +23,9 @@ type fuzzySearchResult struct {
 	// hit can keep counting as a budget trip.
 	partial   bool
 	timestamp time.Time
-
+	// bytes is this entry's estimated retained size (see fuzzyEntryBytes),
+	// kept so eviction can subtract exactly what insertion added.
+	bytes int
 	// gen is Finder.fuzzyGen as read before the search that produced this
 	// entry; a hit requires it to still be current, so a name added since
 	// (AddCity) is never hidden behind a cached answer.
@@ -40,7 +42,32 @@ const (
 	// user input, so without a cap remote queries could grow it without
 	// limit (the TTL only skips entries on read, it never evicts).
 	maxFuzzyCacheEntries = 10000
+	// maxFuzzyCacheBytes bounds the cache's estimated retained size. The
+	// entry cap alone does not: one complete d2 result for a short query can
+	// hold tens of thousands of candidates, so 10k entries could pin gigabytes.
+	// 64 MiB is ~2% of the 3 GiB process budget the index sizing targets
+	// (docs/design/index-format-v2.md). Typical entries (a d1 result is a
+	// handful of candidates, a few hundred bytes) never reach it, so ordinary
+	// traffic stays bound by the entry cap and only pathologically large
+	// results are bound by this one.
+	maxFuzzyCacheBytes = 64 << 20
+	// fuzzyEntryOverhead is the fixed per-entry cost: the map slot, the
+	// fuzzySearchResult, the list element and the key's string header.
+	// Deliberately rounded up; the estimate only needs to be proportional.
+	fuzzyEntryOverhead = 192
+	// fuzzyStringHeader is the per-candidate cost inside the retained slice.
+	fuzzyStringHeader = 16
 )
+
+// fuzzyEntryBytes estimates the memory a cache entry keeps alive: the cloned
+// query bytes, the fixed overhead, and one string header per slot of the
+// candidate slice's capacity (the backing array is retained whole, not just
+// its length). Candidate bytes are NOT counted: every candidate is a name
+// already owned by the index (or the overflow list), so the cache shares those
+// bytes instead of copying them.
+func fuzzyEntryBytes(key fuzzyCacheKey, candidates []string) int {
+	return len(key.query) + fuzzyEntryOverhead + fuzzyStringHeader*cap(candidates)
+}
 
 // fuzzyCandidates returns the names within maxDistance of query, from the
 // immutable n-gram index plus the post-build overflow list, and whether the
@@ -161,27 +188,35 @@ func (nf *Finder) getCachedFuzzySearchGated(query string, maxDistance int) (cand
 }
 
 // storeFuzzyCacheLocked inserts (or replaces) one cache entry and keeps the
-// cache bounded at maxFuzzyCacheEntries. The
+// cache bounded by both maxFuzzyCacheEntries and maxFuzzyCacheBytes. The
 // caller must hold cacheMutex for writing.
 //
 // Entries are never refreshed in place — a key is only (re)written after a
 // miss — so insertion order is age order, and fuzzyCacheAge's front is always
 // the oldest live entry. That makes every eviction rule O(1) per removal:
 // expired entries are dropped from the front, then the oldest entry while the
-// cache is at its entry cap. The previous implementation scanned the whole map (twice) on every
+// cache is at its entry cap or the new entry would push it past the byte
+// budget. The previous implementation scanned the whole map (twice) on every
 // insert at capacity, which at the 10k cap cost more than the fuzzy search it
 // was caching under a churning typo workload (see
 // BenchmarkCityByNameFuzzy/cache-churn).
+//
+// An entry that alone exceeds the byte budget is not stored: admitting it
+// would evict the entire cache for one answer that is itself over budget.
 func (nf *Finder) storeFuzzyCacheLocked(key fuzzyCacheKey, candidates []string, partial bool, gen uint64, now time.Time) {
 	if prev, exists := nf.fuzzyCache[key]; exists {
 		// An expired entry being recomputed: drop its stale age slot.
 		nf.removeFuzzyCacheEntryLocked(key, prev)
 	}
+	size := fuzzyEntryBytes(key, candidates)
+	if size > maxFuzzyCacheBytes {
+		return
+	}
 	for front := nf.fuzzyCacheAge.Front(); front != nil; front = nf.fuzzyCacheAge.Front() {
 		oldestKey := front.Value.(fuzzyCacheKey)
 		oldest := nf.fuzzyCache[oldestKey]
 		expired := now.Sub(oldest.timestamp) >= fuzzyCacheTTL
-		if !expired && len(nf.fuzzyCache) < maxFuzzyCacheEntries {
+		if !expired && len(nf.fuzzyCache) < maxFuzzyCacheEntries && nf.fuzzyCacheBytes+size <= maxFuzzyCacheBytes {
 			break
 		}
 		nf.removeFuzzyCacheEntryLocked(oldestKey, oldest)
@@ -191,14 +226,17 @@ func (nf *Finder) storeFuzzyCacheLocked(key fuzzyCacheKey, candidates []string, 
 		partial:    partial,
 		timestamp:  now,
 		gen:        gen,
+		bytes:      size,
 		age:        nf.fuzzyCacheAge.PushBack(key),
 	}
+	nf.fuzzyCacheBytes += size
 }
 
-// removeFuzzyCacheEntryLocked drops one entry from the map and the age list
-// together, so the two never drift. The caller must hold cacheMutex for
-// writing.
+// removeFuzzyCacheEntryLocked drops one entry from the map, the age list and
+// the byte total together, so the three never drift. The caller must hold
+// cacheMutex for writing.
 func (nf *Finder) removeFuzzyCacheEntryLocked(key fuzzyCacheKey, entry *fuzzySearchResult) {
 	nf.fuzzyCacheAge.Remove(entry.age)
 	delete(nf.fuzzyCache, key)
+	nf.fuzzyCacheBytes -= entry.bytes
 }
