@@ -9,10 +9,22 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [main, master]
+  # Called by release.yml so a v* tag cannot publish unless the suite is green.
+  workflow_call:
+    inputs:
+      called:
+        description: "Set by a calling workflow; moves this run to its own concurrency group."
+        type: boolean
+        default: false
 
+# In a called workflow github.workflow and github.ref_name are the CALLER's,
+# so the group below would equal the caller's own group. A caller and callee
+# in one group deadlock (the callee waits on the caller, which waits on the
+# callee) or, with cancel-in-progress, cancel the caller. A called run
+# therefore gets a group unique to its run and never queues or cancels.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
+  group: ${{ inputs.called && format('ci-called-{0}-{1}', github.run_id, github.run_attempt) || format('{0}-{1}', github.workflow, github.head_ref || github.ref_name) }}
+  cancel-in-progress: ${{ !inputs.called }}
 
 permissions:
   contents: read
@@ -23,11 +35,11 @@ jobs:
     env:
       GOTOOLCHAIN: local
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       # check-latest: a runner image's cached Go can lag the newest 1.26
       # patch, and govulncheck then fails on already-fixed stdlib advisories.
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26"
           check-latest: true
@@ -90,17 +102,17 @@ jobs:
       KUBECONFORM: go run github.com/yannh/kubeconform/cmd/kubeconform@v0.6.7
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: "1.26"
           check-latest: true
           cache: false
 
       - name: Set up Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
 
       - name: Lint chart
         run: helm lint helm/city-finder
