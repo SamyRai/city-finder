@@ -18,7 +18,13 @@ import (
 	"github.com/SamyRai/cityFinder/lib/initializer"
 )
 
+// version is the release the binary was built from. The Dockerfile sets it
+// from the VERSION build arg via -ldflags "-X main.version=..."; a plain
+// `go build` reports "dev". It must stay a string var: -X cannot set a const.
+var version = "dev"
+
 func main() {
+	log.Printf("city-finder version %s", version)
 	// The process environment is read once, here, and validated before the
 	// slow index load: a bad PORT must fail in milliseconds, not after the
 	// full index build.

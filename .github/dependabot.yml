@@ -9,3 +9,9 @@ updates:
     directory: "/" # Location of package manifests
     schedule:
       interval: "daily"
+  # Third-party actions are pinned to full commit SHAs; Dependabot rewrites the
+  # SHA and the trailing "# vX.Y.Z" comment together.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

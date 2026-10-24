@@ -10,9 +10,17 @@
 
 ARG GO_VERSION=1.26
 
+# The floating "1.26" tag (not a digest) is deliberate: it always resolves to
+# the newest 1.26 patch at build time, so every release picks up stdlib
+# security fixes without a PR. A digest pin would freeze the patch level and
+# make Dependabot the only thing standing between a release and known
+# govulncheck findings.
 FROM golang:${GO_VERSION} AS builder
 # Pin the toolchain to the builder image; never download another one.
 ENV GOTOOLCHAIN=local
+# Stamped into the binary (main.version) so a running pod reports the release
+# it came from; the runtime stage re-declares it for the image label.
+ARG VERSION=dev
 WORKDIR /src
 
 # Module layer first so source edits do not invalidate the download cache.
@@ -24,7 +32,7 @@ COPY . .
 RUN --mount=type=cache,id=cityfinder-gomod,target=/go/pkg/mod \
     --mount=type=cache,id=cityfinder-gobuild,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux \
-    go build -trimpath -ldflags="-s -w" -o /out/cityfinder ./cmd/server
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/cityfinder ./cmd/server
 
 # /out/data becomes /data in the runtime image: the datasets mount point,
 # owned by the nonroot user so first-boot downloads can create datasets/
