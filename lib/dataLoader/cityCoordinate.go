@@ -71,7 +71,7 @@ func countLines(path string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	buf := make([]byte, 1<<20)
 	lines, last := 0, byte('\n')
 	for {
@@ -217,7 +217,7 @@ func LoadGeoNamesCSVWithOptions(filepath string, opts LoadOptions) ([]city.Spati
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %v", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	// Preallocate the slice from a file-size-based row estimate (an explicit
 	// limit takes precedence) instead of a hardcoded 15M rows.

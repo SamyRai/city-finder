@@ -120,7 +120,7 @@ func (d *downloader) fetch(ctx context.Context, partPath, url string) error {
 	if err != nil {
 		return transientError{fmt.Errorf("request failed: %w", err)}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return &httpStatusError{status: resp.Status, code: resp.StatusCode}

@@ -116,7 +116,7 @@ func sampleRows(path string, k int, r *rand.Rand) ([]datasetRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	s := bufio.NewScanner(f)
 	s.Buffer(make([]byte, 1<<20), 1<<24)
 	var res []datasetRow
@@ -131,8 +131,13 @@ func sampleRows(path string, k int, r *rand.Rand) ([]datasetRow, error) {
 		if fields[3] != "" {
 			row.alts = strings.Split(fields[3], ",")
 		}
-		fmt.Sscanf(fields[4], "%g", &row.lat)
-		fmt.Sscanf(fields[5], "%g", &row.lon)
+		// A row without parseable coordinates would sample as (0, 0); skip it.
+		if _, err := fmt.Sscanf(fields[4], "%g", &row.lat); err != nil {
+			continue
+		}
+		if _, err := fmt.Sscanf(fields[5], "%g", &row.lon); err != nil {
+			continue
+		}
 		n++
 		if len(res) < k {
 			res = append(res, row)
@@ -148,7 +153,7 @@ func samplePostal(path string, k int, r *rand.Rand) ([][2]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	s := bufio.NewScanner(f)
 	var res [][2]string
 	n := 0

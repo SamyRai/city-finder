@@ -39,7 +39,7 @@ func procStatusFileMB(field string) float64 {
 	if err != nil {
 		return -1
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return procStatusMB(f, field)
 }
 

@@ -320,9 +320,9 @@ func testCrossFinderConsistency(t *testing.T, nameFinder *name.Finder,
 		// Check consistency between name and coordinate finders
 		if nameResult != nil && coordErr == nil && coordResult != nil {
 			totalChecks++
-			coordDiff := math.Sqrt(
-				math.Pow(nameResult.Latitude-coordResult.Latitude, 2) +
-					math.Pow(nameResult.Longitude-coordResult.Longitude, 2))
+			coordDiff := math.Hypot(
+				nameResult.Latitude-coordResult.Latitude,
+				nameResult.Longitude-coordResult.Longitude)
 
 			// Allow up to 1.0 degree difference (approximately 111km)
 			// With larger datasets, coordinate finder might return nearby cities
@@ -337,9 +337,9 @@ func testCrossFinderConsistency(t *testing.T, nameFinder *name.Finder,
 		// Check consistency between name and postal code finders
 		if nameResult != nil && postalResult != nil {
 			totalChecks++
-			postalDiff := math.Sqrt(
-				math.Pow(nameResult.Latitude-postalResult.Latitude, 2) +
-					math.Pow(nameResult.Longitude-postalResult.Longitude, 2))
+			postalDiff := math.Hypot(
+				nameResult.Latitude-postalResult.Latitude,
+				nameResult.Longitude-postalResult.Longitude)
 
 			// Allow up to 1.0 degree difference for postal code consistency
 			if postalDiff < 1.0 {

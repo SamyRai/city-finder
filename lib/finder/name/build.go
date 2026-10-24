@@ -171,7 +171,6 @@ func BuildIndex(cities []city.SpatialCity, opts ...Options) *Finder {
 	}
 
 	finder.buildFromIndexMap(index)
-	index = nil
 
 	// The fuzzy n-gram index is derived lazily from the inverted index on
 	// first fuzzy lookup; the bulk build path does not pre-compute it.

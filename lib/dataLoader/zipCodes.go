@@ -28,7 +28,7 @@ func LoadPostalCodes(filepath string) (map[string]map[string]PostalCodeEntry, er
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	// GeoNames ships ~14M rows and is hand-curated upstream: a row with a
 	// stray extra field must not abort the whole load (and with it server

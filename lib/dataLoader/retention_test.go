@@ -46,7 +46,7 @@ func TestLoadedCitiesDoNotPinSourceLines(t *testing.T) {
 	for i := range loaded {
 		kept[i] = loaded[i].City
 	}
-	loaded = nil
+	// loaded is dead from here on (liveness), so settle() can collect it.
 	retained := int64(settle()) - int64(before)
 	runtime.KeepAlive(kept)
 
