@@ -23,8 +23,10 @@ Prometheus text format:
   too large, 431 headers too large, 408 read timeout, malformed requests)
   are labelled `(rejected)` and also get an access-log line with method and
   path `-`;
-- `fuzzy_budget_trips_total`: fuzzy searches that returned budget-truncated,
-  partial results;
+- `fuzzy_budget_trips_total`: fuzzy searches answered with budget-truncated,
+  partial results (a repeat served from the cache counts too);
+- `fuzzy_gate_rejections_total`: typo lookups answered exact-only because
+  every fuzzy-walk slot (`name.Options.FuzzyMaxConcurrent`) was taken;
 - `fuzzy_build_state`: 0 not built, 1 building, 2 built, 3 disabled;
 - `go_goroutines`, `go_heap_alloc_bytes`: runtime gauges sampled per scrape
   (via `runtime/metrics`, no stop-the-world).
@@ -56,8 +58,10 @@ Response: the city plus `distance_km` (great-circle, 2 decimals).
 Body: `{"points":[{"lat":..,"lon":..,"rank":"distance|population","include":"admin"}, ...]}`
 with 1–100 points. Per-point fields have the same semantics as `GET /nearest`.
 
-- Requires `Content-Type: application/json`. Unknown JSON fields and invalid
-  points are rejected with the offending index.
+- Requires `Content-Type: application/json`, optionally with
+  `; charset=utf-8` (case-insensitive). Any other media type, charset or
+  parameter is a `400`. Unknown JSON fields and invalid points are rejected
+  with the offending index.
 - Returns `{"results":[...]}`, parallel to the input: each element is what
   `GET /nearest` returns, or `null` for a point with no indexed city.
 - The population gate applies per point. If it saturates mid-batch, the whole
@@ -92,7 +96,7 @@ full `SW1A 1AA`.
 | Timeouts | read 15 s, write 15 s, idle 60 s |
 | Body limit | 1 MB (a 100-point batch is ~6 KB) |
 | Connection cap | 1024 concurrent connections |
-| ETag | enabled |
+| ETag | GET and HEAD only; `POST /nearest/batch` never returns an ETag or a `304` |
 | Panics | recovered per request (500), never fatal |
 | Access log | one line per request: method, path (no query string), status, latency, size — bodies and parameters are never logged |
 | Shutdown | SIGINT/SIGTERM drain in-flight requests for up to 10 s; a second signal during the drain exits immediately |

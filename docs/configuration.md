@@ -39,6 +39,18 @@ download or index would overwrite the other. The zips and the admin1 file
 may be left empty: the zips are only used when a dataset must be
 downloaded.
 
+Dataset downloads are capped at 2 GiB per archive (the real files are about
+422 MB and 20 MB) and each extracted file at 6 GiB (about 1.6 GB real). Going
+over a cap fails the boot with an error naming the limit. The caps are code
+constants, not configuration.
+
+Boots that share a datasets folder serialize on an exclusive lock on
+`<datasets_folder>/.cityfinder-init.lock`. The lock is skipped only when the
+folder itself is not writable and every index file is present. If the folder
+is writable but the lock file is not (for example, owned by another uid), the
+lock is taken through a read-only descriptor. If even that open fails, the
+boot fails.
+
 ### Data scope knobs
 
 Both knobs apply when an index is **(re)built** from the raw dump. A warm boot
@@ -79,4 +91,8 @@ it uses the defaults below.
 | Field | Default | Meaning |
 |---|---|---|
 | `FuzzyMaxNames` | 25,000,000 keys | Above this the fuzzy index is never built (exact-only) |
-| `FuzzyMaxCandidates` | 4,000,000 posting entries | Per-query cap on the fuzzy walk; a capped query returns partial results (counted by `Finder.FuzzyBudgetTrips()`). ~500k clamps latency harder at the cost of truncating a few percent of typo queries. |
+| `FuzzyMaxCandidates` | 4,000,000 posting entries | Per-query cap on the fuzzy walk; a capped query returns partial results, cached flagged partial, and each answer is counted by `Finder.FuzzyBudgetTrips()`. ~500k clamps latency harder at the cost of truncating a few percent of typo queries. |
+| `FuzzyMaxConcurrent` | `GOMAXPROCS` (via `DefaultOptions`) | Concurrent fuzzy walks per finder. When every slot is taken a typo lookup skips the fuzzy phase and answers exact-only (counted by `Finder.FuzzyGateRejections()`). 0 or negative means unlimited, so an `Options` literal that omits it keeps the old behaviour. |
+
+The fuzzy result cache is bounded by both 10,000 entries and an estimated
+64 MiB.

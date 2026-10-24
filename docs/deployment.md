@@ -12,7 +12,10 @@ Built from the repo-root `Dockerfile`: a `golang:1.26` builder, then a
 uid 65532, no shell, no package manager). Pushed `v*` tags publish
 `ghcr.io/<owner>/city-finder:<version>` (owner lowercased) for `linux/amd64`
 and `linux/arm64` (`.github/workflows/release.yml`). Plain semver tags also
-move `latest`.
+move `latest`. The release workflow first runs the CI suite (it calls
+`ci.yml`) and publishes only if it passes. The binary is stamped from the
+`VERSION` build arg and logs `city-finder version <v>` at startup; a plain
+`go build` reports `dev`.
 
 ```bash
 docker build -t city-finder .
