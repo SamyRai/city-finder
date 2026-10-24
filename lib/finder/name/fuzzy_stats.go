@@ -29,6 +29,14 @@ type fuzzyStats struct {
 	// flow.
 	walkedLast, verifiedLast atomic.Int64
 
+	// gateRejections counts fuzzy walks refused by the Options.FuzzyMaxConcurrent
+	// admission gate: one per lookup that degraded to exact-only because every
+	// slot was taken.
+	gateRejections atomic.Uint64
+
+	// gateInflight is the number of walks currently holding a slot.
+	gateInflight atomic.Int64
+
 	// snapshots counts the name snapshots taken for fuzzy builds: one per
 	// build attempt, never one per caller.
 	snapshots atomic.Int64
@@ -58,4 +66,40 @@ func (s *fuzzyStats) record(walked, verified int64, truncated bool, budget int) 
 // the cap (see Options.FuzzyMaxCandidates).
 func (nf *Finder) FuzzyBudgetTrips() uint64 {
 	return nf.fuzzyStats.trips.Load()
+}
+
+// FuzzyGateRejections reports how many fuzzy lookups on this Finder were
+// answered exact-only because Options.FuzzyMaxConcurrent walks were already in
+// flight, since the Finder was created. A steadily rising value means typo
+// traffic exceeds the configured walk concurrency.
+func (nf *Finder) FuzzyGateRejections() uint64 {
+	return nf.fuzzyStats.gateRejections.Load()
+}
+
+// acquireFuzzySlot takes one fuzzy-walk slot without blocking. It reports
+// false (and counts the rejection) when limit walks are already in flight; a
+// non-positive limit admits everything. A CAS loop, not Add-then-undo, so a
+// rejected caller never transiently inflates the count and turns away a
+// caller that a concurrent release just made room for.
+func (s *fuzzyStats) acquireFuzzySlot(limit int) bool {
+	if limit <= 0 {
+		return true
+	}
+	for {
+		cur := s.gateInflight.Load()
+		if cur >= int64(limit) {
+			s.gateRejections.Add(1)
+			return false
+		}
+		if s.gateInflight.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
+// releaseFuzzySlot returns a slot taken by a successful acquireFuzzySlot.
+func (s *fuzzyStats) releaseFuzzySlot(limit int) {
+	if limit > 0 {
+		s.gateInflight.Add(-1)
+	}
 }

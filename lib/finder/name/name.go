@@ -221,7 +221,13 @@ func (nf *Finder) CityByName(name string, countryCode string) *city.City {
 	// empty result pollutes the cache.
 	nf.ensureFuzzyBuilt()
 	if nf.fuzzyState.Load() == fuzzyBuilt {
-		fastCandidates := nf.getCachedFuzzySearch(name, 1) // Use tighter threshold for speed
+		fastCandidates, admitted := nf.getCachedFuzzySearchGated(name, 1) // Use tighter threshold for speed
+		if !admitted {
+			// The admission gate refused the walk (counted once there):
+			// degrade to exact-only like every other not-ready path, and do
+			// not queue a second walk for the distance-2 phase.
+			return nil
+		}
 
 		// Every read lock is scoped tightly around the table probes only:
 		// holding one across getCachedFuzzySearch deadlocks, because a cold
@@ -239,7 +245,7 @@ func (nf *Finder) CityByName(name string, countryCode string) *city.City {
 		}
 
 		// Phase 3: Fall back to full fuzzy search with distance 2
-		fullCandidates := nf.getCachedFuzzySearch(name, 2)
+		fullCandidates, _ := nf.getCachedFuzzySearchGated(name, 2)
 
 		if len(fullCandidates) > 0 {
 			nf.mutex.RLock()

@@ -1,8 +1,8 @@
 // Package metrics is a dependency-free Prometheus text-exposition registry.
 //
 // The server exposes exactly what operators need to watch the documented
-// worst cases (population-rank scan tail, fuzzy budget trips, fuzzy build
-// state) without pulling in a client library: counters, gauges and one
+// worst cases (population-rank scan tail, fuzzy budget trips, fuzzy gate
+// rejections, fuzzy build state) without pulling in a client library: counters, gauges and one
 // histogram family, rendered in the Prometheus text format on GET /metrics.
 // Label cardinality is bounded by design — request metrics are keyed by
 // route pattern and status code, never by user input.

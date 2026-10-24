@@ -84,6 +84,17 @@ func (f *Finder) FuzzyBudgetTrips() uint64 {
 	return f.NameFinder.FuzzyBudgetTrips()
 }
 
+// FuzzyGateRejections wraps the NameFinder method: it reports how many typo
+// lookups were answered exact-only because the fuzzy admission gate was full
+// (see name.Finder.FuzzyGateRejections). A finder without a name index
+// reports 0.
+func (f *Finder) FuzzyGateRejections() uint64 {
+	if f.NameFinder == nil {
+		return 0
+	}
+	return f.NameFinder.FuzzyGateRejections()
+}
+
 // PrefixNames wraps the NameFinder method: it returns up to maxNames indexed
 // names under countryCode that start with prefix, each paired with its
 // first-referenced city (see name.Finder.PrefixNames for the limit and

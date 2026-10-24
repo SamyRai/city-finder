@@ -164,22 +164,18 @@ func TestFuzzyBudgetTripCounterAndOneTimeLog(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(logBuf.String(), "candidate budget"))
 }
 
-// TestFuzzyBudgetExcludesTruncatedFromCache pins the cache-honesty rule at
-// the Finder level: a truncated search still returns its partial candidates
-// to the caller, but nothing lands in the fuzzy cache; once the budget allows
-// the full walk, the same query is served complete and cached; and a cached
-// complete entry keeps being served even after the budget drops again (cache
-// reads never consult the budget).
-func TestFuzzyBudgetExcludesTruncatedFromCache(t *testing.T) {
+// TestFuzzyBudgetCachesTruncatedAsPartial pins the cache-honesty rule at the
+// Finder level: a truncated search returns its partial candidates, is cached
+// flagged partial (the walk is deterministic, so repeats would only re-pay the
+// same budget), and every hit still counts as a trip. A complete result for a
+// different query is cached unflagged, and cache reads never consult the
+// budget.
+func TestFuzzyBudgetCachesTruncatedAsPartial(t *testing.T) {
 	finder := BuildIndex(fuzzyFixtureCities())
 	// Force the lazy background build; WarmFuzzy does not touch the cache,
 	// so no forcing lookup's cache entry can mask the behavior below.
 	finder.WarmFuzzy()
 	waitFuzzyBuilt(t, finder)
-
-	finder.cacheMutex.RLock()
-	baseCache := len(finder.fuzzyCache)
-	finder.cacheMutex.RUnlock()
 
 	setIndexBudget(finder, 0)
 
@@ -187,27 +183,41 @@ func TestFuzzyBudgetExcludesTruncatedFromCache(t *testing.T) {
 	got := finder.getCachedFuzzySearch("Pars", 1)
 	assert.Nil(t, got, "budget 0 surfaces no candidates")
 	finder.cacheMutex.RLock()
-	cacheSize := len(finder.fuzzyCache)
+	entry, cached := finder.fuzzyCache[fuzzyCacheKey{"Pars", 1}]
 	finder.cacheMutex.RUnlock()
-	assert.Equal(t, baseCache, cacheSize, "a truncated result must never enter the fuzzy cache")
+	require.True(t, cached, "a truncated result is cached")
+	assert.True(t, entry.partial, "and flagged partial")
+	assert.EqualValues(t, 1, finder.FuzzyBudgetTrips())
 
-	// Restore the full budget: the same query completes and caches.
+	// The repeat is a cache hit: no new walk, but still a counted trip.
+	assert.Nil(t, finder.getCachedFuzzySearch("Pars", 1))
+	assert.EqualValues(t, 2, finder.FuzzyBudgetTrips(), "a partial hit keeps counting as a trip")
+
+	// A complete result is cached unflagged and keeps being served after the
+	// budget drops again (cache reads never consult the budget).
 	setIndexBudget(finder, -1)
-	got = finder.getCachedFuzzySearch("Pars", 1)
+	got = finder.getCachedFuzzySearch("Pariss", 1)
 	if assert.NotEmpty(t, got) {
 		assert.Contains(t, got, "Paris")
 	}
 	finder.cacheMutex.RLock()
-	_, cached := finder.fuzzyCache[fuzzyCacheKey{"Pars", 1}]
+	entry, cached = finder.fuzzyCache[fuzzyCacheKey{"Pariss", 1}]
 	finder.cacheMutex.RUnlock()
-	assert.True(t, cached, "the complete result must be cached")
+	require.True(t, cached, "the complete result must be cached")
+	assert.False(t, entry.partial)
 
-	// Budget back to zero: the cached complete entry is still served.
 	setIndexBudget(finder, 0)
-	got = finder.getCachedFuzzySearch("Pars", 1)
+	trips := finder.FuzzyBudgetTrips()
+	got = finder.getCachedFuzzySearch("Pariss", 1)
 	if assert.NotEmpty(t, got, "cache reads must ignore the budget") {
 		assert.Contains(t, got, "Paris")
 	}
+	assert.Equal(t, trips, finder.FuzzyBudgetTrips(), "a complete hit is not a trip")
+
+	// A name added since invalidates the partial entry: it is recomputed.
+	finder.AddCity(city.SpatialCity{City: city.City{Name: "Parx", Country: "FR", Latitude: 1, Longitude: 1}})
+	finder.getCachedFuzzySearch("Pars", 1)
+	assert.Greater(t, finder.FuzzyBudgetTrips(), trips, "the generation bump forced a fresh truncated walk")
 }
 
 // TestFuzzyBudgetOverflowStillScannedWhenTruncated pins the scoping decision:
@@ -223,20 +233,16 @@ func TestFuzzyBudgetOverflowStillScannedWhenTruncated(t *testing.T) {
 		City: city.City{Name: "Berlin2", Country: "DE", Latitude: 52.52, Longitude: 13.41},
 	})
 
-	finder.cacheMutex.RLock()
-	baseCache := len(finder.fuzzyCache)
-	finder.cacheMutex.RUnlock()
-
 	setIndexBudget(finder, 0)
 	got := finder.getCachedFuzzySearch("Berlin2", 0)
 	assert.Contains(t, got, "Berlin2", "the overflow scan must run in full under a zero budget")
 
+	// The truncated result, overflow hit included, is cached as partial.
 	finder.cacheMutex.RLock()
-	cacheSize := len(finder.fuzzyCache)
+	entry, cached := finder.fuzzyCache[fuzzyCacheKey{"Berlin2", 0}]
 	finder.cacheMutex.RUnlock()
-	// No forcing lookup ran (WarmFuzzy is cache-free), so the cache holds
-	// only what it held before; the truncated query itself must add nothing.
-	assert.Equal(t, baseCache, cacheSize, "an n-gram-truncated result stays out of the cache even with overflow hits")
+	require.True(t, cached)
+	assert.True(t, entry.partial)
 }
 
 // TestFuzzyBudgetConcurrentSearches races truncated searches against each
