@@ -47,8 +47,12 @@ All three files share one framing (`lib/indexfile`): a gob header (magic,
 version, count) that is checked before any decompression, then one zstd
 frame (CRC on) holding the gob payload. Writes go to `<file>.part`, are
 fsynced, and are renamed into place. Reads stream from the file through zstd
-into gob, so no whole-file buffer sits next to the decoded index, and drain
-the frame to its end, which verifies the CRC and rejects trailing bytes.
+into gob, so no copy of the compressed file is held. gob does read its one
+top-level message whole before decoding it (`saferio.ReadData` in
+`encoding/gob`), so the decompressed payload is buffered next to the decoded
+index for the duration of the decode; the byte budget below bounds that
+buffer. The frame is then drained to its end, which verifies the CRC and
+rejects trailing bytes.
 
 Reads are bounded against hostile or corrupt files, with no format change.
 The zstd window is capped at 64 MiB (`indexfile.MaxDecoderWindow`; the
@@ -71,7 +75,13 @@ rejected before anything inflates (over 1000 entries per file byte for S2,
 over 64 for postal). The densities were measured: identical typical cities
 reach about 100 entries per byte, the degenerate one-letter row at 0/0 about
 500, and a bomb of empty cities 1500 or more; legitimate postal data stays
-near 3 because its codes are unique and sorted. Going over the budget or the window is
+near 3 because its codes are unique and sorted. The name index declares no
+entry bounds: its header count is the number of countries, not of names or
+cities, so it does not describe the payload (measured at 60k cities: 4 MB
+of payload per header entry for one country, 17 KB for 250 countries, against
+the 2 KiB per entry a bound would assume). It relies on the byte budget alone;
+bounding it by entry count needs a format change that records the city or id
+count in the header. Going over the budget or the window is
 `ErrFormat`, which each package reports as its `ErrCorruptIndex`, so the
 initializer rebuilds the file as for any other corruption.
 
