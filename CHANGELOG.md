@@ -8,6 +8,30 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- `memreport` no longer samples a dataset row whose latitude or longitude does
+  not parse; it used to enter the transcript as (0, 0).
+
+### Changed
+
+- Dependencies: fiber v2.52.16 (fiber v2 is now deprecated upstream in favour
+  of v3), klauspost/compress v1.20.3, golang/geo 2026-10-23, testify v1.12.1.
+
+### Development
+
+- `golangci-lint` (v2.15.0, config in `.golangci.yml`) runs in CI and in the new
+  `make lint`. Deferred `Close` calls on read-only files and response bodies now
+  discard their error explicitly.
+- `make verify` runs the CI Go gate locally: gofmt, `go mod tidy -diff`,
+  `go mod verify`, build, vet, staticcheck, golangci-lint, `go test -race`, the
+  benchmark smoke run and govulncheck.
+- staticcheck v0.8.2: v0.8.1 cannot read Go 1.27 export data, so it failed on
+  a 1.27 toolchain (CI on 1.26 was unaffected).
+- Removed `lib/zz`, a leftover scratch test with no assertions that wrote
+  index files of up to 8M cities on every `go test ./...` (it dominated the
+  `-race` run).
+
 ## [1.4.0] - 2026-10-03
 
 ### Breaking (Go library API only)
