@@ -136,6 +136,13 @@ func DeserializeIndex(filepath string) (*S2Finder, error) {
 	// rejected rather than surfaced as a wrong-code query answer.
 	points := make(s2.PointVector, len(payload.Cities))
 	for i, c := range payload.Cities {
+		// The format stayed v3 when the loader began rejecting bad
+		// coordinates, so a file written before that may still hold NaN or
+		// out-of-range rows. Report corruption so the initializer rebuilds
+		// the file rather than serving them.
+		if !city.ValidCoordinate(c.Latitude, c.Longitude) {
+			return nil, corrupt("city %d has invalid coordinates lat %v, lon %v", i, c.Latitude, c.Longitude)
+		}
 		points[i] = s2.PointFromLatLng(s2.LatLngFromDegrees(c.Latitude, c.Longitude))
 		if id := payload.Admin1IDs[i]; id >= 0 && int(id) >= len(payload.Admin1Codes) {
 			return nil, corrupt("admin1 id %d at city %d outside the %d-entry table", id, i, len(payload.Admin1Codes))

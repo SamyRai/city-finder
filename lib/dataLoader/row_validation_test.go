@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/SamyRai/cityFinder/lib/city"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -109,7 +110,7 @@ func TestValidCoordinate(t *testing.T) {
 		{nan, 0, false}, {0, nan, false},
 		{inf, 0, false}, {0, -inf, false},
 	} {
-		assert.Equal(t, tc.want, validCoordinate(tc.lat, tc.lon), "lat=%v lon=%v", tc.lat, tc.lon)
+		assert.Equal(t, tc.want, city.ValidCoordinate(tc.lat, tc.lon), "lat=%v lon=%v", tc.lat, tc.lon)
 	}
 }
 
