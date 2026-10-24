@@ -1,5 +1,7 @@
 package name
 
+import "runtime"
+
 // Default fuzzy limits. See Options for what each one bounds and why it sits
 // where it does.
 const (
@@ -12,7 +14,9 @@ const (
 // them as an optional trailing argument) and never change afterwards, so a
 // running build or search can read them without synchronization. Passing no
 // Options yields DefaultOptions; passing one uses its values verbatim, zero
-// included.
+// included. Zero is therefore chosen per field so that an Options literal
+// written before a field existed keeps its old behavior: the zero value of
+// FuzzyMaxConcurrent means "no admission limit".
 type Options struct {
 	// FuzzyMaxNames is the maximum number of (country, name) keys an index
 	// may contain before the lazy n-gram fuzzy build is refused. Over it,
@@ -54,10 +58,22 @@ type Options struct {
 	// Semantics when the cap trips mid-query: no error, no panic — the
 	// search returns the matches already verified (every returned name is a
 	// true Levenshtein match; the cap can only lose results, never fabricate
-	// them), the result is excluded from the fuzzy cache so it is never
-	// served to a later query as if complete, and Finder.FuzzyBudgetTrips
-	// increments. Exact (phase-1) lookups never consult this path and are
-	// unaffected.
+	// them), the result is cached flagged partial (see below), and
+	// Finder.FuzzyBudgetTrips increments. Exact (phase-1) lookups never
+	// consult this path and are unaffected.
+	//
+	// A truncated result is cached, flagged partial, because the truncated
+	// walk is deterministic for an unchanged index: the rarest-first walk
+	// order is a total order (posting-list length, then gram id) and the cap
+	// counts raw entries, so the same query truncates at the same entry and
+	// returns the same matches. Without that, a degenerate query repeated N
+	// times re-walked the whole budget N times (measured: 5 identical calls =
+	// 5 trips, 0 cache entries). A partial hit is served without walking and
+	// still increments FuzzyBudgetTrips, so the counter means "budget-truncated
+	// searches answered", not "walks performed". The entry shares the cache's
+	// TTL and generation rules: AddCity (which can change the index and the
+	// answer) or the TTL expiring makes it a miss, and the Options are fixed
+	// per Finder, so a cached partial can never outlive a budget change.
 	//
 	// Default rationale (Apple silicon, Oct 2026 GeoNames, 17.73M names; the
 	// standard typo workload = 1k real names with 1–2 edits, the adversarial
@@ -82,11 +98,33 @@ type Options struct {
 	// Negative disables the cap (v1.0 behavior: unbounded walk, full
 	// completeness up to the q-gram boundary, unbounded tail).
 	FuzzyMaxCandidates int
+
+	// FuzzyMaxConcurrent is the number of fuzzy walks (cache-missing typo
+	// lookups that actually search the n-gram index) one Finder runs at the
+	// same time. Each walk holds a pooled seen-bitset (~2.2 MB at prod scale)
+	// plus a touched list and, for degenerate queries, spends seconds of CPU;
+	// ungated, 1024 concurrent connections of typo traffic mean 1024 such
+	// walks at once. The gate is a non-blocking acquire: when every slot is
+	// taken the lookup skips the fuzzy phase and returns the exact-only
+	// result, exactly like the other degrade paths (index building, disabled
+	// over FuzzyMaxNames), and Finder.FuzzyGateRejections increments. Nothing
+	// queues, so a burst can never pile up latency. Cache hits and exact
+	// lookups never take a slot.
+	//
+	// Zero or negative means unlimited (the pre-gate behavior), so Options
+	// literals that predate this field behave as before. DefaultOptions sets
+	// it to runtime.GOMAXPROCS(0) at the time it is called: a walk is CPU
+	// bound, so more walks than cores only add contention and memory.
+	FuzzyMaxConcurrent int
 }
 
 // DefaultOptions returns the production fuzzy limits.
 func DefaultOptions() Options {
-	return Options{FuzzyMaxNames: DefaultFuzzyMaxNames, FuzzyMaxCandidates: DefaultFuzzyMaxCandidates}
+	return Options{
+		FuzzyMaxNames:      DefaultFuzzyMaxNames,
+		FuzzyMaxCandidates: DefaultFuzzyMaxCandidates,
+		FuzzyMaxConcurrent: runtime.GOMAXPROCS(0),
+	}
 }
 
 // resolveOptions picks the Options a constructor was given: the first one

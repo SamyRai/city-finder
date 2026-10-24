@@ -23,10 +23,18 @@ func metricsHandler(mainFinder *finder.Finder, reg *metrics.Registry) fiber.Hand
 	// count each trip exactly once.
 	var lastTrips atomic.Uint64
 	lastTrips.Store(mainFinder.FuzzyBudgetTrips())
+	// fuzzy_gate_rejections_total follows the same delta scheme: typo
+	// lookups answered exact-only because every fuzzy-walk slot was taken.
+	var lastRejections atomic.Uint64
+	lastRejections.Store(mainFinder.FuzzyGateRejections())
 	return func(c *fiber.Ctx) error {
 		cur := mainFinder.FuzzyBudgetTrips()
 		if delta := cur - lastTrips.Swap(cur); delta > 0 {
 			reg.AddCounter("fuzzy_budget_trips_total", int64(delta))
+		}
+		rej := mainFinder.FuzzyGateRejections()
+		if delta := rej - lastRejections.Swap(rej); delta > 0 {
+			reg.AddCounter("fuzzy_gate_rejections_total", int64(delta))
 		}
 		// 0 = not built, 1 = building, 2 = built, 3 = disabled —
 		// name.Finder.FuzzyBuildState documents the mapping.
