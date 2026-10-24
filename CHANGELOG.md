@@ -23,15 +23,19 @@ and this project adheres to
 
 ### Fixed
 
-- **Index files written before the 1.4.0 loader fix could keep serving NaN
-  or out-of-range points.** `coordinates.DeserializeIndex` now reports such
-  a row as a corrupt index, so the initializer rebuilds the file.
-  `coordinates.BuildIndex` returns an error naming the first invalid row.
+- **S2 index files written before the 1.4.0 loader fix could keep serving
+  NaN or out-of-range points.** `coordinates.DeserializeIndex` now reports
+  such a row as a corrupt index, so the initializer rebuilds the file.
+  `coordinates.BuildIndex` returns an error naming the first invalid row. The
+  postal index is not yet checked the same way.
 - **The init lock was skipped on a writable shared volume** when only the
   lock file was unwritable (for example, owned by another uid). Two boots
-  could then rewrite the same index at once. The lock is now taken through a
-  read-only descriptor in that case, and is skipped only when the datasets
-  folder itself is not writable.
+  could then rewrite the same index at once. The lock file is now created
+  `0644`, and in that case it is locked through a read-only descriptor.
+  Where that still fails (a `0600` file from an earlier release, or NFS,
+  whose flock needs a writable descriptor), a boot that must build fails, and
+  a boot with every index present continues unlocked with a warning, as
+  before.
 - **Dataset downloads and zip extraction had no size bound.** A broken or
   hostile mirror could fill the datasets volume. Archives are capped at
   2 GiB and each extracted file at 6 GiB; going over a cap fails the boot.

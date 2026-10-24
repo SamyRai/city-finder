@@ -45,8 +45,13 @@ var errLockHeld = errors.New("init lock held by another process")
 //  1. open the lock read-write (the normal case);
 //  2. the open says "cannot write" but the FOLDER is writable: open the lock
 //     read-only and flock that descriptor (flock needs no write access, and
-//     it conflicts with the other process's read-write descriptor); if even
-//     that fails, fail the boot rather than race;
+//     it conflicts with the other process's read-write descriptor). This
+//     works because the lock is created 0644. It cannot work for a 0600 file
+//     another uid created (as releases before 1.5 did), nor on NFS, where
+//     flock is emulated with POSIX locks that need a writable descriptor. If
+//     the read-only path fails, a boot with every index present continues
+//     unlocked with a warning (the pre-1.5 behaviour), and a boot that must
+//     build fails;
 //  3. the open says "cannot write" and the FOLDER is not writable (read-only
 //     mount, immutable image, restrictive mode): no other initializer can be
 //     writing through this mount, index files are replaced by atomic rename
@@ -82,16 +87,19 @@ func folderWritable(dir string) bool {
 
 func acquireInitLockVia(open openFileFunc, writable folderWritableFunc, datasetsFolder string, writesNeeded bool) (release func(), err error) {
 	lockPath := filepath.Join(datasetsFolder, initLockName)
-	f, err := open(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
+	// 0644, not 0600: another uid sharing the volume must be able to open the
+	// lock read-only and flock it (step 2 above). The content is a pid hint.
+	f, err := open(lockPath, os.O_RDWR|os.O_CREATE, 0o644)
+	readOnly := false
 	if err != nil && cannotWrite(err) {
 		if writable(datasetsFolder) {
 			// The folder is ours to write but the lock file is not (another
-			// uid's 0600 file): lock it through a read-only descriptor.
+			// uid's file): lock it through a read-only descriptor.
 			var roErr error
 			if f, roErr = open(lockPath, os.O_RDONLY, 0); roErr != nil {
-				return nil, fmt.Errorf("failed to open init lock %s read-write (%v) or read-only: %w", lockPath, err, roErr)
+				return unlockedOrFail(lockPath, writesNeeded, fmt.Errorf("read-write (%v) or read-only: %w", err, roErr))
 			}
-			err = nil
+			err, readOnly = nil, true
 		} else if !writesNeeded {
 			log.Printf("datasets folder %s is not writable (%v) and every index is present: continuing without the init lock", datasetsFolder, err)
 			return func() {}, nil
@@ -109,6 +117,10 @@ func acquireInitLockVia(open openFileFunc, writable folderWritableFunc, datasets
 			}
 			return nil, fmt.Errorf("another initializer (%s) is running against datasets folder %s; refusing to race it", holder, datasetsFolder)
 		}
+		if readOnly {
+			// NFS: an exclusive flock on a read-only descriptor fails.
+			return unlockedOrFail(lockPath, writesNeeded, fmt.Errorf("read-only flock: %w", err))
+		}
 		return nil, fmt.Errorf("failed to lock %s: %w", lockPath, err)
 	}
 	// Best-effort pid hint for the error message above; the lock itself is
@@ -117,6 +129,20 @@ func acquireInitLockVia(open openFileFunc, writable folderWritableFunc, datasets
 		_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
 	}
 	return func() { _ = f.Close() }, nil // closing the descriptor releases the flock
+}
+
+// unlockedOrFail handles a lock file this process cannot lock in a writable
+// folder. A boot that must build fails: it would write indexes unlocked. A
+// boot with every index present continues unlocked, as releases before 1.5
+// did, and only races another boot if both must rebuild or migrate a file
+// (the CRC then rejects an interleaved write and the next boot rebuilds).
+// The warning names the fix.
+func unlockedOrFail(lockPath string, writesNeeded bool, cause error) (func(), error) {
+	if writesNeeded {
+		return nil, fmt.Errorf("cannot lock init lock %s (%w); fix its owner or mode, or remove it while no initializer runs", lockPath, cause)
+	}
+	log.Printf("WARNING: cannot lock init lock %s (%v); every index is present, continuing without the lock. Fix its owner or mode, or remove it while no initializer runs", lockPath, cause)
+	return func() {}, nil
 }
 
 // cannotWrite reports an error that means the location is not writable by
