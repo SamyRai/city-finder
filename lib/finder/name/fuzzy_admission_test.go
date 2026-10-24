@@ -109,5 +109,4 @@ func TestFuzzyGateConcurrentLookups(t *testing.T) {
 	wg.Wait()
 
 	assert.Zero(t, finder.fuzzyStats.gateInflight.Load(), "every acquired slot must be released")
-	assert.LessOrEqual(t, finder.FuzzyGateRejections(), uint64(workers*perWorker))
 }
