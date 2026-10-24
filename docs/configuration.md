@@ -46,10 +46,14 @@ constants, not configuration.
 
 Boots that share a datasets folder serialize on an exclusive lock on
 `<datasets_folder>/.cityfinder-init.lock`. The lock is skipped only when the
-folder itself is not writable and every index file is present. If the folder
-is writable but the lock file is not (for example, owned by another uid), the
-lock is taken through a read-only descriptor. If even that open fails, the
-boot fails.
+folder itself is not writable and every index file is present. The lock file
+is created `0644`. If the folder is writable but the lock file is not (for
+example, owned by another uid), the lock is taken through a read-only
+descriptor. If that fails too (another uid's `0600` file from a release before
+1.5, or NFS, whose flock needs a writable descriptor), a boot that must build
+fails, and a boot with every index present continues unlocked with a
+`WARNING` log line. Fix it by correcting the lock file's owner or mode, or by
+removing it while no initializer runs.
 
 ### Data scope knobs
 

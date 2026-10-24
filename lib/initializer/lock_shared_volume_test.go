@@ -10,8 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// foreignOwnedOpen stands in for a lock file created 0600 by another uid:
-// opening it read-write is refused, opening it read-only works.
+// foreignOwnedOpen stands in for a lock file another uid created 0644 (the
+// mode this package creates it with): opening it read-write is refused,
+// opening it read-only works.
 func foreignOwnedOpen(name string, flag int, perm os.FileMode) (*os.File, error) {
 	if flag&(os.O_WRONLY|os.O_RDWR) != 0 {
 		return nil, &os.PathError{Op: "open", Path: name, Err: syscall.EACCES}
@@ -40,16 +41,37 @@ func TestAcquireInitLock_WritableFolderForeignLockFileStillLocks(t *testing.T) {
 // container) cannot produce with chmod.
 func unwritable(string) bool { return false }
 
-// TestAcquireInitLock_WritableFolderUnopenableLockFails: when the folder is
-// writable but the lock file cannot be opened even read-only, running
-// unlocked would race, so the boot fails with a clear error.
-func TestAcquireInitLock_WritableFolderUnopenableLockFails(t *testing.T) {
-	for _, writesNeeded := range []bool{false, true} {
-		_, err := acquireInitLockVia(refuseOpen(syscall.EACCES), folderWritable, t.TempDir(), writesNeeded)
-		require.Error(t, err)
-		assert.ErrorIs(t, err, syscall.EACCES)
-		assert.Contains(t, err.Error(), "init lock")
+// TestAcquireInitLock_WritableFolderUnopenableLock: the folder is writable
+// but the lock file cannot be opened even read-only (another uid's 0600 file
+// from a release before 1.5). A boot that must build fails rather than write
+// unlocked; a warm boot with every index present continues unlocked, as
+// before 1.5, instead of crash-looping on a permission problem.
+func TestAcquireInitLock_WritableFolderUnopenableLock(t *testing.T) {
+	_, err := acquireInitLockVia(refuseOpen(syscall.EACCES), folderWritable, t.TempDir(), true)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, syscall.EACCES)
+	assert.Contains(t, err.Error(), "cannot lock init lock")
+
+	release, err := acquireInitLockVia(refuseOpen(syscall.EACCES), folderWritable, t.TempDir(), false)
+	require.NoError(t, err)
+	require.NotNil(t, release)
+	release()
+}
+
+// TestAcquireInitLock_CreatesLockWorldReadable: another uid can only take the
+// read-only flock if it can read the file, so the lock is created 0644.
+func TestAcquireInitLock_CreatesLockWorldReadable(t *testing.T) {
+	var created os.FileMode
+	open := func(name string, flag int, perm os.FileMode) (*os.File, error) {
+		if flag&os.O_CREATE != 0 {
+			created = perm
+		}
+		return os.OpenFile(name, flag, perm)
 	}
+	release, err := acquireInitLockVia(open, folderWritable, t.TempDir(), true)
+	require.NoError(t, err)
+	defer release()
+	assert.Equal(t, os.FileMode(0o644), created)
 }
 
 func TestFolderWritable(t *testing.T) {
