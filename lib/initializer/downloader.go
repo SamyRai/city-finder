@@ -23,6 +23,13 @@ const (
 
 	// defaultRetryDelay is the first backoff, doubled per retry.
 	defaultRetryDelay = 2 * time.Second
+
+	// defaultMaxDownloadBytes caps one downloaded archive. The real GeoNames
+	// archives are ~422 MB (dump/allCountries.zip) and ~20 MB
+	// (zip/allCountries.zip); 2 GiB leaves ~5x headroom for growth while
+	// keeping a compromised or broken mirror from filling the shared datasets
+	// volume with an endless body.
+	defaultMaxDownloadBytes int64 = 2 << 30
 )
 
 // downloader fetches dataset files over HTTP. It owns everything a download
@@ -32,6 +39,7 @@ type downloader struct {
 	client     *http.Client
 	attempts   int           // tries per download, first one included
 	retryDelay time.Duration // first backoff, doubled per retry
+	maxBytes   int64         // ceiling on one response body; exceeding it fails the download
 }
 
 // newDownloader returns the production configuration.
@@ -40,6 +48,7 @@ func newDownloader() *downloader {
 		client:     &http.Client{Timeout: downloadTimeout},
 		attempts:   defaultDownloadAttempts,
 		retryDelay: defaultRetryDelay,
+		maxBytes:   defaultMaxDownloadBytes,
 	}
 }
 
@@ -50,6 +59,15 @@ type httpStatusError struct {
 }
 
 func (e *httpStatusError) Error() string { return "unexpected HTTP status: " + e.status }
+
+// sizeLimitError reports a response body larger than the download ceiling.
+// It is permanent: a mirror that is too large stays too large, so retrying
+// would only pull the same oversized body again.
+type sizeLimitError struct{ limit int64 }
+
+func (e *sizeLimitError) Error() string {
+	return fmt.Sprintf("response exceeds the %d-byte download limit", e.limit)
+}
 
 // transientError marks a network-side failure of one attempt (the request
 // or the body transfer), as opposed to a local file error.
@@ -126,12 +144,30 @@ func (d *downloader) fetch(ctx context.Context, partPath, url string) error {
 		return &httpStatusError{status: resp.Status, code: resp.StatusCode}
 	}
 
+	// Refuse a declared oversize before writing anything. The body is still
+	// bounded below because Content-Length may be absent (chunked) or a lie.
+	if d.maxBytes > 0 && resp.ContentLength > d.maxBytes {
+		return &sizeLimitError{limit: d.maxBytes}
+	}
+
 	out, err := os.Create(partPath)
 	if err != nil {
 		return fmt.Errorf("failed to create %s: %w", partPath, err)
 	}
 
-	if _, err := io.Copy(out, resp.Body); err != nil {
+	var body io.Reader = resp.Body
+	if d.maxBytes > 0 {
+		// Read one byte past the ceiling so an over-limit body is detected
+		// and reported instead of being silently truncated into a "valid"
+		// but corrupt archive.
+		body = io.LimitReader(resp.Body, d.maxBytes+1)
+	}
+	n, err := io.Copy(out, body)
+	if err == nil && d.maxBytes > 0 && n > d.maxBytes {
+		_ = out.Close()
+		return &sizeLimitError{limit: d.maxBytes}
+	}
+	if err != nil {
 		_ = out.Close()
 		// Usually the connection dropped mid-body; a local write error
 		// (disk full) retries harmlessly and fails again.

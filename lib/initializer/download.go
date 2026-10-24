@@ -15,6 +15,13 @@ import (
 	"github.com/SamyRai/cityFinder/lib/config"
 )
 
+// maxExtractedBytes caps one extracted dataset file, checked against the
+// archive-declared size before extraction and enforced on the actual copy
+// (a zip header can lie). The real files are ~1.6 GB (cities allCountries.txt)
+// and well under 200 MB (postal codes); 6 GiB leaves ~3.5x headroom while
+// keeping a crafted archive from filling the shared datasets volume.
+const maxExtractedBytes int64 = 6 << 30
+
 // ensureDatasets ensures that the datasets are downloaded and extracted
 func ensureDatasets(ctx context.Context, dl *downloader, cfg *config.Config) error {
 	log.Printf("Ensuring datasets are downloaded and extracted in %s", cfg.DatasetsFolder)
@@ -105,7 +112,12 @@ func removeExtractedArchive(zipPath string) {
 // mid-extract must never leave a truncated file at the final path, because
 // the next boot's skip-if-exists check (downloadAndExtractDataset) only stats
 // the path and would otherwise bake the partial dataset into the indexes.
-func unzipAndRename(src string, dest string, newFileName string) (err error) {
+func unzipAndRename(src string, dest string, newFileName string) error {
+	return unzipAndRenameLimit(src, dest, newFileName, maxExtractedBytes)
+}
+
+// unzipAndRenameLimit is unzipAndRename with an explicit extraction ceiling.
+func unzipAndRenameLimit(src string, dest string, newFileName string, limit int64) (err error) {
 	r, err := zip.OpenReader(src)
 	if err != nil {
 		return fmt.Errorf("failed to open zip archive %s: %w", src, err)
@@ -125,7 +137,7 @@ func unzipAndRename(src string, dest string, newFileName string) (err error) {
 	// always dest/newFileName), so archive paths cannot escape dest.
 	outPath := filepath.Join(dest, newFileName)
 	partPath := outPath + ".part"
-	if err := extractEntryTo(f, partPath); err != nil {
+	if err := extractEntryLimited(f, partPath, limit); err != nil {
 		_ = os.Remove(partPath) // never leave a partial extraction behind
 		return fmt.Errorf("failed to extract from %s: %w", src, err)
 	}
@@ -167,7 +179,18 @@ func datasetEntry(files []*zip.File) (*zip.File, error) {
 
 // extractEntryTo streams one archive entry into partPath. The caller owns
 // cleanup of partPath on any failure.
-func extractEntryTo(f *zip.File, partPath string) (err error) {
+func extractEntryTo(f *zip.File, partPath string) error {
+	return extractEntryLimited(f, partPath, maxExtractedBytes)
+}
+
+// extractEntryLimited is extractEntryTo with an explicit size ceiling.
+func extractEntryLimited(f *zip.File, partPath string, limit int64) (err error) {
+	// Reject a declared oversize before creating any file. The comparison is
+	// done unsigned so a huge declared size cannot wrap negative.
+	if f.UncompressedSize64 > uint64(limit) {
+		return fmt.Errorf("entry %q declares %d uncompressed bytes, over the %d-byte limit", f.Name, f.UncompressedSize64, limit)
+	}
+
 	// Fixed permissions: an entry stored without mode bits would otherwise
 	// produce an unreadable 0000 file.
 	outFile, err := os.OpenFile(partPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
@@ -190,8 +213,14 @@ func extractEntryTo(f *zip.File, partPath string) (err error) {
 		}
 	}()
 
-	if _, err := io.Copy(outFile, rc); err != nil {
+	// The declared size is attacker-controlled, so bound the real copy too:
+	// read one byte past the ceiling and fail rather than truncate.
+	n, err := io.Copy(outFile, io.LimitReader(rc, limit+1))
+	if err != nil {
 		return fmt.Errorf("failed to extract %q: %w", f.Name, err)
+	}
+	if n > limit {
+		return fmt.Errorf("entry %q expands past the %d-byte limit", f.Name, limit)
 	}
 	// Durable before the caller's rename publishes it (see downloadFile).
 	if err := outFile.Sync(); err != nil {
