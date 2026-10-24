@@ -1,0 +1,35 @@
+# golangci-lint v2. CI and `make verify` run the same pinned version
+# (GOLANGCI_LINT_VERSION in the Makefile and .github/workflows/ci.yml).
+version: "2"
+
+linters:
+  # errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+
+  settings:
+    staticcheck:
+      # golangci-lint's defaults, minus QF1008: tests spell out embedded
+      # selectors (c.City.Name) on purpose, to show which struct owns a field.
+      checks:
+        - all
+        - -ST1000
+        - -ST1003
+        - -ST1016
+        - -ST1020
+        - -ST1021
+        - -ST1022
+        - -QF1008
+
+  exclusions:
+    rules:
+      # Tests discard Close/Remove errors on throwaway fixtures, and call
+      # lookups only for their allocation or race behaviour.
+      - path: _test\.go
+        linters:
+          - errcheck
+      # Tool output: the terminal, or a bufio/tabwriter whose Flush error is
+      # checked (bufio errors are sticky, so a failed Fprintf surfaces there).
+      - path: ^(cmd/|internal/loadgen/)
+        linters:
+          - errcheck
+        text: fmt\.Fprint

@@ -86,16 +86,19 @@ Full reference: [docs/api.md](docs/api.md) and
 ## Development
 
 ```bash
+make verify        # the CI Go gate, locally: run before pushing
 make test          # go test ./...
 make test-race     # with the race detector (what CI runs)
+make lint          # golangci-lint (config in .golangci.yml)
 make bench-smoke   # every benchmark once — correctness, not numbers
 make bench-ab BASE=origin/main PKG=./lib/finder/name BENCH=CityByName
 make loadtest URL=http://127.0.0.1:3000 RATES=500,1000,2000   # open-model load sweep
 make build-test    # build indexes from the small test fixture
 ```
 
-CI also runs gofmt, `go vet`, staticcheck, govulncheck, `go mod tidy -diff`,
-and helm lint + kubeconform. Any performance claim in a PR follows the
+CI also runs gofmt, `go vet`, staticcheck, golangci-lint, govulncheck,
+`go mod tidy -diff`, and helm lint + kubeconform (`make verify` covers all but
+the chart checks). Any performance claim in a PR follows the
 protocol in [docs/benchmarking.md](docs/benchmarking.md): interleaved A/B on
 one machine, benchstat, a pinned toolchain, and validation at the layer the
 claim is about.
