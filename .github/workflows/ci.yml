@@ -20,9 +20,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # check-latest: a runner image's cached Go can lag the newest 1.26
+      # patch, and govulncheck then fails on already-fixed stdlib advisories.
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
+          check-latest: true
           cache: true
 
       - name: Download dependencies
@@ -88,6 +91,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: "1.26"
+          check-latest: true
           cache: false
 
       - name: Set up Helm
