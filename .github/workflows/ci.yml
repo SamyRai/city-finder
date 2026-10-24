@@ -2,11 +2,11 @@ name: CI
 
 # PR branches run only the pull_request event. An all-branch push trigger
 # started a second run in the same concurrency group, and its cancellation
-# left red checks on every PR head.
+# left red checks on every PR head. v* tags are not listed: release.yml calls
+# this workflow and gates publishing on it, so a tag runs the suite once.
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
     branches: [main, master]
   # Called by release.yml so a v* tag cannot publish unless the suite is green.
