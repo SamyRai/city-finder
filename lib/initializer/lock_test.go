@@ -29,7 +29,7 @@ func refuseOpen(err error) openFileFunc {
 // lock is skipped, not fatal.
 func TestAcquireInitLock_UnwritableFolderDegradesWhenNothingIsWritten(t *testing.T) {
 	for name, cause := range map[string]error{"read-only fs": syscall.EROFS, "permission": syscall.EACCES} {
-		release, err := acquireInitLockVia(refuseOpen(cause), t.TempDir(), false)
+		release, err := acquireInitLockVia(refuseOpen(cause), unwritable, t.TempDir(), false)
 		require.NoError(t, err, name)
 		require.NotNil(t, release, name)
 		release() // must be callable
@@ -40,7 +40,7 @@ func TestAcquireInitLock_UnwritableFolderDegradesWhenNothingIsWritten(t *testing
 // build an index writes the same paths a concurrent builder would, so an
 // unlockable folder stays a clear, fatal error.
 func TestAcquireInitLock_UnwritableFolderFailsWhenBuilding(t *testing.T) {
-	_, err := acquireInitLockVia(refuseOpen(syscall.EROFS), t.TempDir(), true)
+	_, err := acquireInitLockVia(refuseOpen(syscall.EROFS), unwritable, t.TempDir(), true)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, syscall.EROFS)
 	assert.Contains(t, err.Error(), "init lock")
@@ -57,7 +57,7 @@ func TestAcquireInitLock_OtherErrorsAreNotDegraded(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, syscall.ENOTDIR)
 
-	_, err = acquireInitLockVia(refuseOpen(syscall.EIO), t.TempDir(), false)
+	_, err = acquireInitLockVia(refuseOpen(syscall.EIO), unwritable, t.TempDir(), false)
 	require.Error(t, err)
 }
 
