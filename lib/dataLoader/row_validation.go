@@ -3,9 +3,10 @@ package dataLoader
 import (
 	"fmt"
 	"log"
-	"math"
 	"strconv"
 	"strings"
+
+	"github.com/SamyRai/cityFinder/lib/city"
 )
 
 // Reasons a loader rejects a row. They label the per-file skip summary.
@@ -22,14 +23,6 @@ const (
 // maxSampleLines caps how many line numbers a skip summary names per reason.
 const maxSampleLines = 5
 
-// validCoordinate reports whether lat/lon is a usable point: finite, with
-// |lat| <= 90 and |lon| <= 180 — the same bounds the HTTP layer enforces on
-// query input. strconv.ParseFloat accepts "NaN", "Inf" and 999, so parsing
-// alone does not keep them out of the indexes. NaN fails both comparisons.
-func validCoordinate(lat, lon float64) bool {
-	return math.Abs(lat) <= 90 && math.Abs(lon) <= 180
-}
-
 // parseCoordinate parses the latitude and longitude columns and returns the
 // reason the row must be skipped, or "" when the point is usable. Both
 // loaders share it so the two datasets reject the same values.
@@ -42,7 +35,7 @@ func parseCoordinate(latField, lonField string) (lat, lon float64, reason string
 	if err != nil {
 		return 0, 0, reasonUnparsableCoord
 	}
-	if !validCoordinate(lat, lon) {
+	if !city.ValidCoordinate(lat, lon) {
 		return 0, 0, reasonBadCoordinate
 	}
 	return lat, lon, ""

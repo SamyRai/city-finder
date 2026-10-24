@@ -186,6 +186,13 @@ func BuildIndex(cities []city.SpatialCity) (*S2Finder, error) {
 	// this prints six milestone lines and one completion line.
 	const progressInterval = 2_000_000
 	for i, spatialCity := range cities {
+		// A NaN or out-of-range point would become a garbage S2 cell that
+		// every proximity query then ranks against; fail the build and name
+		// the row instead.
+		if !city.ValidCoordinate(spatialCity.Latitude, spatialCity.Longitude) {
+			return nil, fmt.Errorf("s2 index: row %d (%q, %s) has invalid coordinates lat %v, lon %v",
+				i, spatialCity.Name, spatialCity.Country, spatialCity.Latitude, spatialCity.Longitude)
+		}
 		points[i] = s2.PointFromLatLng(s2.LatLngFromDegrees(spatialCity.Latitude, spatialCity.Longitude))
 		cityData[i] = spatialCity.City
 		admin1IDs[i] = adminCodeID(spatialCity.Country, spatialCity.Admin1Code, admin1Index, &admin1Codes)

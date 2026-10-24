@@ -132,8 +132,8 @@ func TestDataIntegrity_CoordinateFinder(t *testing.T) {
 				{City: city.City{Name: "Invalid Lat", Country: "IL", Latitude: 91.0, Longitude: 0.0}},  // Invalid latitude
 				{City: city.City{Name: "Invalid Lon", Country: "IL", Latitude: 0.0, Longitude: 181.0}}, // Invalid longitude
 			},
-			expectError: false, // S2 library should handle coordinate normalization
-			description: "Should handle coordinates outside normal ranges",
+			expectError: true, // CITY-32: BuildIndex rejects rows the loader would have skipped
+			description: "Should reject coordinates outside the valid ranges",
 		},
 		{
 			name: "Cities at exact boundaries",
