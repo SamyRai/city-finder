@@ -229,7 +229,11 @@ an immutable q-gram inverted index over the distinct names:
   repeated degenerate query only re-pays the now-bounded search, and a
   raised budget takes effect immediately instead of waiting out stale
   tagged entries), `name.FuzzyBudgetTrips()` increments, and a one-time
-  summary log fires
+  summary log fires (*changed after 1.4.0: options are fixed per finder since
+  1.4.0, so the "raised budget takes effect immediately" argument no longer
+  holds. The truncated walk is deterministic for a given index, so partial
+  results are now cached flagged partial, and each partial hit still counts
+  as a budget trip.*)
   (mirroring the FuzzyMaxNames disable log — no per-query logging). The
   post-build overflow scan is not budgeted: it is a small bounded linear
   list, so truncated queries still rescue recently added names. The variable

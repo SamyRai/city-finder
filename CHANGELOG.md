@@ -8,15 +8,57 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `name.Options.FuzzyMaxConcurrent` caps concurrent fuzzy walks per finder
+  (`DefaultOptions`: `GOMAXPROCS`; 0 or negative means unlimited, so existing
+  `Options` literals behave as before). When every slot is taken, a typo
+  lookup answers exact-only instead of queueing another multi-second walk;
+  `Finder.FuzzyGateRejections()` and the new `fuzzy_gate_rejections_total`
+  metric count these.
+- `city.ValidCoordinate(lat, lon)`, the single coordinate check shared by
+  the loader and the S2 index.
+- The server logs its build version at startup (`city-finder version <v>`),
+  stamped from the image's `VERSION` build arg.
+
 ### Fixed
 
+- **Index files written before the 1.4.0 loader fix could keep serving NaN
+  or out-of-range points.** `coordinates.DeserializeIndex` now reports such
+  a row as a corrupt index, so the initializer rebuilds the file.
+  `coordinates.BuildIndex` returns an error naming the first invalid row.
+- **The init lock was skipped on a writable shared volume** when only the
+  lock file was unwritable (for example, owned by another uid). Two boots
+  could then rewrite the same index at once. The lock is now taken through a
+  read-only descriptor in that case, and is skipped only when the datasets
+  folder itself is not writable.
+- **Dataset downloads and zip extraction had no size bound.** A broken or
+  hostile mirror could fill the datasets volume. Archives are capped at
+  2 GiB and each extracted file at 6 GiB; going over a cap fails the boot.
+- The fuzzy result cache is bounded by an estimated 64 MiB as well as by
+  10,000 entries. One entry can hold tens of thousands of candidates.
+- `POST /nearest/batch` accepts `Content-Type: application/json; charset=utf-8`,
+  which many HTTP clients send by default. Other media types, charsets and
+  parameters are still rejected with `400`.
+- The ETag middleware applies only to GET and HEAD. A `POST` with a matching
+  `If-None-Match` used to get `304 Not Modified`.
 - `memreport` no longer samples a dataset row whose latitude or longitude does
   not parse; it used to enter the transcript as (0, 0).
 
 ### Changed
 
+- Budget-truncated fuzzy results are cached, flagged partial, because the
+  truncated walk is deterministic for a given index. A repeated degenerate
+  query no longer re-walks every time. Each answer still increments
+  `fuzzy_budget_trips_total`.
 - Dependencies: fiber v2.52.16 (fiber v2 is now deprecated upstream in favour
   of v3), klauspost/compress v1.20.3, golang/geo 2026-10-23, testify v1.12.1.
+
+### Performance
+
+- The fuzzy build's name snapshot deduplicates with sort and compact instead
+  of a map holding every key. Measured at 1M synthetic names: -78 % bytes,
+  allocations 4098 -> 1.
 
 ### Development
 
@@ -31,9 +73,16 @@ and this project adheres to
 - CI resolves the newest Go 1.26 patch (`check-latest`) instead of the runner
   image's cached one: go1.26.9 failed govulncheck on GO-2026-6809
   (crypto/x509, fixed in go1.26.10).
-- CI's push trigger covers only `main` and `v*` tags. Pull requests run once,
-  on the `pull_request` event, instead of also starting a branch-push run that
-  the shared concurrency group cancelled.
+- CI's push trigger covers only `main`. Pull requests run once, on the
+  `pull_request` event, instead of also starting a branch-push run that the
+  shared concurrency group cancelled.
+- A `v*` tag publishes only after the CI suite passes: `release.yml` calls
+  `ci.yml` and the release job needs it. A tag runs the suite once.
+- GitHub Actions are pinned to commit SHAs, and Dependabot bumps them weekly.
+- A weekly govulncheck workflow scans `main` on the newest Go 1.26 patch.
+- docs/architecture.md: the name index declares no entry bounds (its header
+  count is the number of countries, so it cannot bound the payload), and gob
+  buffers the decompressed payload during decode.
 - Removed `lib/zz`, a leftover scratch test with no assertions that wrote
   index files of up to 8M cities on every `go test ./...` (it dominated the
   `-race` run).

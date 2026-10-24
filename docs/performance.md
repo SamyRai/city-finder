@@ -80,9 +80,14 @@ a range, not a distribution.
   - `name.Options.FuzzyMaxNames` (default 25M keys) bounds it against unmeasured
     scales.
   - Per-query work is capped by `name.Options.FuzzyMaxCandidates` (default 4M posting
-    entries). A capped query returns the matches verified so far, is never
-    cached as complete, and increments `fuzzy_budget_trips_total`.
-  - Results are cached (10k entries, 1 h TTL). Eviction is O(1) FIFO since the
+    entries). A capped query returns the matches verified so far, is cached
+    flagged partial (the truncated walk is deterministic for a given index),
+    and every answer from it increments `fuzzy_budget_trips_total`.
+  - Concurrent walks are capped per finder by `name.Options.FuzzyMaxConcurrent`
+    (default `GOMAXPROCS`). Over the cap a typo lookup answers exact-only and
+    increments `fuzzy_gate_rejections_total`, so a typo flood cannot stack
+    walk memory beyond the cap.
+  - Results are cached (10k entries and ~64 MiB, 1 h TTL). Eviction is O(1) FIFO since the
     2026-10 review; the former full-map scan per insert at capacity cost
     ~54 % of a cache-churning typo lookup (interleaved A/B, n=8, 100k-name
     fixture).
