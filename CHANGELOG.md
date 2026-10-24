@@ -28,6 +28,9 @@ and this project adheres to
   benchmark smoke run and govulncheck.
 - staticcheck v0.8.2: v0.8.1 cannot read Go 1.27 export data, so it failed on
   a 1.27 toolchain (CI on 1.26 was unaffected).
+- CI resolves the newest Go 1.26 patch (`check-latest`) instead of the runner
+  image's cached one: go1.26.9 failed govulncheck on GO-2026-6809
+  (crypto/x509, fixed in go1.26.10).
 - Removed `lib/zz`, a leftover scratch test with no assertions that wrote
   index files of up to 8M cities on every `go test ./...` (it dominated the
   `-race` run).
