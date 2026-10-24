@@ -64,22 +64,23 @@ func (t *nameTable) lookup(name string) ([]int32, bool) {
 // consulted after the sorted-table miss. Every name of a city stores the
 // same row id, so all of them resolve to the same *city.City.
 type Finder struct {
-	countries     map[string]*nameTable                // per-country exact-lookup tables
-	cities        cityTable                            // every id in a table or the overflow resolves here
-	overflow      map[string]map[string][]int32        // post-construction additions: country -> name -> city ids into cities
-	ngrams        *ngramIndex                          // Immutable q-gram fuzzy index (lazy-built, never serialized)
-	fuzzyOverflow []string                             // Names added after the last fuzzy build; linearly scanned until the next build folds them in
-	fuzzyCache    map[fuzzyCacheKey]*fuzzySearchResult // Cache for fuzzy search results
-	fuzzyCacheAge list.List                            // fuzzyCache keys, oldest insertion first (values are fuzzyCacheKey)
-	fuzzyGen      atomic.Uint64                        // bumped whenever a name becomes fuzzy-visible after construction; invalidates cached results
-	cacheMutex    sync.RWMutex                         // Mutex for fuzzy search cache and fuzzyCacheAge
-	mutex         sync.RWMutex                         // Mutex for thread-safe operations
-	opts          Options                              // Fuzzy limits, fixed at construction; read without locking
-	fuzzyStats    fuzzyStats                           // Per-Finder fuzzy search diagnostics (budget trips); safe for concurrent use
-	fuzzyWaitMu   sync.Mutex                           // Guards fuzzySettled
-	fuzzySettled  chan struct{}                        // Closed (and cleared) when a build leaves fuzzyBuilding; created lazily by WaitFuzzy
-	fuzzyState    atomic.Int32                         // Lazy fuzzy-index state (fuzzyNotBuilt*, above); runtime-only, not serialized
-	hasKeys       atomic.Bool                          // Any (country, name) key indexed; lets a never-populated finder skip fuzzy builds that would find nothing
+	countries       map[string]*nameTable                // per-country exact-lookup tables
+	cities          cityTable                            // every id in a table or the overflow resolves here
+	overflow        map[string]map[string][]int32        // post-construction additions: country -> name -> city ids into cities
+	ngrams          *ngramIndex                          // Immutable q-gram fuzzy index (lazy-built, never serialized)
+	fuzzyOverflow   []string                             // Names added after the last fuzzy build; linearly scanned until the next build folds them in
+	fuzzyCache      map[fuzzyCacheKey]*fuzzySearchResult // Cache for fuzzy search results
+	fuzzyCacheAge   list.List                            // fuzzyCache keys, oldest insertion first (values are fuzzyCacheKey)
+	fuzzyCacheBytes int                                  // Estimated retained bytes of fuzzyCache (see fuzzyEntryBytes); guarded by cacheMutex
+	fuzzyGen        atomic.Uint64                        // bumped whenever a name becomes fuzzy-visible after construction; invalidates cached results
+	cacheMutex      sync.RWMutex                         // Mutex for fuzzy search cache and fuzzyCacheAge
+	mutex           sync.RWMutex                         // Mutex for thread-safe operations
+	opts            Options                              // Fuzzy limits, fixed at construction; read without locking
+	fuzzyStats      fuzzyStats                           // Per-Finder fuzzy search diagnostics (budget trips); safe for concurrent use
+	fuzzyWaitMu     sync.Mutex                           // Guards fuzzySettled
+	fuzzySettled    chan struct{}                        // Closed (and cleared) when a build leaves fuzzyBuilding; created lazily by WaitFuzzy
+	fuzzyState      atomic.Int32                         // Lazy fuzzy-index state (fuzzyNotBuilt*, above); runtime-only, not serialized
+	hasKeys         atomic.Bool                          // Any (country, name) key indexed; lets a never-populated finder skip fuzzy builds that would find nothing
 }
 
 // Memory pools removed - they were causing excessive memory usage
