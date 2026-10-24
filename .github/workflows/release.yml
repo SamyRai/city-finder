@@ -48,10 +48,9 @@ jobs:
           provenance: false
           cache-from: type=gha
 
-  # Tag-only gate: the same suite ci.yml runs on a push. ci.yml also fires on
-  # the tag push by itself (its triggers are unchanged), so the suite runs
-  # twice per tag; the release must not depend on a sibling run it cannot
-  # wait for. Permissions are the minimum ci.yml declares.
+  # Tag-only gate: the suite ci.yml runs on a push to main. ci.yml has no tag
+  # trigger of its own, so this call is the tag's only CI run and the release
+  # job waits on it. Permissions are the minimum ci.yml declares.
   ci:
     if: startsWith(github.ref, 'refs/tags/v')
     uses: ./.github/workflows/ci.yml

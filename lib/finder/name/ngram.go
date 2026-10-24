@@ -292,9 +292,11 @@ type fuzzyMatch struct {
 // in arbitrary order, plus whether the result is partial: the posting walk
 // stopped early after the index's budget of entries (see
 // Options.FuzzyMaxCandidates). A partial result is best-effort for that one
-// query — every name it does return is a verified true match — and must not be cached or
-// otherwise treated as complete. See the filtering-chain comment for the
-// full completeness argument.
+// query — every name it does return is a verified true match — and must
+// never be treated as complete. The walk order is total, so the same query
+// on the same index truncates identically; the fuzzy cache stores such a
+// result flagged partial. See the filtering-chain comment for the full
+// completeness argument.
 func (ix *ngramIndex) search(query string, d int) (matches []string, truncated bool) {
 	qLen := utf8.RuneCountInString(query)
 	grams := distinctQueryGrams(query)
