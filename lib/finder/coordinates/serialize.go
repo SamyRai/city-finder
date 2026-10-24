@@ -109,7 +109,7 @@ func DeserializeIndex(filepath string) (*S2Finder, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	corrupt := func(format string, args ...any) error { return indexSpec.Corruptf(filepath, format, args...) }
 
 	var payload SerializableS2Finder

@@ -23,7 +23,7 @@ func LoadAdmin1Names(filepath string) (map[string]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %v", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	names := make(map[string]string, 8192) // ~4K distinct admin1 pairs worldwide, with headroom
 	var skipped skipReport

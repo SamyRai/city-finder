@@ -159,7 +159,7 @@ func DeserializeIndex(filepath string, opts ...Options) (*Finder, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	corrupt := func(format string, args ...any) error { return indexSpec.Corruptf(filepath, format, args...) }
 
 	var payload nameIndexPayloadV3

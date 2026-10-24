@@ -352,9 +352,9 @@ func TestRealDataIntegration_CrossFinderConsistency(t *testing.T) {
 
 					if nameResult != nil && coordErr == nil && coordResult != nil && postalResult != nil {
 						// Check coordinate consistency (within reasonable bounds)
-						coordDiff := math.Sqrt(
-							math.Pow(nameResult.Latitude-postalResult.Latitude, 2) +
-								math.Pow(nameResult.Longitude-postalResult.Longitude, 2))
+						coordDiff := math.Hypot(
+							nameResult.Latitude-postalResult.Latitude,
+							nameResult.Longitude-postalResult.Longitude)
 
 						if coordDiff < 1.0 { // Within 1 degree (reasonable for city-level data)
 							consistentResults++
