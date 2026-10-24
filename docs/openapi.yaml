@@ -229,7 +229,9 @@ paths:
         with the same strict whitelist semantics — per point, not
         batch-wide. Validation runs in order and the first failure
         rejects the whole request with `400` and a `points[i]: ...`
-        message. `Content-Type` must be exactly `application/json`, the
+        message. `Content-Type` must be `application/json`, optionally
+        with `; charset=utf-8` (case-insensitive; any other media type,
+        charset or parameter is a `400`), the
         decoder rejects unknown JSON fields, and the population-ranking
         concurrency gate applies per `rank=population` point — a saturated
         gate mid-batch fails the whole request with 503 + Retry-After: 1.
@@ -308,7 +310,7 @@ paths:
                 badPoint:
                   value: "points[2]: Invalid latitude"
         "503":
-          description: Population ranking saturated mid-batch. Plain text; carries `Retry-After: 1`.
+          description: "Population ranking saturated mid-batch. Plain text; carries `Retry-After: 1`."
           content:
             text/plain:
               schema:
