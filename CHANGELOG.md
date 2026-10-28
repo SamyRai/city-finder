@@ -8,6 +8,11 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- Go 1.27: the module requires go1.27.0, and CI, the weekly govulncheck
+  and the release image build on the newest Go 1.27 patch.
+
 ## [1.5.0] - 2026-10-24
 
 Robustness and release-hardening release. The HTTP API, configuration file and

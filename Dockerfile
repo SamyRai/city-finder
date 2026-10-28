@@ -8,10 +8,10 @@
 # ca-certificates and tzdata but no shell, no package manager, and no
 # nonroot-writable directories — the layout below accounts for all three.
 
-ARG GO_VERSION=1.26
+ARG GO_VERSION=1.27
 
-# The floating "1.26" tag (not a digest) is deliberate: it always resolves to
-# the newest 1.26 patch at build time, so every release picks up stdlib
+# The floating "1.27" tag (not a digest) is deliberate: it always resolves to
+# the newest 1.27 patch at build time, so every release picks up stdlib
 # security fixes without a PR. A digest pin would freeze the patch level and
 # make Dependabot the only thing standing between a release and known
 # govulncheck findings.
