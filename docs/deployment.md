@@ -7,7 +7,7 @@ and the GitOps `Application` (e.g. ArgoCD; the chart's manifests already carry
 
 ## Image
 
-Built from the repo-root `Dockerfile`: a `golang:1.26` builder, then a
+Built from the repo-root `Dockerfile`: a `golang:1.27` builder, then a
 `gcr.io/distroless/static-debian12:nonroot` runtime (static binary, non-root
 uid 65532, no shell, no package manager). Pushed `v*` tags publish
 `ghcr.io/<owner>/city-finder:<version>` (owner lowercased) for `linux/amd64`
