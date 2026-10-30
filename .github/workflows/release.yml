@@ -168,7 +168,7 @@ jobs:
       # unmaintained, and a hand-rolled curl against the REST API would
       # re-implement asset upload, pagination and retry logic for no gain.
       - name: Create GitHub release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           body_path: ${{ env.RELEASE_BODY_FILE }}
           fail_on_unmatched_files: false
